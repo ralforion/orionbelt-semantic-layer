@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from decimal import Decimal
 
 from sqlglot import expressions as exp
 
@@ -71,6 +72,9 @@ def render_obml(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> str
     def rewrite(n: exp.Expr) -> exp.Expr:
         if isinstance(n, exp.Column):
             return column(n)
+        if isinstance(n, exp.Literal) and not n.is_string and _EXPONENT.search(n.this):
+            # OBML reads a number as digits and dots: 1e2 is "1" then "e2".
+            return exp.Literal.number(format(Decimal(n.this), "f"))
         if isinstance(n, exp.Cast):
             target = None if isinstance(n, exp.TryCast) else obml_cast_type(n.to)
             if target is None:
@@ -149,6 +153,52 @@ def unreadable(tree: exp.Expr) -> str | None:
     return None
 
 
-# ``{Sibling}`` and ``{[Data Object].[Column]}`` in an OBML computed column.
-SIBLING_REF = re.compile(r"\{(?!\[)([^{}]+)\}")
+_EXPONENT = re.compile(r"[eE]")
+
+# ``{Sibling}`` and ``{[Data Object].[Column]}`` in an OBML computed column, as
+# OBML reads them (``models/expressions.py``): a sibling name starts with a word
+# character and holds no ``}``; a string literal holds no reference.
+SIBLING_REF = re.compile(r"\{(\w[^}]*)\}")
 QUALIFIED_REF = re.compile(r"\{\[[^\]]+\]\.\[[^\]]+\]\}")
+SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+_SIBLING_NAME = re.compile(r"\w[^}]*")
+# What OBML's tokenizer reads besides literals and references.
+_OBML_CHARACTERS = re.compile(r"[\w\s+\-*/(),.=<>!]")
+# A number OBML reads as two tokens: 1e2 is "1" then "e2".
+_NUMBER_THEN_WORD = re.compile(r"(?<![\w.])\d[\d.]*[A-Za-z_]")
+
+
+def is_sibling_name(name: str) -> bool:
+    """Whether *name* can be written as an OBML sibling placeholder ``{name}``."""
+    return bool(_SIBLING_NAME.fullmatch(name))
+
+
+def substitute_outside_strings(
+    text: str, pattern: re.Pattern[str], repl: Callable[[re.Match[str]], str]
+) -> str:
+    """Apply *repl* to *pattern* outside SQL string literals, as OBML does."""
+    out: list[str] = []
+    last = 0
+    for literal in SQL_STRING_LITERAL.finditer(text):
+        out.append(pattern.sub(repl, text[last : literal.start()]))
+        out.append(literal.group(0))
+        last = literal.end()
+    out.append(pattern.sub(repl, text[last:]))
+    return "".join(out)
+
+
+def obml_unreadable_text(expression: str) -> str | None:
+    """Why OBML's tokenizer would refuse *expression*, or ``None`` when it reads it.
+
+    The last check before a computed column replaces a field's code: a model
+    that loaded must not stop loading because of a field no query reads.
+    """
+    text = SQL_STRING_LITERAL.sub("''", expression)
+    text = QUALIFIED_REF.sub("x", text)
+    text = SIBLING_REF.sub("x", text)
+    if _NUMBER_THEN_WORD.search(text):
+        return "a number OBML reads as two tokens"
+    stray = sorted(set(_OBML_CHARACTERS.sub("", text.replace("''", ""))))
+    if stray:
+        return f"characters OBML does not read: {' '.join(stray)}"
+    return None

@@ -25,7 +25,12 @@ from osi_orionbelt._common import (
     obml_datatype_to_osi,
     physical_code,
 )
-from osi_orionbelt._field_expressions import QUALIFIED_REF, SIBLING_REF
+from osi_orionbelt._field_expressions import (
+    QUALIFIED_REF,
+    SIBLING_REF,
+    SQL_STRING_LITERAL,
+    substitute_outside_strings,
+)
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
     FIELD_NAMES_KEY,
@@ -50,7 +55,8 @@ def _referenced_columns(obml: dict[str, Any]) -> set[tuple[str, str]]:
     """Every (data object, column) the model refers to outside the column itself.
 
     A ``{dataObject, column}`` pair anywhere (dimensions, measure columns,
-    filters) and a ``{[Data Object].[Column]}`` reference in any expression.
+    filters), a ``{[Data Object].[Column]}`` reference in any expression, and
+    the columns of joins and primary keys.
     """
     found: set[tuple[str, str]] = set()
 
@@ -69,6 +75,20 @@ def _referenced_columns(obml: dict[str, Any]) -> set[tuple[str, str]]:
                 found.add((match.group(1), match.group(2)))
 
     walk(obml)
+    # Join keys and primary keys name a column without a ``dataObject`` beside it.
+    for obj_name, obj in (obml.get("dataObjects") or {}).items():
+        if not isinstance(obj, dict):
+            continue
+        for col_name, col in (obj.get("columns") or {}).items():
+            if isinstance(col, dict) and col.get("primaryKey"):
+                found.add((obj_name, col_name))
+        for join in obj.get("joins") or []:
+            if not isinstance(join, dict):
+                continue
+            found.update((obj_name, c) for c in join.get("columnsFrom") or [] if isinstance(c, str))
+            target = join.get("joinTo")
+            if isinstance(target, str):
+                found.update((target, c) for c in join.get("columnsTo") or [] if isinstance(c, str))
     return found
 
 
@@ -492,7 +512,11 @@ class OBMLtoOSI:
         expression = col.get("expression")
         fallback = col_name.lower().replace(" ", "_")
         if isinstance(expression, str):
-            if isinstance(sql, str) and saved.get("obml_field_expression") == expression:
+            if (
+                isinstance(sql, str)
+                and saved.get("obml_field_expression") == expression
+                and self._siblings_unchanged(columns, saved.get("obml_field_siblings"))
+            ):
                 return sql
             rendered = self._render_computed(do_name, expression, seen | {col_name})
             if rendered is not None:
@@ -519,6 +543,21 @@ class OBMLtoOSI:
             return None
         return sql if physical_code(sql) == code else sql_ident(code)
 
+    @staticmethod
+    def _siblings_unchanged(columns: dict[str, Any], siblings: object) -> bool:
+        """Whether each sibling the import wrote still has the code it had.
+
+        The saved SQL reads source columns by name: after a sibling's code is
+        edited, OBML reads the new column and the saved SQL the old one.
+        """
+        if not isinstance(siblings, dict):
+            return True
+        for name, code in siblings.items():
+            col = columns.get(name)
+            if not isinstance(col, dict) or "expression" in col or col.get("code") != code:
+                return False
+        return True
+
     def _columns_of(self, do_name: str) -> dict[str, Any]:
         obj = (self.obml.get("dataObjects", {}) or {}).get(do_name) or {}
         columns: dict[str, Any] = obj.get("columns", {}) or {}
@@ -526,7 +565,7 @@ class OBMLtoOSI:
 
     def _render_computed(self, do_name: str, expression: str, seen: frozenset[str]) -> str | None:
         """An OBML computed column as field SQL, or ``None`` when it has none."""
-        if QUALIFIED_REF.search(expression):
+        if QUALIFIED_REF.search(SQL_STRING_LITERAL.sub("''", expression)):
             return None
         columns = self._columns_of(do_name)
         missing: list[str] = []
@@ -545,7 +584,8 @@ class OBMLtoOSI:
                 return quoted
             return sql_ident(code) if needs_quoting(code) else code
 
-        text = SIBLING_REF.sub(sibling, expression)
+        # Braces inside a string literal are text, not a sibling (as in OBML).
+        text = substitute_outside_strings(expression, SIBLING_REF, sibling)
         if missing:
             return None
         try:

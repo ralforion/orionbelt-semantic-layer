@@ -142,3 +142,62 @@ class TestExport:
         once = conv.OBMLtoOSI(conv.OSItoOBML(copy.deepcopy(doc)).convert()).convert()
         twice = conv.OBMLtoOSI(conv.OSItoOBML(copy.deepcopy(once)).convert()).convert()
         assert once["datasets"] == twice["datasets"]
+
+
+class TestReview:
+    def test_scientific_notation_is_written_as_obml_reads_numbers(self) -> None:
+        # OBML reads 1e2 as "1" then "e2", which refused the whole model.
+        columns, _ = _columns(_doc(_field("amount", "amount_cents / 1e2")))
+        assert columns["amount"]["expression"] == "{amount_cents} / 100"
+
+    def test_text_obml_cannot_tokenize_is_refused(self) -> None:
+        from osi_orionbelt._field_expressions import obml_unreadable_text
+
+        assert obml_unreadable_text("{a} / 1e2") is not None
+        assert obml_unreadable_text("{a} | {b}") is not None
+        assert obml_unreadable_text("{a} + LENGTH('x | 1e2')") is None
+
+    def test_an_edited_sibling_code_is_written_from_the_sibling(self) -> None:
+        doc = _doc(_field("amount", "amount_cents / 100.0"))
+        obml = conv.OSItoOBML(copy.deepcopy(doc)).convert()
+        obml["dataObjects"]["orders"]["columns"]["amount_cents"]["code"] = "new_cents"
+        assert _export(obml)["amount"] == "new_cents / 100.0"
+
+    def test_braces_in_a_string_literal_are_text(self) -> None:
+        obml = conv.OSItoOBML(copy.deepcopy(_doc())).convert()
+        columns = obml["dataObjects"]["orders"]["columns"]
+        columns["amount_cents"] = {"code": "amount_cents", "abstractType": "int"}
+        columns["mixed"] = {
+            "expression": "{amount_cents} + LENGTH('{amount_cents}')",
+            "abstractType": "int",
+        }
+        assert _export(obml)["mixed"] == "amount_cents + LENGTH('{amount_cents}')"
+
+    def test_an_added_column_used_as_a_join_key_is_exported(self) -> None:
+        doc = _doc(_field("amount", "amount_cents / 100.0"))
+        doc["datasets"].append(
+            {
+                "name": "bands",
+                "source": "wh.public.bands",
+                "primary_key": ["cents"],
+                "fields": [_field("cents", "cents")],
+            }
+        )
+        obml = conv.OSItoOBML(copy.deepcopy(doc)).convert()
+        obml["dataObjects"]["orders"]["joins"] = [
+            {
+                "joinType": "many-to-one",
+                "joinTo": "bands",
+                "columnsFrom": ["amount_cents"],
+                "columnsTo": ["cents"],
+            }
+        ]
+        back = conv.OBMLtoOSI(obml).convert()
+        assert "amount_cents" in _export(obml)
+        assert conv.validate_osi(back).valid
+
+    def test_a_source_name_no_placeholder_can_hold_gets_one_that_can(self) -> None:
+        # {$amount} is not a sibling to OBML, which compiled it as the text '$amount'.
+        columns, _ = _columns(_doc(_field("amount", '"$amount" * 2')))
+        assert columns["amount"]["expression"] == "{source__amount} * 2"
+        assert columns["source__amount"]["code"] == "$amount"

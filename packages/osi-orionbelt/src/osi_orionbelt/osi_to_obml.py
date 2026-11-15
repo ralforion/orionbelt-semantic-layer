@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import struct
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -31,6 +32,8 @@ from osi_orionbelt._common import (
 )
 from osi_orionbelt._field_expressions import (
     NotRepresentableError,
+    is_sibling_name,
+    obml_unreadable_text,
     render_obml,
     unreadable,
 )
@@ -184,6 +187,73 @@ def _source_key(identifier: exp.Expr) -> str:
 def _name_key(name: str) -> str:
     """A field or column name as a bare reference to it resolves: regardless of case."""
     return name.upper()
+
+
+class _SiblingPlan:
+    """The siblings one computed column reads, added to the data object on commit.
+
+    A source column the expression reads is a column whose code is that
+    column: a field computing exactly it, where its name can be a placeholder,
+    or else a column added for it. Nothing is added until :meth:`commit`, so a
+    field OBML cannot take leaves the data object as it was.
+    """
+
+    def __init__(
+        self,
+        columns: dict[str, Any],
+        physical: dict[str, str],
+        taken: set[str],
+        infer_type: Callable[[dict], str],
+    ) -> None:
+        self._columns = columns
+        self._physical = physical
+        self._taken = taken
+        self._infer_type = infer_type
+        self._pending: dict[str, tuple[str, str]] = {}  # source key -> (name, code)
+        self.siblings: dict[str, str] = {}  # sibling name -> its code
+
+    def name_for(self, column: exp.Column) -> str:
+        key = _source_key(column.this)
+        existing = self._physical.get(key)
+        if existing is not None and is_sibling_name(existing):
+            name = existing
+            self.siblings[name] = str(self._columns[name].get("code", ""))
+            return name
+        if key not in self._pending:
+            self._pending[key] = (self._new_name(column.name), column.name)
+        name, code = self._pending[key]
+        self.siblings[name] = code
+        return name
+
+    def placeholder(self, column: exp.Column) -> exp.Expr:
+        """``{name}`` for the sibling *column* reads."""
+        return exp.var("{" + self.name_for(column) + "}")
+
+    def _new_name(self, physical: str) -> str:
+        """A free column name OBML can write as ``{name}``: the column, else ``source_...``."""
+        taken = self._taken | {_name_key(n) for n, _ in self._pending.values()}
+        stem = physical if is_sibling_name(physical) else "source_" + re.sub(r"\W+", "_", physical)
+        name, number = stem, 2
+        while _name_key(name) in taken:
+            name = f"{stem}_{number}"
+            number += 1
+        return name
+
+    def commit(self) -> list[tuple[str, str]]:
+        """Add the planned columns; ``(name, code)`` of each one added."""
+        added = []
+        for key, (name, code) in self._pending.items():
+            self._columns[name] = {
+                "code": code,
+                "abstractType": self._infer_type({"name": code}),
+                "customExtensions": [
+                    {"vendor": _VENDOR_OSI, "data": json.dumps({"obml_source_column": True})}
+                ],
+            }
+            self._physical[key] = name
+            self._taken.add(_name_key(name))
+            added.append((name, code))
+        return added
 
 
 class OSItoOBML:
@@ -696,15 +766,12 @@ class OSItoOBML:
         taken = {_name_key(col) for col in columns}
         for name, tree in parsed.items():
             sql = columns[name]["code"]
+            plan = _SiblingPlan(columns, physical, taken, self._infer_obml_type)
             reason = unreadable(tree)
             if reason is None:
                 try:
-                    expression = render_obml(
-                        tree,
-                        lambda c: exp.var(
-                            "{" + self._sibling_for(ds_name, c, columns, physical, taken) + "}"
-                        ),
-                    )
+                    expression = render_obml(tree, plan.placeholder)
+                    reason = obml_unreadable_text(expression)
                 except NotRepresentableError as exc:
                     reason = str(exc)
             if reason is not None:
@@ -714,45 +781,24 @@ class OSItoOBML:
                     f"and a query reading the column fails."
                 )
                 continue
+            for added, code in plan.commit():
+                self.warnings.append(
+                    f"Field '{ds_name}.{name}' is computed from source column '{code}', which no "
+                    f"field exposes as is; added column '{added}' for it."
+                )
             column = columns[name]
             del column["code"]
             column["expression"] = expression
-            saved = {"obml_field_sql": sql, "obml_field_expression": expression}
+            # The saved SQL is written back only while the expression and the
+            # siblings' codes are what the import wrote (see the export).
+            saved = {
+                "obml_field_sql": sql,
+                "obml_field_expression": expression,
+                "obml_field_siblings": plan.siblings,
+            }
             column.setdefault("customExtensions", []).append(
                 {"vendor": _VENDOR_OSI, "data": json.dumps(saved)}
             )
-
-    def _sibling_for(
-        self,
-        ds_name: str,
-        column: exp.Column,
-        columns: dict[str, Any],
-        physical: dict[str, str],
-        taken: set[str],
-    ) -> str:
-        """The column of *ds_name* whose code is the source column *column* reads."""
-        key = _source_key(column.this)
-        if key in physical:
-            return physical[key]
-        name = column.name
-        number = 2
-        while _name_key(name) in taken:
-            name = f"{column.name}_{number}"
-            number += 1
-        taken.add(_name_key(name))
-        physical[key] = name
-        columns[name] = {
-            "code": column.name,
-            "abstractType": self._infer_obml_type({"name": column.name}),
-            "customExtensions": [
-                {"vendor": _VENDOR_OSI, "data": json.dumps({"obml_source_column": True})}
-            ],
-        }
-        self.warnings.append(
-            f"Field '{ds_name}' computed from source column '{column.name}', which no field "
-            f"exposes as is; added column '{name}' for it."
-        )
-        return name
 
     def _convert_field(self, field: dict) -> tuple[str, dict]:
         """Convert an OSI field to an OBML column.
