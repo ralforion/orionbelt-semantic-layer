@@ -16,10 +16,22 @@
 # under the License.
 """Detect drift between the vendored Ossie core-spec schema and upstream.
 
-Fetches the current Apache Ossie ``core-spec/osi-schema.json`` and compares its
+Fetches the current Apache Ossie ``core-spec/ossie-schema.json`` and compares its
 structural surface (``$defs`` names, per-def properties + ``required`` + enum
 members) against the copy vendored in this package. Prints a Markdown report and
 exits non-zero when they differ, so a scheduled CI job can open an issue.
+
+Exit codes:
+
+- ``0``: in sync, or the fetch failed for a transient reason (network, server
+  error, a response cut short).
+- ``1``: drift; the report lists it. Nothing else exits 1: an uncaught exception
+  would, and it would file a drift issue with an empty report.
+- ``2``: the check itself is broken: the upstream URL is gone (HTTP 404/410),
+  does not serve a JSON schema, or the check failed in a way it does not expect.
+  Upstream moved the schema once (``osi-schema.json`` -> ``ossie-schema.json``)
+  and the check kept passing on a 404, so this must fail the run instead of
+  reading as "in sync".
 
 Usage::
 
@@ -29,13 +41,20 @@ Usage::
 
 from __future__ import annotations
 
+import http.client
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-UPSTREAM_URL = "https://raw.githubusercontent.com/apache/ossie/main/core-spec/osi-schema.json"
+UPSTREAM_URL = "https://raw.githubusercontent.com/apache/ossie/main/core-spec/ossie-schema.json"
+EXIT_IN_SYNC = 0
+EXIT_DRIFT = 1
+EXIT_BROKEN = 2
+# The schema is not at the URL any more: the check has to be repointed.
+_GONE = frozenset({404, 410})
 VENDORED = (
     Path(__file__).resolve().parent.parent / "src" / "osi_orionbelt" / "schemas" / "osi-schema.json"
 )
@@ -98,23 +117,40 @@ def diff(vendored: dict[str, Any], upstream: dict[str, Any]) -> list[str]:
     return lines
 
 
-def main() -> int:
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print(__doc__)
-        return 0
+def _broken(reason: str) -> int:
+    print(f"## Ossie schema drift check is broken\n\n{reason}")
+    return EXIT_BROKEN
 
+
+def _check() -> int:
     vendored = json.loads(VENDORED.read_text())
     try:
         with urllib.request.urlopen(UPSTREAM_URL, timeout=30) as resp:  # noqa: S310 (trusted host)
-            upstream = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # network/parse failure is not "drift"
+            body = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in _GONE:
+            return _broken(
+                f"Upstream answered HTTP {exc.code} for {UPSTREAM_URL}: the schema moved or "
+                "was removed. Point `UPSTREAM_URL` at its new location."
+            )
         print(f"Could not fetch upstream schema ({exc}); skipping drift check.")
-        return 0
+        return EXIT_IN_SYNC
+    # URLError and timeouts are OSErrors; a response cut short (IncompleteRead)
+    # or malformed is an HTTPException, which is not. All are transient.
+    except (OSError, http.client.HTTPException) as exc:
+        print(f"Could not fetch upstream schema ({exc!r}); skipping drift check.")
+        return EXIT_IN_SYNC
+    try:
+        upstream = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return _broken(f"{UPSTREAM_URL} did not return JSON ({exc}).")
+    if not isinstance(upstream, dict):
+        return _broken(f"{UPSTREAM_URL} returned JSON that is not a schema object.")
 
     lines = diff(vendored, upstream)
     if not lines:
         print("Vendored Ossie schema is in sync with upstream `apache/ossie`.")
-        return 0
+        return EXIT_IN_SYNC
 
     print("## Ossie schema drift detected\n")
     print(f"The vendored `osi-schema.json` differs from upstream ({UPSTREAM_URL}):\n")
@@ -123,7 +159,17 @@ def main() -> int:
         "\nUpdate the vendored copy and propagate any type/field changes through the converter "
         "and `test_osi_schema_freshness.py`."
     )
-    return 1
+    return EXIT_DRIFT
+
+
+def main() -> int:
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        return EXIT_IN_SYNC
+    try:
+        return _check()
+    except Exception as exc:  # noqa: BLE001 - uncaught, Python exits 1, which reads as drift
+        return _broken(f"The check failed unexpectedly: {type(exc).__name__}: {exc}")
 
 
 if __name__ == "__main__":
