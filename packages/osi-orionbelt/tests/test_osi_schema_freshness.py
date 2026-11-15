@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import urllib.error
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -127,3 +129,64 @@ class TestDriftDiff:
         assert any("version` const changed" in line for line in lines)
         # Sanity: without the version change, identical schemas are in sync.
         assert mod.diff(base, base) == []
+
+
+class _Response:
+    """Stands in for the ``urlopen`` context manager."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class TestDriftExitCodes:
+    """A broken check must fail the run; only a transient fetch failure may skip.
+
+    Upstream renamed ``osi-schema.json`` to ``ossie-schema.json``; the check got a
+    404, printed "skipping" and exited 0 for weeks, which read as "in sync".
+    """
+
+    def _run(self, monkeypatch: Any, outcome: Any) -> int:
+        mod = _drift_module()
+
+        def fake_urlopen(url: str, timeout: int) -> _Response:
+            if isinstance(outcome, Exception):
+                raise outcome
+            return _Response(outcome)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(mod.sys, "argv", ["check_ossie_schema_drift.py"])
+        return int(mod.main())
+
+    def test_points_at_the_current_upstream_file(self) -> None:
+        assert _drift_module().UPSTREAM_URL.endswith("/core-spec/ossie-schema.json")
+
+    def test_in_sync_exits_zero(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, _SCHEMA.read_bytes()) == 0
+
+    def test_drift_exits_one(self, monkeypatch: Any) -> None:
+        mutated = _load_schema()
+        mutated["properties"]["version"]["const"] = "9.9.9"
+        assert self._run(monkeypatch, json.dumps(mutated).encode()) == 1
+
+    def test_missing_upstream_file_exits_two(self, monkeypatch: Any) -> None:
+        gone = urllib.error.HTTPError("u", 404, "Not Found", Message(), None)
+        assert self._run(monkeypatch, gone) == 2
+
+    def test_non_json_answer_exits_two(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, b"<html>moved</html>") == 2
+
+    def test_network_failure_skips(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, urllib.error.URLError("no route to host")) == 0
+
+    def test_server_error_skips(self, monkeypatch: Any) -> None:
+        busy = urllib.error.HTTPError("u", 503, "Unavailable", Message(), None)
+        assert self._run(monkeypatch, busy) == 0

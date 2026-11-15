@@ -16,10 +16,19 @@
 # under the License.
 """Detect drift between the vendored Ossie core-spec schema and upstream.
 
-Fetches the current Apache Ossie ``core-spec/osi-schema.json`` and compares its
+Fetches the current Apache Ossie ``core-spec/ossie-schema.json`` and compares its
 structural surface (``$defs`` names, per-def properties + ``required`` + enum
 members) against the copy vendored in this package. Prints a Markdown report and
 exits non-zero when they differ, so a scheduled CI job can open an issue.
+
+Exit codes:
+
+- ``0``: in sync, or the fetch failed for a transient reason (network, server error).
+- ``1``: drift; the report lists it.
+- ``2``: the check itself is broken: the upstream URL is gone (HTTP 404/410) or
+  does not serve JSON. Upstream moved the schema once (``osi-schema.json`` ->
+  ``ossie-schema.json``) and the check kept passing on a 404, so this must fail
+  the run instead of reading as "in sync".
 
 Usage::
 
@@ -31,11 +40,17 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-UPSTREAM_URL = "https://raw.githubusercontent.com/apache/ossie/main/core-spec/osi-schema.json"
+UPSTREAM_URL = "https://raw.githubusercontent.com/apache/ossie/main/core-spec/ossie-schema.json"
+EXIT_IN_SYNC = 0
+EXIT_DRIFT = 1
+EXIT_BROKEN = 2
+# The schema is not at the URL any more: the check has to be repointed.
+_GONE = frozenset({404, 410})
 VENDORED = (
     Path(__file__).resolve().parent.parent / "src" / "osi_orionbelt" / "schemas" / "osi-schema.json"
 )
@@ -106,15 +121,33 @@ def main() -> int:
     vendored = json.loads(VENDORED.read_text())
     try:
         with urllib.request.urlopen(UPSTREAM_URL, timeout=30) as resp:  # noqa: S310 (trusted host)
-            upstream = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # network/parse failure is not "drift"
+            body = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in _GONE:
+            print(
+                f"## Ossie schema drift check is broken\n\nUpstream answered HTTP {exc.code} "
+                f"for {UPSTREAM_URL}: the schema moved or was removed. Point `UPSTREAM_URL` "
+                "at its new location."
+            )
+            return EXIT_BROKEN
         print(f"Could not fetch upstream schema ({exc}); skipping drift check.")
-        return 0
+        return EXIT_IN_SYNC
+    except OSError as exc:  # URLError and timeouts: transient, not drift
+        print(f"Could not fetch upstream schema ({exc}); skipping drift check.")
+        return EXIT_IN_SYNC
+    try:
+        upstream = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(
+            f"## Ossie schema drift check is broken\n\n{UPSTREAM_URL} did not return a JSON "
+            f"schema ({exc})."
+        )
+        return EXIT_BROKEN
 
     lines = diff(vendored, upstream)
     if not lines:
         print("Vendored Ossie schema is in sync with upstream `apache/ossie`.")
-        return 0
+        return EXIT_IN_SYNC
 
     print("## Ossie schema drift detected\n")
     print(f"The vendored `osi-schema.json` differs from upstream ({UPSTREAM_URL}):\n")
@@ -123,7 +156,7 @@ def main() -> int:
         "\nUpdate the vendored copy and propagate any type/field changes through the converter "
         "and `test_osi_schema_freshness.py`."
     )
-    return 1
+    return EXIT_DRIFT
 
 
 if __name__ == "__main__":

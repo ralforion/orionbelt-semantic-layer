@@ -30,11 +30,15 @@ jobs:
 
       - name: Check upstream Ossie schema drift
         id: drift
+        # Exit 1 is drift (the next step files the issue). Exit 2 means the check
+        # itself is broken (e.g. upstream moved the schema), so the run fails.
         run: |
           set +e
           python3 packages/osi-orionbelt/scripts/check_ossie_schema_drift.py > drift-report.md
-          echo "code=$?" >> "$GITHUB_OUTPUT"
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
           cat drift-report.md
+          if [ "$code" -gt 1 ]; then exit "$code"; fi
 
       - name: Open or update tracking issue on drift
         if: steps.drift.outputs.code == '1'
