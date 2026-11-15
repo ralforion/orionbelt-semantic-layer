@@ -418,6 +418,20 @@ class OBMLtoOSI:
             f"FROM {parent_source} AS {sql_ident(parent)}, UNNEST({path}) AS {alias}"
         )
 
+    @staticmethod
+    def _stashed_field_sql(col_obj: dict) -> str | None:
+        """The field SQL the import kept for this column (``obml_field_sql``), if any."""
+        for ext in col_obj.get("customExtensions", []) or []:
+            if ext.get("vendor") not in _OSI_VENDOR_READ:
+                continue
+            try:
+                data = json.loads(ext.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(data, dict) and isinstance(data.get("obml_field_sql"), str):
+                return str(data["obml_field_sql"])
+        return None
+
     def _convert_column(
         self, col_name: str, col_obj: dict, do_name: str, obml_dimensions: dict
     ) -> dict:
@@ -427,7 +441,11 @@ class OBMLtoOSI:
         ``code``. The code can be a SQL expression (a calculated column from an
         OSI import), which must never become the field name.
         """
-        code = col_obj.get("code", col_name.lower().replace(" ", "_"))
+        # A field the import read as a quoted identifier keeps that SQL: ``code``
+        # holds only the name, which is not SQL when it has a space.
+        code = self._stashed_field_sql(col_obj) or col_obj.get(
+            "code", col_name.lower().replace(" ", "_")
+        )
 
         dialects = [{"dialect": "ANSI_SQL", "expression": code}]
         # In Ossie's own language too where the code is inside it, as metrics
@@ -478,16 +496,18 @@ class OBMLtoOSI:
                 field["label"] = ext_label_data["obml_field_label"]
                 break
 
-        # Restore ai_context from customExtensions (OSI vendor) if present
+        # Restore ai_context from customExtensions (OSI vendor) if present. The
+        # import's own ``obml_*`` stashes ride in the same vendor and are not
+        # context: ``obml_field_label`` used to land in ``ai_context``.
         ai_ctx: dict[str, Any] = {}
         for ext in col_obj.get("customExtensions", []):
             if ext.get("vendor") == "OSI":
                 try:
                     ai_data = json.loads(ext.get("data", "{}"))
-                    if ai_data:
-                        ai_ctx.update(ai_data)
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    continue
+                if isinstance(ai_data, dict):
+                    ai_ctx.update({k: v for k, v in ai_data.items() if not k.startswith("obml_")})
 
         # Merge native OBML column synonyms into ai_context
         obml_col_synonyms = col_obj.get("synonyms", [])

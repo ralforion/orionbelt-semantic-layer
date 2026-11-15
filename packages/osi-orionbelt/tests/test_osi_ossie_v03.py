@@ -176,6 +176,32 @@ class TestDatasetScopedMetrics:
         assert obml["dataObjects"]["orders"]["columns"][column]["code"] == "amount"
         assert any("source column 'amount'" in w for w in warnings)
 
+    def test_a_quoted_source_column_is_stored_without_its_quotes(self) -> None:
+        doc = _shop()
+        doc["datasets"][0]["metrics"] = [
+            {"name": "gross", "expression": {"sql": 'SUM(source."Order Total")'}}
+        ]
+        obml, _ = _convert(doc)
+        column = obml["measures"]["gross"]["columns"][0]["column"]
+        # OBML quotes the code itself: '"Order Total"' compiled to """Order Total""".
+        assert obml["dataObjects"]["orders"]["columns"][column]["code"] == "Order Total"
+        back = conv.OBMLtoOSI(obml).convert()
+        orders = next(ds for ds in back["datasets"] if ds["name"] == "orders")
+        field = next(f for f in orders["fields"] if f["name"] == column)
+        assert field["expression"]["dialects"][0]["expression"] == '"Order Total"'
+
+    def test_a_synthesized_name_does_not_collide_by_case(self) -> None:
+        # SOURCE_AMOUNT and source_amount are one bare identifier.
+        doc = _shop()
+        doc["datasets"][0]["fields"].append(_field("SOURCE_AMOUNT", "something_else"))
+        doc["datasets"][0]["metrics"] = [
+            {"name": "gross", "expression": {"sql": "SUM(source.amount)"}}
+        ]
+        obml, _ = _convert(doc)
+        column = obml["measures"]["gross"]["columns"][0]["column"]
+        assert column.upper() != "SOURCE_AMOUNT"
+        assert obml["dataObjects"]["orders"]["columns"][column]["code"] == "amount"
+
     def test_a_generated_name_does_not_take_an_existing_one(self) -> None:
         doc = _shop(
             metrics=[
@@ -284,6 +310,27 @@ class TestExport:
             "ANSI_SQL": "amount_cents / 100.0",
             "OSSIE_SQL_2026": "amount_cents / 100.0",
         }
+
+
+class TestQuotedFieldIdentifiers:
+    def test_the_code_is_the_name_and_the_export_writes_the_sql_back(self) -> None:
+        doc = _shop()
+        doc["datasets"][0]["fields"].append(_field("total", '"Order Total"'))
+        obml, _ = _convert(doc)
+        assert obml["dataObjects"]["orders"]["columns"]["total"]["code"] == "Order Total"
+        back = conv.OBMLtoOSI(obml).convert()
+        orders = next(ds for ds in back["datasets"] if ds["name"] == "orders")
+        total = next(f for f in orders["fields"] if f["name"] == "total")
+        assert total["expression"]["dialects"][0]["expression"] == '"Order Total"'
+
+    def test_import_stashes_stay_out_of_ai_context(self) -> None:
+        doc = _shop()
+        doc["datasets"][0]["fields"].append(_field("total", '"Order Total"', label="Total"))
+        back = conv.OBMLtoOSI(_convert(doc)[0]).convert()
+        orders = next(ds for ds in back["datasets"] if ds["name"] == "orders")
+        total = next(f for f in orders["fields"] if f["name"] == "total")
+        assert total["label"] == "Total"
+        assert not any(key.startswith("obml_") for key in total.get("ai_context", {}))
 
 
 class TestValidationByVersion:

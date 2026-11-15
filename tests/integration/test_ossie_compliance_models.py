@@ -99,3 +99,34 @@ def test_scott_empty_input_set(scott: SemanticModel) -> None:
         "where": [{"field": "emp.deptno", "op": "=", "value": 40}],
     }
     assert _run(scott, "scott.sql", query) == [(0, None, None)]
+
+
+def test_a_quoted_source_column_runs() -> None:
+    # SUM(source."Order Total") reads a physical column no field computes; the
+    # field added for it is a column name OBML quotes once.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "quoted",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [{"name": "order_id", "expression": {"sql": "order_id"}}],
+                "metrics": [{"name": "gross", "expression": {"sql": 'SUM(source."Order Total")'}}],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    sql = (
+        CompilationPipeline()
+        .compile(QueryObject(select={"measures": ["gross"]}), model, "duckdb")
+        .sql
+    )
+    con = duckdb.connect()
+    con.execute(
+        'CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10), (2, 15)) t(order_id, "Order Total")'
+    )
+    assert con.execute(sql).fetchall() == [(25,)]

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -249,19 +250,21 @@ class _SourceColumns:
     def __init__(self, ds: dict[str, Any], warn: Callable[[str], None]) -> None:
         self._ds = ds
         self._warn = warn
-        self._names = {str(f.get("name")) for f in _list(ds.get("fields"))}
+        # Compared as references resolve: a bare name regardless of case, so
+        # ``source_amount`` beside ``SOURCE_AMOUNT`` made both ambiguous.
+        self._taken = {_identifier_key(str(f.get("name"))) for f in _list(ds.get("fields"))}
 
     def field_for(self, column: exp.Identifier, read: str | None, metric: str) -> str:
         wanted = _identifier_key(column.sql(dialect=read))
         for field in _list(self._ds.get("fields")):
             if _identifier_key(_field_sql(field)) == wanted:
                 return str(field.get("name"))
-        name = f"source_{column.name}"
-        number = 2
-        while name in self._names:
-            name = f"source_{column.name}_{number}"
+        stem = "source_" + re.sub(r"\W+", "_", column.name)
+        name, number = stem, 2
+        while _identifier_key(name) in self._taken:
+            name = f"{stem}_{number}"
             number += 1
-        self._names.add(name)
+        self._taken.add(_identifier_key(name))
         self._ds.setdefault("fields", []).append(
             {
                 "name": name,
