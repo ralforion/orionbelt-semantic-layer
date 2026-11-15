@@ -335,6 +335,19 @@ class TestQuotedFieldIdentifiers:
         again, _ = _convert(back)
         assert again["dataObjects"]["orders"]["columns"]["total"]["code"] == "new_total"
 
+    def test_an_edited_name_is_quoted_where_it_has_to_be(self) -> None:
+        doc = _shop()
+        doc["datasets"][0]["fields"].append(_field("total", '"Order Total"'))
+        for edited, written in (("New Total", '"New Total"'), ('My "x"', '"My ""x"""')):
+            obml, _ = _convert(doc)
+            obml["dataObjects"]["orders"]["columns"]["total"]["code"] = edited
+            back = conv.OBMLtoOSI(obml).convert()
+            orders = next(ds for ds in back["datasets"] if ds["name"] == "orders")
+            total = next(f for f in orders["fields"] if f["name"] == "total")
+            assert total["expression"]["dialects"][0]["expression"] == written
+            again, _ = _convert(back)
+            assert again["dataObjects"]["orders"]["columns"]["total"]["code"] == edited
+
     def test_import_stashes_stay_out_of_ai_context(self) -> None:
         doc = _shop()
         doc["datasets"][0]["fields"].append(_field("total", '"Order Total"', label="Total"))

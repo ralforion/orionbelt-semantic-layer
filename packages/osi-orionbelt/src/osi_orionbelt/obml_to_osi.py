@@ -36,6 +36,7 @@ from osi_orionbelt._portable import (
     PortableRenderer,
     case_collisions,
     decimal_filter_value,
+    needs_quoting,
     sql_ident,
 )
 
@@ -445,10 +446,14 @@ class OBMLtoOSI:
         code = col_obj.get("code", col_name.lower().replace(" ", "_"))
         # A field the import read as a quoted identifier keeps that SQL, since
         # ``code`` holds only the name, which is not SQL when it has a space. Only
-        # while it still names the column: an edited code is written as it is now.
+        # while it still names the column: an edited code is written as the name
+        # it is now, quoted where a bare name would not be SQL ("New Total").
         stashed = self._stashed_field_sql(col_obj)
-        if stashed is not None and physical_code(stashed) == code:
-            code = stashed
+        if stashed is not None:
+            if physical_code(stashed) == code:
+                code = stashed
+            elif needs_quoting(code):
+                code = sql_ident(code)
 
         dialects = [{"dialect": "ANSI_SQL", "expression": code}]
         # In Ossie's own language too where the code is inside it, as metrics
