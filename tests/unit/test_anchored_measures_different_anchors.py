@@ -73,6 +73,12 @@ measures:
     aggregation: sum
     anchor: Returns
     expression: '{[Returns].[Return Amount]} - {[Orders].[Order Amount]}'
+  Net Fixed:
+    resultType: int
+    aggregation: sum
+    filterContext: {mode: FIXED}
+    expression: '{[Orders].[Order Amount]} - {[Returns].[Return Amount]}'
+  Customer Rows: {columns: [{dataObject: Customers, column: Customer ID}], aggregation: count}
   Net Per Order Fixed:
     resultType: int
     aggregation: sum
@@ -186,16 +192,47 @@ def test_a_filter_on_a_fact_keeps_each_leg_on_its_anchor(model: SemanticModel) -
     assert sorted(_rows(model, query)) == [("EAST", 100, 100), ("WEST", 295, 295)]
 
 
-def _alone(model: SemanticModel, measure: str, where: list[dict[str, Any]]) -> Any:
-    return _rows(model, {"select": {"measures": [measure]}, "where": where})[0][0]
+def _by_region(model: SemanticModel, measures: list[str], where: list[dict[str, Any]]) -> Any:
+    query = {"select": {"dimensions": ["Region"], "measures": measures}, "where": where}
+    return {row[0]: list(row[1:]) for row in _rows(model, query)}
 
 
+@pytest.mark.parametrize(
+    "pair",
+    [
+        ("Net", "Net Per Order Fixed"),
+        ("Net Fixed", "Net Per Order"),
+        ("Net Fixed", "Net Per Order Fixed"),
+    ],
+    ids=lambda p: " + ".join(p),
+)
 @pytest.mark.parametrize("where", [[], NOT_200], ids=["unfiltered", "filtered"])
-def test_a_measure_computed_apart_leaves_the_other_anchor_its_leg(
-    model: SemanticModel, where: list[dict[str, Any]]
+def test_a_measure_computed_apart_leaves_each_anchor_its_grain(
+    model: SemanticModel, pair: tuple[str, str], where: list[dict[str, Any]]
 ) -> None:
-    # A filterContext measure is computed apart; the leg left standing is Net's,
-    # which the star fallback rooted at Orders, the base chosen for two anchors.
-    measures = ["Net", "Net Per Order Fixed"]
+    # A filterContext measure is computed apart. The leg left standing was
+    # handed to the star, rooted at the base chosen for two anchors, which
+    # also planned the measure computed apart against that base.
+    measures = list(pair)
     together = _rows(model, {"select": {"measures": measures}, "where": where})[0]
-    assert list(together) == [_alone(model, m, where) for m in measures]
+    alone = [_rows(model, {"select": {"measures": [m]}, "where": where})[0][0] for m in measures]
+    assert list(together) == alone
+    by_region = _by_region(model, measures, where)
+    assert by_region == {
+        region: [_by_region(model, [m], where)[region][0] for m in measures]
+        for region in ("EAST", "WEST")
+    }
+
+
+def test_a_plain_measure_beside_an_anchored_one_keeps_the_leg_on_its_anchor(
+    model: SemanticModel,
+) -> None:
+    # Customer Rows shares Net's customer leg but cannot apply the Orders filter
+    # Net applies in its conformed subquery; that kept the filter on the leg and
+    # rooted it at Orders. As with one anchor, the count runs without it.
+    query = {"select": {"measures": ["Net", "Net Per Order", "Customer Rows"]}, "where": NOT_200}
+    compiled = CompilationPipeline().compile(QueryObject(**query), model, "duckdb")
+    assert _rows(model, query) == [(395, 395, 3)]
+    assert "FILTER_NOT_APPLIED" in [w.code for w in compiled.warnings]
+    one_anchor = {"select": {"measures": ["Net", "Customer Rows"]}, "where": NOT_200}
+    assert _rows(model, one_anchor) == [(395, 3)]

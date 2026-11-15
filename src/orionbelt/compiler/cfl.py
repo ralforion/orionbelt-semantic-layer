@@ -188,17 +188,18 @@ class CFLPlanner:
         # the query compiled to SQL naming a column that does not exist.
         self._reject_unreachable_dimensions(measures_by_object, resolved, model)
 
-        # A leg kept for one anchor is rooted at that anchor. Where it is the
-        # only leg left (another anchor's measure is computed apart, under a
-        # filterContext) but resolution based the query elsewhere, the star
-        # would root it at that base and join its conformed facts on a table it
-        # never joined; the union plans the one leg at its own rows instead.
+        # The star plans the conformed joins of every anchored measure in the
+        # query against its base, a measure computed apart (filterContext)
+        # included, so it serves only when every anchor is that base. With two
+        # anchors, the one leg left is planned by the union at its own rows; the
+        # star joined the other anchor's conformed facts on a table it never had.
+        # With no leg left, every measure is computed apart and the main query
+        # is the one the filterContext wrapper drops, so the star stands in.
         anchors = set(resolved.anchored_measures.values())
-        off_base = [key for key in measures_by_object if key in anchors]
         if (
             len(measures_by_object) <= 1
             and not cross_fact
-            and all(key == resolved.base_object for key in off_base)
+            and (not measures_by_object or anchors <= {resolved.base_object})
         ):
             # Single fact — delegate to star schema. Resolution let this query
             # past the reachability check because it looked multi-fact, and a
@@ -683,7 +684,13 @@ class CFLPlanner:
             wide_reach = (
                 graph.descendants_without_unnest(wide_lead) | {wide_lead} if wide_lead else set()
             )
-            if wide_lead and obj_name in wide_reach:
+            # A leg kept for an anchor runs on that anchor's rows and is never
+            # widened: what it cannot reach from there (a filter on a fact one
+            # of its measures conforms, while a plain measure beside it cannot
+            # apply it) is skipped and named below, as on any leg. Widened, the
+            # leg was rooted at that fact and repeated the anchor's rows.
+            anchored_leg = obj_name in set(resolved.anchored_measures.values())
+            if wide_lead and obj_name in wide_reach and not anchored_leg:
                 reachable = wide_reach
 
             # SELECT conformed dimensions — only emit real column refs for
