@@ -32,8 +32,11 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 
+from osi_orionbelt._common import _OSI_PREVIOUS_VERSION, _OSI_VERSION
+
 _PKG_ROOT = Path(__file__).resolve().parent.parent
 _SCHEMA = _PKG_ROOT / "src" / "osi_orionbelt" / "schemas" / "osi-schema.json"
+_PREVIOUS_SCHEMA = _SCHEMA.with_name(f"osi-schema-{_OSI_PREVIOUS_VERSION}.json")
 _DRIFT_SCRIPT = _PKG_ROOT / "scripts" / "check_ossie_schema_drift.py"
 
 
@@ -83,11 +86,21 @@ class TestVendoredSchemaContract:
         assert "unique_keys" in props
 
     def test_version_const_pinned(self) -> None:
-        # The schema hard-pins the document version. When Ossie cuts a real
-        # 0.2.0 (dropping .dev0), this flips - and the converter's pinned version
-        # + fixtures will need updating, so it must be caught.
+        # The schema hard-pins the document version, and the export writes the
+        # converter's. When Ossie moves it, both have to move together.
         version = _load_schema().get("properties", {}).get("version", {}).get("const")
-        assert version == "0.2.0.dev0"
+        assert version == "0.3.0.dev0" == _OSI_VERSION
+
+    def test_previous_version_schema_is_kept(self) -> None:
+        # A document declaring 0.2.0.dev0 is validated against its own schema.
+        previous = json.loads(_PREVIOUS_SCHEMA.read_text())
+        assert previous["properties"]["version"]["const"] == _OSI_PREVIOUS_VERSION
+
+    def test_expression_sql_form_and_dataset_metrics(self) -> None:
+        # The two 0.3.0.dev0 shapes the import rewrites (``_ossie_v03``).
+        defs = _defs(_load_schema())
+        assert "sql" in defs["Expression"]["properties"]
+        assert "metrics" in defs["Dataset"]["properties"]
 
     def test_relationship_still_has_no_cardinality(self) -> None:
         # If upstream ever adds a cardinality field, cardinality inference from
@@ -100,7 +113,7 @@ class TestVendoredSchemaContract:
             "from_columns",
             "to_columns",
             "ai_context",
-            "custom_extensions",
+            "nonportable_extensions",
         }
 
 

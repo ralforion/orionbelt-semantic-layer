@@ -15,7 +15,18 @@ The converter ships as a standalone `osi-orionbelt` package. It is an **optional
 
 ## Spec version
 
-OBSL v2.6 emits **OSI v0.2.0.dev0** (the latest draft in the upstream `core-spec/` at release time). The vendored schema lives at `packages/osi-orionbelt/src/osi_orionbelt/schemas/osi-schema.json`; refresh it with `scripts/refresh-osi-schema.sh` when upstream advances.
+OBSL writes **Apache Ossie 0.3.0.dev0**, the version upstream `core-spec/` develops, and reads 0.3.0.dev0, 0.2.0.dev0 and 0.1.x documents. The vendored schema lives at `packages/osi-orionbelt/src/osi_orionbelt/schemas/osi-schema.json` (a copy of upstream `core-spec/ossie-schema.json`), beside `osi-schema-0.2.0.dev0.json`, which checks a document that declares 0.2.0.dev0. A weekly CI job compares the copy with upstream and opens an issue when they differ.
+
+What 0.3.0.dev0 changed, and how OBSL reads and writes it:
+
+| Ossie 0.3.0.dev0 | Import | Export |
+|---|---|---|
+| `expression: {sql: ...}`, the portable `OSSIE_SQL_2026` form, authoritative over an `OSSIE_SQL_2026` entry in `dialects` | Read as that form | `dialects` with `ANSI_SQL`, plus `OSSIE_SQL_2026` where the expression is in that language (fields too) |
+| Metrics declared on a dataset, naming its fields unqualified and its source columns as `source.column` | A measure like any other, its references qualified: `SUM(amount)` on `orders` is `SUM(orders.amount)`, `COUNT(*)` counts the dataset's primary key. A name another metric takes becomes `"orders total_revenue"`, with a warning. A `COUNT(*)` on a dataset without a single-column primary key is not imported; query the data object's own count, `"orders Count"` | Model-level metrics |
+| `AGG(dataset.metric)` in a model-level metric | Reads the measure the dataset metric became | Not written |
+| `nonportable_extensions`, data a JSON object (was `custom_extensions`, data a JSON string) | Read; `custom_extensions` still read | Written; data that is not a JSON object is wrapped as `{"value": ...}` with a warning |
+
+A relationship from a dataset to itself (an employee's manager) has no OBML join, since OBML refuses a join cycle. It is left out with a `LOSSY` warning and written back on export. To query it, add a second data object over the same table and join to that.
 
 **Breaking change vs. OBSL v2.5** — the previous release emitted OSI v0.1.1. Downstream consumers pinning to v0.1 will reject v2.6 output. The converter still **reads** v0.1.x inputs via the legacy shim `_normalize_legacy_v01()`, which promotes pre-v0.2 `custom_extensions` payloads (`obml_primary_key`, `obml_unique_keys`) into the v0.2 first-class fields before parsing.
 
@@ -34,7 +45,7 @@ What's new in v0.2 that OBSL now round-trips:
 # Convert OSI -> OBML
 curl -X POST http://127.0.0.1:8000/v1/convert/osi-to-obml \
   -H "Content-Type: application/json" \
-  -d '{"input_yaml": "version: \"0.2.0.dev0\"\nname: my_model\ndatasets:\n  ..."}' | jq
+  -d '{"input_yaml": "version: \"0.3.0.dev0\"\nname: my_model\ndatasets:\n  ..."}' | jq
 
 # Convert OBML -> OSI
 curl -X POST http://127.0.0.1:8000/v1/convert/obml-to-osi \
