@@ -8,6 +8,8 @@ A DuckDB [data source](data-sources.md) can read files and Iceberg tables where
 they are: Parquet, CSV and JSON files on disk or in object storage, and Apache
 Iceberg tables behind a REST catalog. No warehouse is needed. The DuckDB inside
 the OrionBelt process runs the queries, so the model's dialect is `duckdb`.
+When one source's load needs more than one process, its queries can run on
+[DuckDB workers](duckdb-workers.md) instead.
 
 | What you read | How a data object names it | Setup statements | `DUCKDB_ALLOWED_PATHS` |
 |---|---|---|---|

@@ -7,7 +7,7 @@ lake for development, or with DuckDB workers beside it.
 |---|---|---|
 | OBSL alone | `COMPOSE_FILE=compose.yml` | OBSL, for every database it supports. DuckDB runs in process, files and Iceberg tables included, and so does federation |
 | A local lake | add `COMPOSE_PROFILES=lake` | Also an S3 endpoint ([Versity S3 Gateway](https://github.com/versity/versitygw)) and the Apache Iceberg project's REST catalog, for development and tests. Works with or without the workers |
-| DuckDB workers | `COMPOSE_FILE=compose.yml:compose.pool.yml` | Also two [Hardcharger](https://github.com/gizmodata/hardcharger) workers, DuckDB servers that stream Arrow results. See [DuckDB workers](#duckdb-workers) for what OBSL does with them today |
+| DuckDB workers | `COMPOSE_FILE=compose.yml:compose.pool.yml` | Also two [Hardcharger](https://github.com/gizmodata/hardcharger) workers, DuckDB servers that stream Arrow results, which run the queries of the DuckDB sources set to them |
 
 Most deployments need OBSL alone. The workers are for lake sources whose load
 needs more than one DuckDB process.
@@ -77,9 +77,13 @@ For your own S3 and catalog, uncomment the same blocks and change the values.
 `compose.pool.yml` adds the workers `hardcharger-1` and `hardcharger-2`. To add
 one, copy a service and give it the next name.
 
-**Status:** the workers start and serve each OBSL source's user, but OBSL does
-not send queries to them yet. That arrives with OBSL's pool backend; until then
-OBSL runs every source in process, as without the workers.
+OBSL sends a DuckDB source's queries to the workers when the source says so:
+uncomment the block after "With the workers" in `obsl.env`, instead of the
+lake block above it. With `compose.pool.yml`, OBSL is built with the workers'
+driver (its `hardcharger` extra), as the image `orionbelt-semantic-layer-api:compose-workers`.
+How the queries run, and every setting of the source, is in the guide
+[DuckDB Workers](https://ralforion.com/orionbelt-semantic-layer/guide/duckdb-workers/).
+Every other source runs in OBSL, as without the workers.
 
 - **Reached by name.** The workers publish no ports. On the project network
   they are `hardcharger://hardcharger-1?tls=false`, and so on.
@@ -123,9 +127,10 @@ HARDCHARGER_TLS_CERT=/tls/cert.pem
 HARDCHARGER_TLS_KEY=/tls/key.pem
 ```
 
-The driver then reaches it as `hardcharger://node2:31337` (TLS unless
-`?tls=false`), with `tls_root_certs` naming a private CA. Client certificates
-(`HARDCHARGER_MTLS_CA_CERT`) can restrict it to OBSL. The worker needs the same
+List it in the source's `DB_<NAME>_HARDCHARGER_WORKERS` as
+`hardcharger://node2:31337` (TLS unless `?tls=false`), and name a private CA in
+`DB_<NAME>_HARDCHARGER_TLS_ROOT_CERTS`. Client certificates
+(`HARDCHARGER_MTLS_CA_CERT`) can restrict the worker to OBSL. It needs the same
 init SQL, and the files under the same paths.
 
 ## Test
@@ -135,5 +140,6 @@ init SQL, and the files under the same paths.
 ./tests/docker/test_compose.sh --no-build # uses the image built before
 ```
 
-It runs the three setups as the Compose project `obsl-compose-test` on ports
-18080 and 18815, and reads no `.env` of this directory.
+It runs the setups as the Compose project `obsl-compose-test` on ports 18080
+and 18815, OBSL's queries on the workers included, and reads no `.env` of this
+directory.
