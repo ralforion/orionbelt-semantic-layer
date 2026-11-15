@@ -886,13 +886,13 @@ Stateless endpoints for converting between [OSI (Open Semantic Interchange)](htt
 
 ### `POST /v1/convert/osi-to-obml`
 
-Convert an OSI YAML model to OBML format. OBSL emits and validates against [OSI v0.2.0.dev0](https://github.com/apache/ossie/blob/main/core-spec/osi-schema.json); v0.1.x inputs still load via a legacy reader shim.
+Convert an OSI YAML model to OBML format. OBSL reads [Apache Ossie 0.3.0.dev0](https://github.com/apache/ossie/blob/main/core-spec/ossie-schema.json) and 0.2.0.dev0 documents; v0.1.x inputs still load via a legacy reader shim.
 
 **Request:**
 
 ```json
 {
- "input_yaml": "version: \"0.2.0.dev0\"\nname: my_model\ndatasets:\n ..."
+ "input_yaml": "version: \"0.3.0.dev0\"\nname: my_model\ndatasets:\n ..."
 }
 ```
 
@@ -921,7 +921,7 @@ Convert an OSI YAML model to OBML format. OBSL emits and validates against [OSI 
 }
 ```
 
-the new `input_validation` field carries the result of running the **OSI input** against the vendored OSI v0.2 schema (Draft 2020-12). Advisory by default: the endpoint still returns 200 with the converted output when input fails strict v0.2 validation, because the legacy reader shim still produces correct OBML for v0.1.x documents. Inspect `input_validation.schema_errors` if you need a hard gate on the source format.
+the new `input_validation` field carries the result of running the **OSI input** against the vendored schema of the version it declares (0.2.0.dev0, or else 0.3.0.dev0; Draft 2020-12). Advisory by default: the endpoint still returns 200 with the converted output when input fails strict validation, because the legacy reader shim still produces correct OBML for v0.1.x documents. Inspect `input_validation.schema_errors` if you need a hard gate on the source format.
 
 The `validation` field (unchanged from v2.5) reports the OBML **output**.
 
@@ -931,7 +931,7 @@ The `validation` field (unchanged from v2.5) reports the OBML **output**.
 
 ### `POST /v1/convert/obml-to-osi`
 
-Convert an OBML YAML model to OSI format. OBSL emits OSI v0.2.0.dev0 (`version: "0.2.0.dev0"` at the top level, `primary_key` / `unique_keys` first-class, informational `dialects` / `vendors` arrays).
+Convert an OBML YAML model to OSI format. OBSL emits Apache Ossie 0.3.0.dev0 (`version: "0.3.0.dev0"` at the top level, `primary_key` / `unique_keys` first-class, dialects per expression, vendor state in `nonportable_extensions`).
 
 **Request:**
 

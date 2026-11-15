@@ -40,12 +40,12 @@ def schema_validator() -> Any:
 
 
 def _collect_vendor_names(osi: dict[str, Any]) -> set[str]:
-    """Every ``custom_extensions[].vendor_name`` anywhere in an OSI document."""
+    """Every ``nonportable_extensions[].vendor_name`` anywhere in an OSI document."""
     found: set[str] = set()
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
-            for ext in node.get("custom_extensions", []) or []:
+            for ext in node.get("nonportable_extensions", []) or []:
                 if isinstance(ext, dict) and ext.get("vendor_name"):
                     found.add(ext["vendor_name"])
             for v in node.values():
@@ -146,10 +146,9 @@ _OSI_V01_INPUT: dict[str, Any] = {
 
 
 class TestEmittedVersion:
-    def test_top_level_version_is_v02(self) -> None:
+    def test_top_level_version_is_current(self) -> None:
         osi = conv.OBMLtoOSI(_OBML_WITH_PK_AND_LABEL).convert()
-        assert osi["version"] == conv._OSI_VERSION
-        assert osi["version"].startswith("0.2")
+        assert osi["version"] == conv._OSI_VERSION == "0.3.0.dev0"
 
     def test_no_root_dialects_or_vendors(self) -> None:
         # The root is the one model, additionalProperties:false: no root-level
@@ -165,7 +164,7 @@ class TestEmittedVersion:
             "datasets",
             "relationships",
             "metrics",
-            "custom_extensions",
+            "nonportable_extensions",
         }
 
     def test_dialect_tagged_per_expression(self) -> None:

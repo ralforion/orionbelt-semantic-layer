@@ -144,9 +144,9 @@ class TestOBMLtoOSIPoP:
 
     @staticmethod
     def _unexported(osi: dict) -> dict:
-        for ext in osi["custom_extensions"]:
+        for ext in osi["nonportable_extensions"]:
             if ext["vendor_name"] == "ORIONBELT":
-                return json.loads(ext["data"]).get("obml_unexported", {})
+                return ext["data"].get("obml_unexported", {})
         return {}
 
     def test_pop_metrics_are_not_ossie_metrics(self) -> None:

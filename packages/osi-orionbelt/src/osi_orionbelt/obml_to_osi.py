@@ -19,6 +19,7 @@ from osi_orionbelt._common import (
     OBML_ABSTRACT_TO_OSI_DATATYPE,
     OBML_TO_OSI_TYPE,
     obml_datatype_to_osi,
+    physical_code,
 )
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
@@ -29,6 +30,7 @@ from osi_orionbelt._field_names import (
     rename_metric,
 )
 from osi_orionbelt._ossie_sql import ossie_sql, subset_violations
+from osi_orionbelt._ossie_v03 import to_v03
 from osi_orionbelt._portable import (
     NotPortableError,
     PortableRenderer,
@@ -118,6 +120,10 @@ class OBMLtoOSI:
         # This closes the OSI -> OBML -> OSI roundtrip for non-SQL or
         # non-decomposable metrics.
         self._merge_restored_metrics(osi_metrics)
+        # Relationships OBML cannot join (a dataset joined to itself), kept by
+        # the import verbatim.
+        all_relationships.extend(self._restored_entries("obml_unconverted_relationships"))
+        self._restore_dataset_metrics(datasets)
 
         # ── Build semantic model ────────────────────────────────────
         sem_model: dict[str, Any] = {"name": self.model_name}
@@ -193,9 +199,9 @@ class OBMLtoOSI:
         # The root is additionalProperties:false, so there are no root-level
         # ``dialects`` / ``vendors`` arrays: dialects live per expression in
         # ``expression.dialects[]`` and vendors per entity in
-        # ``custom_extensions[].vendor_name``.
+        # ``nonportable_extensions[].vendor_name``.
         osi.update(sem_model)
-        return osi
+        return to_v03(osi, self.warnings.append)
 
     def _emit_foreign_extensions(self, obml_exts: list[dict] | None, osi_exts: list[dict]) -> None:
         """Re-emit third-party OBML customExtensions as OSI custom_extensions.
@@ -413,6 +419,20 @@ class OBMLtoOSI:
             f"FROM {parent_source} AS {sql_ident(parent)}, UNNEST({path}) AS {alias}"
         )
 
+    @staticmethod
+    def _stashed_field_sql(col_obj: dict) -> str | None:
+        """The field SQL the import kept for this column (``obml_field_sql``), if any."""
+        for ext in col_obj.get("customExtensions", []) or []:
+            if ext.get("vendor") not in _OSI_VENDOR_READ:
+                continue
+            try:
+                data = json.loads(ext.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(data, dict) and isinstance(data.get("obml_field_sql"), str):
+                return str(data["obml_field_sql"])
+        return None
+
     def _convert_column(
         self, col_name: str, col_obj: dict, do_name: str, obml_dimensions: dict
     ) -> dict:
@@ -423,18 +443,21 @@ class OBMLtoOSI:
         OSI import), which must never become the field name.
         """
         code = col_obj.get("code", col_name.lower().replace(" ", "_"))
+        # A field the import read as a quoted identifier keeps that SQL, since
+        # ``code`` holds only the name, which is not SQL when it has a space. Only
+        # while it still names the column: an edited code is the name it is now,
+        # quoted as the import read it. Bare, ``NetTotal`` would fold to nettotal
+        # on PostgreSQL and NETTOTAL on Snowflake, and ``New Total`` is not SQL.
+        stashed = self._stashed_field_sql(col_obj)
+        if stashed is not None:
+            code = stashed if physical_code(stashed) == code else sql_ident(code)
 
-        field: dict[str, Any] = {
-            "name": col_name,
-            "expression": {
-                "dialects": [
-                    {
-                        "dialect": "ANSI_SQL",
-                        "expression": code,
-                    }
-                ]
-            },
-        }
+        dialects = [{"dialect": "ANSI_SQL", "expression": code}]
+        # In Ossie's own language too where the code is inside it, as metrics
+        # are: a field imported from ``OSSIE_SQL_2026`` kept only ``ANSI_SQL``.
+        if not subset_violations(code):
+            dialects.append({"dialect": "OSSIE_SQL_2026", "expression": code})
+        field: dict[str, Any] = {"name": col_name, "expression": {"dialects": dialects}}
 
         # Check if this column is used as a dimension
         is_dimension = False
@@ -478,16 +501,18 @@ class OBMLtoOSI:
                 field["label"] = ext_label_data["obml_field_label"]
                 break
 
-        # Restore ai_context from customExtensions (OSI vendor) if present
+        # Restore ai_context from customExtensions (OSI vendor) if present. The
+        # import's own ``obml_*`` stashes ride in the same vendor and are not
+        # context: ``obml_field_label`` used to land in ``ai_context``.
         ai_ctx: dict[str, Any] = {}
         for ext in col_obj.get("customExtensions", []):
             if ext.get("vendor") == "OSI":
                 try:
                     ai_data = json.loads(ext.get("data", "{}"))
-                    if ai_data:
-                        ai_ctx.update(ai_data)
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    continue
+                if isinstance(ai_data, dict):
+                    ai_ctx.update({k: v for k, v in ai_data.items() if not k.startswith("obml_")})
 
         # Merge native OBML column synonyms into ai_context
         obml_col_synonyms = col_obj.get("synonyms", [])
@@ -666,6 +691,42 @@ class OBMLtoOSI:
             }
 
         return rel
+
+    def _restore_dataset_metrics(self, datasets: list[dict]) -> None:
+        """Write the dataset-scoped metrics the import kept back onto their datasets.
+
+        A ``COUNT(*)`` on a dataset without a single-column primary key counts
+        that dataset's rows; written at model level it would count nothing in
+        particular.
+        """
+        by_name = {ds.get("name"): ds for ds in datasets}
+        for entry in self._restored_entries("obml_unconverted_dataset_metrics"):
+            metric = entry.get("metric")
+            dataset = by_name.get(entry.get("dataset"))
+            if not isinstance(metric, dict):
+                continue
+            if dataset is None:
+                self.warnings.append(
+                    f"Dataset-scoped metric '{metric.get('name')}' was kept for dataset "
+                    f"'{entry.get('dataset')}', which the model no longer has; left out."
+                )
+                continue
+            dataset.setdefault("metrics", []).append(metric)
+
+    def _restored_entries(self, key: str) -> list[dict]:
+        """Entries the import kept verbatim under *key* in its OSI-vendor stash."""
+        restored: list[dict] = []
+        for ext in self.obml.get("customExtensions", []) or []:
+            if ext.get("vendor") not in _OSI_VENDOR_READ:
+                continue
+            try:
+                data = json.loads(ext.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            entries = data.get(key) if isinstance(data, dict) else None
+            if isinstance(entries, list):
+                restored.extend(e for e in entries if isinstance(e, dict))
+        return restored
 
     def _restore_unconverted_metrics(self) -> list[dict]:
         """Recover OSI metrics preserved verbatim during OSI -> OBML import.

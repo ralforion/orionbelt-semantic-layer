@@ -12,6 +12,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from osi_orionbelt._common import _OSI_PREVIOUS_VERSION
+
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _SCHEMAS_DIR = _SCRIPT_DIR / "schemas"
 
@@ -48,6 +50,18 @@ def _osi_schema_path(filename: str) -> Path:
 
 
 _OSI_SCHEMA_PATH = _osi_schema_path("osi-schema.json")
+# A document declaring the previous in-development version is checked against
+# that version's schema, which the current one (a pinned version const, renamed
+# extensions) would reject wholesale.
+_OSI_PREVIOUS_SCHEMA_PATH = _SCHEMAS_DIR / f"osi-schema-{_OSI_PREVIOUS_VERSION}.json"
+
+
+def _osi_schema_for(document: Any) -> Path:
+    """The vendored schema for the version *document* declares."""
+    version = document.get("version") if isinstance(document, dict) else None
+    if version == _OSI_PREVIOUS_VERSION and _OSI_PREVIOUS_SCHEMA_PATH.exists():
+        return _OSI_PREVIOUS_SCHEMA_PATH
+    return _OSI_SCHEMA_PATH
 
 
 class ValidationResult:
@@ -207,8 +221,10 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
 
     Runs three layers of validation (mirroring OSI's own ``validate.py``):
     1. **JSON Schema** — structural correctness against ``osi-schema.json``
-       (Draft 2020-12)
-    2. **Unique names** — datasets, fields, metrics, relationships
+       (Draft 2020-12), or the ``0.2.0.dev0`` schema for a document declaring
+       that version
+    2. **Unique names** — datasets, fields, metrics (per model and per
+       dataset), relationships
     3. **References** — relationship from/to reference existing datasets
 
     Without ``jsonschema`` or the schema file the schema layer is skipped with
@@ -219,7 +235,9 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
     result = ValidationResult("OSI")
 
     # 1. JSON Schema validation (OSI uses Draft 2020-12)
-    _validate_json_schema(osi_dict, schema_path or _OSI_SCHEMA_PATH, result, draft="draft2020")
+    _validate_json_schema(
+        osi_dict, schema_path or _osi_schema_for(osi_dict), result, draft="draft2020"
+    )
 
     if not isinstance(osi_dict, dict):
         result.semantic_errors.append("[INVALID_DOCUMENT] An OSI document must be an object")
@@ -268,6 +286,11 @@ def validate_osi(osi_dict: dict[str, Any], schema_path: Path | None = None) -> V
             for fname in _duplicates(_ident(field) for field in fields):
                 result.semantic_errors.append(
                     f"[DUPLICATE_FIELD] Duplicate field name '{fname}' in dataset '{ds_name}'"
+                )
+            scoped = _as_dict_list(ds.get("metrics", []))
+            for mname in _duplicates(_ident(m) for m in scoped):
+                result.semantic_errors.append(
+                    f"[DUPLICATE_METRIC] Duplicate metric name '{mname}' in dataset '{ds_name}'"
                 )
 
         # Unique metric names
