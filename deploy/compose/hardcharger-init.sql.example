@@ -1,0 +1,20 @@
+-- What every DuckDB worker runs when it starts. Copy to secrets/hardcharger-init.sql
+-- and fill in. It holds credentials: secrets/ is not committed.
+-- The values below match compose.lake.yml.
+
+INSTALL httpfs; INSTALL avro; INSTALL iceberg;
+LOAD httpfs; LOAD iceberg;
+
+-- Object storage
+CREATE OR REPLACE SECRET lake_s3 (TYPE s3, KEY_ID 'lake-key', SECRET 'lake-secret', REGION 'us-east-1', ENDPOINT 'lake-s3:9000', URL_STYLE 'path', USE_SSL false);
+
+-- The Iceberg REST catalog
+ATTACH IF NOT EXISTS 'warehouse' AS lake (TYPE iceberg, ENDPOINT 'http://lake-rest:8181', AUTHORIZATION_TYPE 'none', ACCESS_DELEGATION_MODE 'none');
+
+-- One user per OBSL source, allowed to read what that source reads and nothing else.
+CREATE ROLE IF NOT EXISTS lake_reader;
+GRANT READ FILESYSTEM ON LOCATION '/data/' TO lake_reader;
+GRANT READ OBJECT STORAGE ON LOCATION 's3://warehouse/' TO lake_reader;
+GRANT SELECT ON CATALOG lake TO lake_reader;
+CREATE USER IF NOT EXISTS obsl_lake WITH PASSWORD 'change-me';
+GRANT lake_reader TO obsl_lake;

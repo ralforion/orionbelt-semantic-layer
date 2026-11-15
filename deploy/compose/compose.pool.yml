@@ -1,0 +1,55 @@
+# DuckDB workers for OBSL's lake sources: Hardcharger, one named service per worker.
+# The workers publish no ports; OBSL reaches them by name on the project network.
+# Add a worker by copying a service and giving it the next name.
+x-hardcharger: &hardcharger
+  image: ${HARDCHARGER_IMAGE:-ghcr.io/gizmodata/hardcharger:2.12.1@sha256:bc189d35619f6dcf21f9bbd6b089e3039e5270a9a324184acdd5bcde8dfba086}
+  restart: unless-stopped
+  init: true
+  environment:
+    HARDCHARGER_HOST: 0.0.0.0
+    HARDCHARGER_PORT: '31337'
+    HARDCHARGER_HEALTH_PORT: '31338'
+    HARDCHARGER_ADMIN_PASSWORD: ${HARDCHARGER_ADMIN_PASSWORD:?Set HARDCHARGER_ADMIN_PASSWORD in .env}
+    HARDCHARGER_SECRET_KEY: ${HARDCHARGER_SECRET_KEY:?Set HARDCHARGER_SECRET_KEY in .env}
+    # Extensions, storage and catalog secrets, ATTACH, and one user per OBSL source.
+    HARDCHARGER_INIT_SQL_COMMANDS_FILE: /run/secrets/hardcharger_init_sql
+    # Each worker keeps its own users and grants, created by the same init SQL.
+    HARDCHARGER_RBAC_STORE_URI: duckdb:/var/lib/hardcharger/rbac.duckdb
+    HARDCHARGER_MEMORY_LIMIT: ${HC_DUCKDB_MEMORY:-3GB}        # below the container's limit
+    HARDCHARGER_MAX_CONCURRENT_STATEMENTS: ${HC_CONCURRENCY:-4}
+    HARDCHARGER_MAX_QUEUED_STATEMENTS: ${HC_QUEUE:-8}
+    HARDCHARGER_QUERY_TIMEOUT_SECONDS: ${HC_QUERY_TIMEOUT:-120}
+    HARDCHARGER_ENABLE_METRICS: 'true'                        # /metrics on 9091
+  secrets: [hardcharger_init_sql]
+  volumes:
+    - ${OBSL_DATA:-./data}:/data:ro          # the same path as in OBSL: grants and models name it
+  expose: ['31337', '31338', '9091']
+  networks: [obsl]
+  depends_on:
+    # A worker whose init SQL cannot attach the catalog exits, so with the local lake
+    # (COMPOSE_PROFILES=lake) the workers wait for its catalog; without it this is ignored.
+    lake-rest: {condition: service_healthy, required: false}
+  healthcheck:
+    # The image has no curl or wget. A draining worker reports "not_serving" and fails the check.
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/31338 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && [[ $$(cat <&3) == *'\"status\":\"serving\"'* ]]"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 30s
+  deploy:
+    resources:
+      limits:
+        cpus: '${HC_CPUS:-2}'
+        memory: ${HC_MEMORY:-4g}
+
+services:
+  obsl:
+    depends_on: [hardcharger-1, hardcharger-2]     # start order only
+  hardcharger-1:
+    <<: *hardcharger
+  hardcharger-2:
+    <<: *hardcharger
+
+secrets:
+  hardcharger_init_sql:
+    file: ${HARDCHARGER_INIT_SQL:-./secrets/hardcharger-init.sql}   # holds credentials: never commit it
