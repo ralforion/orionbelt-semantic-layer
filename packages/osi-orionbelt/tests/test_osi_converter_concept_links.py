@@ -11,7 +11,6 @@ with that prefix, or the OBML parser would reject it as
 from __future__ import annotations
 
 import copy
-import json
 from typing import Any
 
 import osi_orionbelt.converter as conv
@@ -178,21 +177,21 @@ class TestRoundTrip:
     def test_links_ride_in_the_obsl_vendor_extension(self) -> None:
         osi = conv.OBMLtoOSI(copy.deepcopy(_OBML)).convert()
         metric = next(m for m in osi["metrics"] if m["name"] == "Revenue")
-        obsl_exts = [e for e in metric["custom_extensions"] if e["vendor_name"] == "ORIONBELT"]
+        obsl_exts = [e for e in metric["nonportable_extensions"] if e["vendor_name"] == "ORIONBELT"]
         assert len(obsl_exts) == 1, "links merge into the single ORIONBELT payload"
         assert (
-            json.loads(obsl_exts[0]["data"])["obml_external_concept_mappings"]
+            obsl_exts[0]["data"]["obml_external_concept_mappings"]
             == _OBML["measures"]["Revenue"]["externalConceptMappings"]
         )
 
     def test_foreign_garbage_under_the_key_is_ignored(self) -> None:
         osi = conv.OBMLtoOSI(copy.deepcopy(_OBML)).convert()
         model = osi
-        ext = next(e for e in model["custom_extensions"] if e["vendor_name"] == "ORIONBELT")
-        data = json.loads(ext["data"])
+        ext = next(e for e in model["nonportable_extensions"] if e["vendor_name"] == "ORIONBELT")
+        data = dict(ext["data"])
         data["obml_external_concept_mappings"] = "not a list"
         data["obml_ontology"] = ["not a mapping"]
-        ext["data"] = json.dumps(data)
+        ext["data"] = data
         back = conv.OSItoOBML(osi).convert()
         assert "externalConceptMappings" not in back
         assert "ontology" not in back

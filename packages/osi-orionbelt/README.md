@@ -106,14 +106,19 @@ OBML, but are not interpreted by other OSI consumers:
 - **OSI metrics with no OBML representation** - a metric whose only expression is
   in a non-SQL dialect (`MDX`, `TABLEAU`, `MAQL`), or whose SQL expression cannot
   be decomposed into OBML measures/metrics, is **not** dropped: the original OSI
-  metric is preserved verbatim in a model-level `OSI`-vendor `custom_extension`
+  metric is preserved verbatim in a model-level `OSI`-vendor extension
   (`obml_unconverted_metrics`) and re-emitted on OBML to OSI, so the OSI to OBML
   to OSI roundtrip stays lossless. A `LOSSY:` warning is raised for each such
   metric because it is **not queryable through OBML**. SQL expressions in the
   `ANSI_SQL`, `OSSIE_SQL_2026`, `SNOWFLAKE`, and `DATABRICKS` dialects are all read on import.
 
-OSI v0.1.x inputs are accepted on read via a legacy normalization shim; output
-targets OSI **v0.2.0.dev0**.
+Apache Ossie **0.3.0.dev0** is written, and 0.3.0.dev0, 0.2.0.dev0 and (via a
+legacy normalization shim) 0.1.x documents are read. On import, a 0.3.0.dev0
+`expression.sql` is the `OSSIE_SQL_2026` form, metrics declared on a dataset
+become measures with qualified references, `AGG(dataset.metric)` reads the
+measure that metric became, and `nonportable_extensions` are read like
+`custom_extensions`. A relationship from a dataset to itself has no OBML join;
+it is preserved verbatim (with a `LOSSY:` warning) and written back on export.
 
 See [`osi_obml_mapping_analysis.md`](./osi_obml_mapping_analysis.md) for the
 full OBML <-> OSI core-spec mapping.

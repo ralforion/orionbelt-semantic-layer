@@ -41,10 +41,13 @@ from orionbelt.ast.builder import QueryBuilder
 from orionbelt.ast.nodes import (
     AliasedExpr,
     BinaryOp,
+    CaseExpr,
     ColumnRef,
     Expr,
     FunctionCall,
+    IsNull,
     JoinType,
+    Literal,
     Select,
 )
 from orionbelt.compiler.expr_rewrite import (
@@ -62,7 +65,8 @@ from orionbelt.compiler.resolution import (
     make_column_expr,
     split_conformed_filters,
 )
-from orionbelt.models.semantic import DataObject, SemanticModel
+from orionbelt.models.expressions import find_qualified_refs
+from orionbelt.models.semantic import DataObject, Measure, SemanticModel
 
 _CONFORM_ALIAS = "__ob_conf_"
 _KEY_ALIAS = "__ob_ak"
@@ -330,6 +334,7 @@ def plan_conformed_facts(
         if constrained:
             raise AnchoredFilterNotSupportedError(resolved_measure.name, constrained)
         expression = resolved_measure.expression
+        measure_facts: list[ConformedFact] = []
         for foreign in sorted(foreign_objects):
             fact = _conform_one(
                 model,
@@ -352,10 +357,81 @@ def plan_conformed_facts(
                 graph,
             )
             conformed.append(fact)
+            measure_facts.append(fact)
             expression = _point_at_conformed(expression, fact)
-        rewritten[resolved_measure.name] = expression
+        # From the value alone: a measure filter is rendered into the same
+        # aggregate (CASE WHEN <filter> THEN value END), and a filter column on
+        # the anchor does not make an anchor row with no fact rows a row of 0.
+        through_conformed = foreign_objects.union(*reach.values())
+        reads_anchor = bool(_value_objects(model, model_measure) - through_conformed)
+        rewritten[resolved_measure.name] = _missing_side_adds_nothing(
+            expression, measure_facts, reads_anchor=reads_anchor
+        )
 
     return conformed, rewritten
+
+
+def _value_objects(model: SemanticModel, measure: Measure) -> set[str]:
+    """Data objects the measure's value reads, its filters left out.
+
+    A computed column counts with what it reads: ``Orders.Adjusted`` defined as
+    ``{Amount} + {[Customers].[Credit]}`` reads the anchor although the measure
+    names only Orders, the same as writing the addition out in the measure.
+    """
+    refs = [(c.view, c.column) for c in measure.columns if c.view and c.column]
+    if measure.expression:
+        refs += find_qualified_refs(measure.expression)
+    found: set[str] = set()
+    for obj, column in refs:
+        found.add(obj)
+        found |= model.column_reference_objects(obj, column)
+    return found
+
+
+def _missing_side_adds_nothing(
+    expression: Expr, facts: list[ConformedFact], *, reads_anchor: bool
+) -> Expr:
+    """Read a conformed value as 0 where its fact has no rows for the anchor row.
+
+    A conformed value is the ``SUM`` of a foreign fact's rows for one key, and a
+    key with no rows sums to nothing. Left as SQL's NULL, it took the anchor
+    row's whole expression with it: ``SUM(orders.amount - returns.amount)`` per
+    customer dropped every customer with orders and no returns, and the total
+    stopped adding up (275 where the facts hold 650 and 35).
+
+    When the value reads only conformed facts, an anchor row with rows in none
+    of them stays NULL, so a group with no fact rows at all is NULL, as any
+    ``SUM`` over no rows is. A value that also reads the anchor's own side
+    (*reads_anchor*, decided from the value without its filters) has a row by
+    definition, and its missing sides are simply 0.
+
+    The fill is placed on each conformed value rather than around the
+    expression, because the expression already carries its aggregate:
+    ``SUM(COALESCE(v0, z) - COALESCE(v1, z))``, where ``z`` is 0, or NULL when
+    every conformed value of the row is.
+    """
+    conformed_refs = [
+        ColumnRef(name=value_alias, table=fact.alias)
+        for fact in facts
+        for _, value_alias in fact.value_aliases
+    ]
+    if not conformed_refs or (len(conformed_refs) == 1 and not reads_anchor):
+        # One conformed value alone: missing is "no rows at all", which stays NULL.
+        return expression
+
+    zero: Expr = Literal.number(0)
+    if not reads_anchor:
+        no_rows: Expr = IsNull(expr=conformed_refs[0])
+        for ref in conformed_refs[1:]:
+            no_rows = BinaryOp(left=no_rows, op="AND", right=IsNull(expr=ref))
+        zero = CaseExpr(when_clauses=[(no_rows, Literal.null())], else_clause=zero)
+
+    def fill(node: Expr) -> Expr | None:
+        if isinstance(node, ColumnRef) and node in conformed_refs:
+            return FunctionCall(name="COALESCE", args=[node, zero])
+        return None
+
+    return map_nodes(expression, fill)
 
 
 def _foreign_only_subexpressions(expression: Expr, foreign: str) -> list[Expr]:
@@ -401,8 +477,7 @@ def conformed_join_type() -> JoinType:
     """Conformed facts join LEFT so an anchor row survives a key with no match.
 
     An inner join would drop the anchor row entirely, silently shrinking the
-    population the aggregate runs over. LEFT keeps the row and lets the
-    expression see NULL, which is the dialect's own arithmetic and matches what
-    the same expression does on a single-fact plan.
+    population the aggregate runs over. LEFT keeps the row, and the expression
+    reads the missing fact's sum as 0 (``_missing_side_adds_nothing``).
     """
     return JoinType.LEFT

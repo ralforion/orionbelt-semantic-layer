@@ -15,7 +15,18 @@ The converter ships as a standalone `osi-orionbelt` package. It is an **optional
 
 ## Spec version
 
-OBSL v2.6 emits **OSI v0.2.0.dev0** (the latest draft in the upstream `core-spec/` at release time). The vendored schema lives at `packages/osi-orionbelt/src/osi_orionbelt/schemas/osi-schema.json`; refresh it with `scripts/refresh-osi-schema.sh` when upstream advances.
+OBSL writes **Apache Ossie 0.3.0.dev0**, the version upstream `core-spec/` develops, and reads 0.3.0.dev0, 0.2.0.dev0 and 0.1.x documents. The vendored schema lives at `packages/osi-orionbelt/src/osi_orionbelt/schemas/osi-schema.json` (a copy of upstream `core-spec/ossie-schema.json`), beside `osi-schema-0.2.0.dev0.json`, which checks a document that declares 0.2.0.dev0. A weekly CI job compares the copy with upstream and opens an issue when they differ.
+
+What 0.3.0.dev0 changed, and how OBSL reads and writes it:
+
+| Ossie 0.3.0.dev0 | Import | Export |
+|---|---|---|
+| `expression: {sql: ...}`, the portable `OSSIE_SQL_2026` form, authoritative over an `OSSIE_SQL_2026` entry in `dialects` | Read as that form | `dialects` with `ANSI_SQL`, plus `OSSIE_SQL_2026` where the expression is in that language (fields too) |
+| Metrics declared on a dataset, naming its fields unqualified and its source columns as `source.column` | A measure like any other, its references qualified: `SUM(amount)` on `orders` is `SUM(orders.amount)`, `COUNT(*)` counts the dataset's primary key. A name another metric takes becomes `"orders total_revenue"`, with a warning. A `COUNT(*)` on a dataset without a single-column primary key is not imported; query the data object's own count, `"orders Count"` | Model-level metrics |
+| `AGG(dataset.metric)` in a model-level metric | Reads the measure the dataset metric became | Not written |
+| `nonportable_extensions`, data a JSON object (was `custom_extensions`, data a JSON string) | Read; `custom_extensions` still read | Written; data that is not a JSON object is wrapped as `{"value": ...}` with a warning |
+
+A relationship from a dataset to itself (an employee's manager) has no OBML join, since OBML refuses a join cycle. It is left out with a `LOSSY` warning and written back on export. To query it, add a second data object over the same table and join to that.
 
 **Breaking change vs. OBSL v2.5** — the previous release emitted OSI v0.1.1. Downstream consumers pinning to v0.1 will reject v2.6 output. The converter still **reads** v0.1.x inputs via the legacy shim `_normalize_legacy_v01()`, which promotes pre-v0.2 `custom_extensions` payloads (`obml_primary_key`, `obml_unique_keys`) into the v0.2 first-class fields before parsing.
 
@@ -34,7 +45,7 @@ What's new in v0.2 that OBSL now round-trips:
 # Convert OSI -> OBML
 curl -X POST http://127.0.0.1:8000/v1/convert/osi-to-obml \
   -H "Content-Type: application/json" \
-  -d '{"input_yaml": "version: \"0.2.0.dev0\"\nname: my_model\ndatasets:\n  ..."}' | jq
+  -d '{"input_yaml": "version: \"0.3.0.dev0\"\nname: my_model\ndatasets:\n  ..."}' | jq
 
 # Convert OBML -> OSI
 curl -X POST http://127.0.0.1:8000/v1/convert/obml-to-osi \
@@ -72,6 +83,24 @@ An approximate percentile imports as the exact one it estimates, with an `APPROX
 A data object with `nestedIn` and no `code` has no table: its rows are the elements of an array column on its parent. Its dataset `source` is therefore the unnest as a query, which the Ossie schema allows, selecting each column's `code` from the element: `SELECT "Charge Labels"."Key" AS "Key", ... FROM WH.PUBLIC.charges AS "Charges", UNNEST("Charges"."Labels") AS "Charge Labels"`. A struct path is reached as composite field access (`("Charges"."Project")."Ancestors"`), and a nested parent's subquery also selects the field its children unnest from. It runs as written on Postgres; DuckDB, Snowflake, MySQL and engines that quote with backticks spell the unnest differently. The import restores `nestedIn` from the ORIONBELT extension rather than from this text.
 
 An Apache Ossie document holds one semantic model, its properties (`name`, `datasets`, `relationships`, `metrics`, ...) at the document root ([apache/ossie#383](https://github.com/apache/ossie/pull/383)). The export writes that shape. The import also reads the earlier `semantic_model` array, which osi-orionbelt wrote before 0.5.0, converting its first model with a warning; the input schema check reports the wrapper as an error, but the conversion still runs.
+
+## Querying an Ossie model
+
+Apache Ossie drafts two ways to query a model: SQL with `AGG()` (the [relational interface](https://github.com/apache/ossie/blob/main/core-spec/relational_semantics.md), "Layer 2") and a request naming metrics, dimensions and a filter (the [wide-table interface](https://github.com/apache/ossie/blob/main/core-spec/wide_table_semantics.md), "Layer 3"). OBSL implements neither yet. An imported Ossie model is queried like any OBML model, with dimensions, measures and `where`.
+
+Most answers agree with the Ossie compliance cases. Where Ossie refuses a query, or returns other rows, OBSL answers as follows:
+
+| Query | Ossie | OBSL | If you want Ossie's answer |
+|---|---|---|---|
+| A filter reading two datasets: `orders.amount > 100 AND customers.region = 'EAST'` | Refused, `E_CROSS_DATASET_FILTER` | Applies both conditions | Nothing to do. An OBML filter may read any data object the query reaches |
+| A metric grouped by a field its dataset cannot reach: customer count by order ID | Refused, `E_NO_PATH` | Counts each customer once per order, plus a row with an empty order ID for customers without orders. Warns `FAN_TRAP_RISK` | Group the metric by a field of its own dataset |
+| Metrics whose datasets do not all reach a dimension: revenue and ticket count by region, where tickets join nothing | Refused, `E_PARTIAL_DIMENSION_REACHABILITY` | Every ticket is counted in the row where region is empty; the other regions show 0. Warns `DIMENSION_NOT_APPLIED` | Query ticket count without region, or join tickets to customers in the model |
+| A filter one metric's dataset cannot reach: revenue and returns by region, where order amount > 100 | Refused, `E_UNSUPPORTED_FILTER_PATH` | Filters revenue; returns are not filtered. Warns `FILTER_NOT_APPLIED` | Query the two metrics separately |
+| One aggregate over two datasets: `SUM(orders.amount - returns.amount)` | Refused, `E_AMBIGUOUS_MEASURE_GRAIN` | Sums each dataset per customer, the data object both join to, and evaluates per customer. A customer with orders and no returns counts their orders. Warns `CONFORMED_GRAIN_ASSUMED` | Set `anchor:` on the measure to choose the grain |
+| Rows on the one side that no fact reaches: departments counted by employee job, and one department has no employees | Left out, unless the query sets `includeUnmatched` | Kept, in a row where job is empty | Filter that row out: `where: [{field: job, op: set}]` |
+| `ROLLUP` (`grouping: rollup` in OBML) | The grouped rows and the total rows | The same rows, plus one 0/1 column per dimension that marks the total rows | Leave out the flag columns |
+
+See [Cross-fact measure expressions](compilation.md#cross-fact-measure-expressions) for how a measure over two facts is evaluated.
 
 ## Gradio UI
 

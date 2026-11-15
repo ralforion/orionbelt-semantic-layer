@@ -6,7 +6,6 @@ via custom_extensions preservation.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -152,9 +151,9 @@ class TestOBMLtoOSICumulative:
 
     @staticmethod
     def _get_cumulative_ext(metric: dict) -> dict:
-        for ext in metric.get("custom_extensions", []):
+        for ext in metric.get("nonportable_extensions", []):
             if ext.get("vendor_name") == "ORIONBELT":
-                data = json.loads(ext["data"])
+                data = ext["data"]
                 if data.get("obml_metric_type") == "cumulative":
                     return data
         pytest.fail("No cumulative custom_extension found")

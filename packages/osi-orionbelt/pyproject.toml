@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "osi-orionbelt"
-version = "0.6.2"
+version = "0.7.0"
 description = "Bidirectional OBML <-> OSI (Open Semantic Interchange) converter for OrionBelt semantic models"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -40,7 +40,8 @@ osi-orionbelt = "osi_orionbelt.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/osi_orionbelt"]
 
-# All three schemas (the two OSI artefacts plus a vendored snapshot of the
+# All three schemas (the current Ossie core schema, the 0.2.0.dev0 one that
+# validates documents declaring that version, and a vendored snapshot of the
 # canonical OBML schema) live in src/osi_orionbelt/schemas/ as tracked files,
 # so the sdist and wheel are self-contained and build in isolation. The OBML
 # snapshot is kept in sync with the repo-root schema/obml-schema.json by a

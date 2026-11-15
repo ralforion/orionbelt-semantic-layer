@@ -6,7 +6,6 @@ roundtrip via custom_extensions preservation.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import osi_orionbelt.converter as conv
@@ -81,10 +80,10 @@ class TestOBMLtoOSIFilters:
         converter = conv.OBMLtoOSI(_OBML_WITH_FILTERS)
         osi = converter.convert()
         sem = osi
-        exts = sem.get("custom_extensions", [])
+        exts = sem.get("nonportable_extensions", [])
         assert len(exts) >= 1
         common = next(e for e in exts if e["vendor_name"] == "ORIONBELT")
-        data = json.loads(common["data"])
+        data = common["data"]
         assert "obml_filters" in data
         assert len(data["obml_filters"]) == 2
         assert data["obml_filters"][0]["operator"] == "equals"
@@ -95,8 +94,8 @@ class TestOBMLtoOSIFilters:
         converter = conv.OBMLtoOSI(obml)
         osi = converter.convert()
         sem = osi
-        common = next(e for e in sem["custom_extensions"] if e["vendor_name"] == "ORIONBELT")
-        data = json.loads(common["data"])
+        common = next(e for e in sem["nonportable_extensions"] if e["vendor_name"] == "ORIONBELT")
+        data = common["data"]
         assert "obml_filters" not in data
 
 

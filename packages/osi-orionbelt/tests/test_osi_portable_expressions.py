@@ -12,7 +12,6 @@ Other Ossie consumers read only the expression, not our extension, so:
 from __future__ import annotations
 
 import copy
-import json
 from typing import Any
 
 import pytest
@@ -570,8 +569,8 @@ class TestRoundTrip:
 
     def test_left_out_entities_ride_in_the_model_extension(self) -> None:
         osi, _ = _export()
-        ext = next(e for e in osi["custom_extensions"] if e["vendor_name"] == "ORIONBELT")
-        kept = json.loads(ext["data"])["obml_unexported"]
+        ext = next(e for e in osi["nonportable_extensions"] if e["vendor_name"] == "ORIONBELT")
+        kept = ext["data"]["obml_unexported"]
         assert set(kept["metrics"]) == {"Sales MoM", "Fixed Grain Share"}
         assert set(kept["measures"]) == {"Sales At Fixed Grain"}
 
@@ -684,7 +683,7 @@ class TestParserKeywordsStayQuoted:
         obml["metrics"] = {"Twice": {"expression": f"{{[Total {name}]}} * 2"}}
         osi, _ = _export(obml)
         for metric in osi["metrics"]:
-            metric["custom_extensions"] = []
+            metric["nonportable_extensions"] = []
         back = conv.OSItoOBML(osi).convert()
         columns = [c for m in back["measures"].values() for c in m.get("columns", [])]
         assert columns == [{"dataObject": "Orders", "column": name}]

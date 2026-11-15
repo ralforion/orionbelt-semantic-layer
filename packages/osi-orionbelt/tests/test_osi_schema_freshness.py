@@ -24,13 +24,19 @@ exercises the drift-diff logic without touching the network.
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
+import urllib.error
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
+from osi_orionbelt._common import _OSI_PREVIOUS_VERSION, _OSI_VERSION
+
 _PKG_ROOT = Path(__file__).resolve().parent.parent
 _SCHEMA = _PKG_ROOT / "src" / "osi_orionbelt" / "schemas" / "osi-schema.json"
+_PREVIOUS_SCHEMA = _SCHEMA.with_name(f"osi-schema-{_OSI_PREVIOUS_VERSION}.json")
 _DRIFT_SCRIPT = _PKG_ROOT / "scripts" / "check_ossie_schema_drift.py"
 
 
@@ -80,11 +86,21 @@ class TestVendoredSchemaContract:
         assert "unique_keys" in props
 
     def test_version_const_pinned(self) -> None:
-        # The schema hard-pins the document version. When Ossie cuts a real
-        # 0.2.0 (dropping .dev0), this flips - and the converter's pinned version
-        # + fixtures will need updating, so it must be caught.
+        # The schema hard-pins the document version, and the export writes the
+        # converter's. When Ossie moves it, both have to move together.
         version = _load_schema().get("properties", {}).get("version", {}).get("const")
-        assert version == "0.2.0.dev0"
+        assert version == "0.3.0.dev0" == _OSI_VERSION
+
+    def test_previous_version_schema_is_kept(self) -> None:
+        # A document declaring 0.2.0.dev0 is validated against its own schema.
+        previous = json.loads(_PREVIOUS_SCHEMA.read_text())
+        assert previous["properties"]["version"]["const"] == _OSI_PREVIOUS_VERSION
+
+    def test_expression_sql_form_and_dataset_metrics(self) -> None:
+        # The two 0.3.0.dev0 shapes the import rewrites (``_ossie_v03``).
+        defs = _defs(_load_schema())
+        assert "sql" in defs["Expression"]["properties"]
+        assert "metrics" in defs["Dataset"]["properties"]
 
     def test_relationship_still_has_no_cardinality(self) -> None:
         # If upstream ever adds a cardinality field, cardinality inference from
@@ -97,7 +113,7 @@ class TestVendoredSchemaContract:
             "from_columns",
             "to_columns",
             "ai_context",
-            "custom_extensions",
+            "nonportable_extensions",
         }
 
 
@@ -127,3 +143,78 @@ class TestDriftDiff:
         assert any("version` const changed" in line for line in lines)
         # Sanity: without the version change, identical schemas are in sync.
         assert mod.diff(base, base) == []
+
+
+class _Response:
+    """Stands in for the ``urlopen`` context manager; *body* may be an error ``read`` raises."""
+
+    def __init__(self, body: bytes | Exception) -> None:
+        self._body = body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+class TestDriftExitCodes:
+    """A broken check must fail the run; only a transient fetch failure may skip.
+
+    Upstream renamed ``osi-schema.json`` to ``ossie-schema.json``; the check got a
+    404, printed "skipping" and exited 0 for weeks, which read as "in sync".
+    """
+
+    def _run(self, monkeypatch: Any, outcome: Any, *, on_read: bool = False) -> int:
+        mod = _drift_module()
+
+        def fake_urlopen(url: str, timeout: int) -> _Response:
+            if isinstance(outcome, Exception) and not on_read:
+                raise outcome
+            return _Response(outcome)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(mod.sys, "argv", ["check_ossie_schema_drift.py"])
+        return int(mod.main())
+
+    def test_points_at_the_current_upstream_file(self) -> None:
+        assert _drift_module().UPSTREAM_URL.endswith("/core-spec/ossie-schema.json")
+
+    def test_in_sync_exits_zero(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, _SCHEMA.read_bytes()) == 0
+
+    def test_drift_exits_one(self, monkeypatch: Any) -> None:
+        mutated = _load_schema()
+        mutated["properties"]["version"]["const"] = "9.9.9"
+        assert self._run(monkeypatch, json.dumps(mutated).encode()) == 1
+
+    def test_missing_upstream_file_exits_two(self, monkeypatch: Any) -> None:
+        gone = urllib.error.HTTPError("u", 404, "Not Found", Message(), None)
+        assert self._run(monkeypatch, gone) == 2
+
+    def test_non_json_answer_exits_two(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, b"<html>moved</html>") == 2
+
+    def test_network_failure_skips(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, urllib.error.URLError("no route to host")) == 0
+
+    def test_server_error_skips(self, monkeypatch: Any) -> None:
+        busy = urllib.error.HTTPError("u", 503, "Unavailable", Message(), None)
+        assert self._run(monkeypatch, busy) == 0
+
+    def test_a_response_cut_short_skips(self, monkeypatch: Any) -> None:
+        # ``read`` raises IncompleteRead, an HTTPException rather than an
+        # OSError; escaping, it exited 1 and filed a drift issue with no report.
+        short = http.client.IncompleteRead(b"{", 4096)
+        assert self._run(monkeypatch, short, on_read=True) == 0
+
+    def test_json_that_is_not_an_object_exits_two(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, b"[]") == 2
+
+    def test_an_unexpected_error_exits_two_not_one(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, RuntimeError("boom")) == 2

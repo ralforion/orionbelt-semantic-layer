@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from osi_orionbelt._common import _OSI_VERSION
 from osi_orionbelt.cli import _report_validation
 from osi_orionbelt.validation import _OSI_SCHEMA_PATH, validate_osi
 
@@ -34,7 +35,7 @@ def schema_path(schema_mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 
 def _doc(**model: Any) -> dict[str, Any]:
-    return {"version": "0.2.0.dev0", "name": "m", **model}
+    return {"version": _OSI_VERSION, "name": "m", **model}
 
 
 _DATASET = {"name": "t", "source": "a.b.c"}
@@ -83,7 +84,7 @@ def test_non_object_document_is_an_error(schema_path: Path, document: Any) -> No
 
 
 def test_wrapper_is_reported_either_way(schema_path: Path, schema_mode: str) -> None:
-    document = {"version": "0.2.0.dev0", "semantic_model": [_doc(datasets=[_DATASET])]}
+    document = {"version": _OSI_VERSION, "semantic_model": [_doc(datasets=[_DATASET])]}
     result = validate_osi(document, schema_path=schema_path)
     if schema_mode == "available":
         assert any("semantic_model" in e for e in result.schema_errors)
