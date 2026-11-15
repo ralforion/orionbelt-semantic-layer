@@ -142,7 +142,7 @@ For the pools, read at each scrape, labelled by `source` and `worker` (the
 |---|---|---|
 | `obsl_duckdb_worker_up` | gauge | 1 while the worker takes queries, 0 while the pool keeps it out |
 | `obsl_duckdb_worker_connections` | gauge | Connections by `state`: `in_use` (held by a query), `idle`, `opening` (a connect given up on that has not come back) |
-| `obsl_duckdb_worker_statements_total` | counter | Statements the worker ran, those that failed or that the pool ended included. One it refused before running counts as a retry |
+| `obsl_duckdb_worker_statements_total` | counter | Statements the worker ran, a session's setup (`DUCKDB_CONNECTION_SQL`) as one, those that failed or that the pool ended included. One it refused before running counts as a retry |
 | `obsl_duckdb_worker_retries_total` | counter | Queries run again because the worker did not start them, by `reason`: `unreachable`, `connect_timeout`, `session_not_found`, `rate_limited`, `server_draining` |
 | `obsl_duckdb_worker_statements_ended_total` | counter | Statements the pool ended, by `reason`: `deadline` or `unresponsive` |
 

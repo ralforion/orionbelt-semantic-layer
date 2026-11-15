@@ -661,7 +661,9 @@ class Pool:
 
         The statements run like a query: with the statement timeout, under the
         watchdog, and ended with the worker's other statements when it stops
-        answering.
+        answering. They count as one statement started, as a query does: once
+        the worker ran them, failed or ended by the pool too; refused before
+        running, they count as a retry (:meth:`_acquire`).
 
         Raises:
             PoolConfigError: The connection statements failed on their own.
@@ -689,11 +691,13 @@ class Pool:
             with contextlib.suppress(Exception):
                 conn.close()
             if statement.ended_by_pool is not None:
+                self._count_started(state)
                 raise WorkerTimeoutError(statement.ended_by_pool) from None
             if _chargewire_code(exc) in (_QUEUE_FULL, _SESSION_GONE, _DRAINING) or _unreachable(
                 exc
             ):
                 raise
+            self._count_started(state)
             # Without the chained error: it would carry the statements.
             raise PoolConfigError(
                 f"Data source '{self._source_name}': DUCKDB_CONNECTION_SQL failed on "
@@ -703,6 +707,7 @@ class Pool:
             self._forget(statement)
             with contextlib.suppress(Exception):
                 cursor.close()
+        self._count_started(state)
         return conn
 
     def _connect(self, state: _WorkerState) -> Any:
