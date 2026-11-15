@@ -73,6 +73,10 @@ class WarningCode:
     # leg's measures (or raw rows) are computed without it, and named
     FILTER_NOT_APPLIED = "FILTER_NOT_APPLIED"
 
+    # A query dimension one leg of a multi-fact union cannot reach: that leg's
+    # measures are not split by it, and all their values sit in its NULL row
+    DIMENSION_NOT_APPLIED = "DIMENSION_NOT_APPLIED"
+
     # Generic merge-time warning (extends/inherits)
     MERGE_WARNING = "MERGE_WARNING"
 

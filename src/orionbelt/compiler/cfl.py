@@ -59,6 +59,7 @@ from orionbelt.models.semantic import (
     DataObject,
     SemanticModel,
 )
+from orionbelt.models.warnings import WarningCode, warning
 
 
 class WithinGroupNotSupportedInCFLError(UnsupportedAggregationError):
@@ -381,6 +382,45 @@ class CFLPlanner:
         report_unapplied_query_filter(resolved.warnings, ", ".join(sorted(missing)), names)
 
     @staticmethod
+    def _report_dimensions_outside_leg(
+        unreached: list[ResolvedDimension],
+        measures: list[ResolvedMeasure],
+        resolved: ResolvedQuery,
+    ) -> None:
+        """Say that a leg's measures are not split by dimensions its fact cannot reach.
+
+        The leg NULL-pads those dimensions, so every value of its measures lands
+        in the one row where they are NULL. The total still adds up, but a reader
+        of the grouped rows would take the 0 or NULL in every other row for an
+        answer about that group.
+        """
+        if not unreached:
+            return
+        dims = ", ".join(f"'{dim.name}'" for dim in unreached)
+        objects = ", ".join(f"'{name}'" for name in sorted({d.object_name for d in unreached}))
+        names = ", ".join(f"'{m.name}'" for m in measures)
+        its, them = ("its", "it") if len(measures) == 1 else ("their", "them")
+        verb = "is" if len(unreached) == 1 else "are"
+        resolved.warnings.append(
+            warning(
+                code=WarningCode.DIMENSION_NOT_APPLIED,
+                message=(
+                    f"{names} cannot be grouped by {dims}: {its} fact cannot reach "
+                    f"{objects}, so all {its} values are in the row where {dims} {verb} "
+                    f"NULL. The query's other columns are grouped."
+                ),
+                path="select.dimensions",
+                hint=(
+                    f"Join {its} fact to {objects} in the model, or query {them} without {dims}."
+                ),
+                context={
+                    "measures": [m.name for m in measures],
+                    "dimensions": [dim.name for dim in unreached],
+                },
+            )
+        )
+
+    @staticmethod
     def _group_dimensions_into_legs(
         resolved: ResolvedQuery,
         model: SemanticModel,
@@ -625,6 +665,18 @@ class CFLPlanner:
             # Role-playing dimensions tied to a different fact via `via:`
             # are NULL-padded so each leg only projects the values that
             # belong to its own fact.
+            if measures:
+                # A role (``via:``) belongs to one fact by design, and the other
+                # legs pad it on purpose, so only a plain dimension is reported.
+                self._report_dimensions_outside_leg(
+                    [
+                        dim
+                        for dim in resolved.dimensions
+                        if dim.via is None and dim.object_name not in reachable
+                    ],
+                    measures,
+                    resolved,
+                )
             for dim in resolved.dimensions:
                 via_ok = dim.via is None or dim.via in reachable
                 if dim.object_name in reachable and via_ok:

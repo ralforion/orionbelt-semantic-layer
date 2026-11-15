@@ -612,7 +612,7 @@ anchor, then joined many-to-one, so the anchor keeps its own grain and nothing
 fans out:
 
 ```sql
-SELECT AVG("Returns"."qty" / "__ob_conf_0"."__ob_av0") AS "Return Rate"
+SELECT AVG("Returns"."qty" / COALESCE("__ob_conf_0"."__ob_av0", 0)) AS "Return Rate"
 FROM "returns" AS "Returns"
 LEFT JOIN (
   SELECT "Sales"."datekey" AS "__ob_ak0", SUM("Sales"."qty") AS "__ob_av0"
@@ -643,6 +643,34 @@ fact alone is not (see below).
 Facts sharing *several* dimensions raise `ANCHOR_REQUIRED_AMBIGUOUS_KEY` rather
 than picking one, because conforming at each gives a different answer.
 
+### A fact with no rows for an anchor row
+
+A conformed value is the `SUM` of a fact's rows for one key. When the fact has
+no rows for an anchor row, that sum is 0, so the expression still counts what
+the other facts hold:
+
+| Customer | Orders | Returns | `SUM(orders.amount - returns.amount)` adds |
+|---|---|---|---|
+| C1 | 300 | 25 | 275 |
+| C2 | 50 | none | 50 |
+| C4 | none | 10 | -10 |
+
+The total is what the facts hold, ordered minus returned. Read as SQL's `NULL`,
+the missing sum took the whole term with it, and C2 and C4 dropped out of the
+total.
+
+When the expression reads only conformed facts, an anchor row with rows in
+**none** of them stays `NULL`: a customer with no orders and no returns adds
+nothing, and a group of such customers is `NULL`, as any `SUM` over no rows is,
+so a `defaultValue` applies to it. A measure filter on the anchor (`Region` is
+not `NOWHERE`) chooses which customers count and does not change this.
+A fact whose rows hold only `NULL` in the column summed counts like a fact with
+no rows.
+
+A ratio whose conformed denominator is missing divides by 0 and returns
+`NULL`. `AVG`, `MIN` and `MAX` count every anchor row with at least one fact:
+the C2 row above enters an `AVG` with 50.
+
 ### Filters on a conformed fact
 
 A filter on a fact the anchor conforms chooses that fact's rows, so it is
@@ -664,7 +692,7 @@ LEFT JOIN (
 ```
 
 The anchor's rows are not restricted by it: a sale on a date without a damaged
-return reads `NULL` for the conformed value. A filter on the anchor's own side
+return reads 0 for the conformed value. A filter on the anchor's own side
 restricts the anchor's rows in the ordinary `WHERE`.
 
 Every measure in the query has to apply the filter. In a union of facts, a leg
@@ -689,8 +717,8 @@ once per anchor row instead: anchored on `Returns`, `SUM(r - S)` is
 `R - n * S` for a date with `n` returns, and a date without returns loses its
 sales. The query carries a `FAN_TRAP_RISK` warning naming the measure. Without
 `anchor:` both facts are conformed to the date, one row per key, and the
-difference is `R - S` for each date that has returns (the conformed sales of a
-date without returns read `NULL` in the difference).
+difference is `R - S` for each date with sales or returns (a fact with no rows
+on a date reads 0, see [A fact with no rows for an anchor row](#a-fact-with-no-rows-for-an-anchor-row)).
 
 ```sql
 -- Anchored on Returns: 3 returns (1 + 2 + 3) and 10 sales on d1 give -24, not -4
