@@ -1587,6 +1587,13 @@ class QueryResolver:
             unreachable = ctx.result.measure_source_objects - reachable - {ctx.result.base_object}
             if unreachable:
                 ctx.result.requires_cfl = True
+        # An anchored measure runs on its anchor's own rows, so two anchors are
+        # two grains, which one FROM cannot hold: the star rooted at the busier
+        # one repeated the other's rows and joined its conformed facts on a table
+        # it had not joined yet. Each anchor gets a leg of its own; the union
+        # planner keys legs by anchor.
+        if len(set(ctx.result.anchored_measures.values())) > 1:
+            ctx.result.requires_cfl = True
 
         # Dimension-only queries: when dimensions span independent branches,
         # join through intermediate bridge/fact tables. Where several roots
