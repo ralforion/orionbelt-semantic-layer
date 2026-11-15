@@ -7,9 +7,13 @@ docstring and the shared constants in :mod:`osi_orionbelt._common`.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from functools import partial
 from typing import Any
+
+import sqlglot
+from sqlglot import expressions as exp
 
 from osi_orionbelt._common import (
     _INTERNAL_VENDORS,
@@ -21,6 +25,7 @@ from osi_orionbelt._common import (
     obml_datatype_to_osi,
     physical_code,
 )
+from osi_orionbelt._field_expressions import QUALIFIED_REF, SIBLING_REF
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
     FIELD_NAMES_KEY,
@@ -36,8 +41,38 @@ from osi_orionbelt._portable import (
     PortableRenderer,
     case_collisions,
     decimal_filter_value,
+    needs_quoting,
     sql_ident,
 )
+
+
+def _referenced_columns(obml: dict[str, Any]) -> set[tuple[str, str]]:
+    """Every (data object, column) the model refers to outside the column itself.
+
+    A ``{dataObject, column}`` pair anywhere (dimensions, measure columns,
+    filters) and a ``{[Data Object].[Column]}`` reference in any expression.
+    """
+    found: set[tuple[str, str]] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            obj, col = node.get("dataObject"), node.get("column")
+            if isinstance(obj, str) and isinstance(col, str):
+                found.add((obj, col))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str):
+            for match in _QUALIFIED_PARTS.finditer(node):
+                found.add((match.group(1), match.group(2)))
+
+    walk(obml)
+    return found
+
+
+_QUALIFIED_PARTS = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
 
 
 def _stash_concept_links(
@@ -95,6 +130,7 @@ class OBMLtoOSI:
         )
 
         self._warn_decimal_floats(self.obml.get("measures", {}) or {})
+        self._referenced = _referenced_columns(self.obml)
 
         osi: dict[str, Any] = {"version": _OSI_VERSION}
 
@@ -298,6 +334,12 @@ class OBMLtoOSI:
         fields = []
         columns = do_obj.get("columns", {})
         for col_name, col_obj in columns.items():
+            # A column the import added for a source column an expression read
+            # is not a field of the document, unless the model came to use it.
+            if self._import_saved(col_obj).get("obml_source_column") and (
+                (do_name, col_name) not in self._referenced
+            ):
+                continue
             field = self._convert_column(col_name, col_obj, do_name, obml_dimensions)
             fields.append(field)
 
@@ -420,8 +462,9 @@ class OBMLtoOSI:
         )
 
     @staticmethod
-    def _stashed_field_sql(col_obj: dict) -> str | None:
-        """The field SQL the import kept for this column (``obml_field_sql``), if any."""
+    def _import_saved(col_obj: dict) -> dict[str, Any]:
+        """What the import kept on this column under the OSI vendor (``obml_*`` keys)."""
+        saved: dict[str, Any] = {}
         for ext in col_obj.get("customExtensions", []) or []:
             if ext.get("vendor") not in _OSI_VENDOR_READ:
                 continue
@@ -429,9 +472,96 @@ class OBMLtoOSI:
                 data = json.loads(ext.get("data", "{}"))
             except (json.JSONDecodeError, TypeError):
                 continue
-            if isinstance(data, dict) and isinstance(data.get("obml_field_sql"), str):
-                return str(data["obml_field_sql"])
-        return None
+            if isinstance(data, dict):
+                saved.update({k: v for k, v in data.items() if k.startswith("obml_")})
+        return saved
+
+    def _column_sql(self, do_name: str, col_name: str, seen: frozenset[str] = frozenset()) -> str:
+        """The SQL of an OBML column as an Ossie field.
+
+        What the import read is written back while the column still says the
+        same: a quoted identifier while its name is the code, an expression while
+        the computed column is the one the import wrote. Otherwise the column as
+        it is now: its code, or its computed expression with each sibling
+        written as its own SQL.
+        """
+        columns = self._columns_of(do_name)
+        col = columns.get(col_name) or {}
+        saved = self._import_saved(col)
+        sql = saved.get("obml_field_sql")
+        expression = col.get("expression")
+        fallback = col_name.lower().replace(" ", "_")
+        if isinstance(expression, str):
+            if isinstance(sql, str) and saved.get("obml_field_expression") == expression:
+                return sql
+            rendered = self._render_computed(do_name, expression, seen | {col_name})
+            if rendered is not None:
+                return rendered
+            self.warnings.append(
+                f"Column '{do_name}.{col_name}' is computed as {expression!r}, which has no "
+                f"field SQL (it reads another data object, or a sibling the export cannot "
+                f"write); written as {fallback!r}."
+            )
+            return fallback
+        code = str(col.get("code", fallback))
+        return self._read_as_quoted(sql, code) or code
+
+    @staticmethod
+    def _read_as_quoted(sql: object, code: str) -> str | None:
+        """The SQL of a column the import read as a quoted identifier, else ``None``.
+
+        The saved SQL while it still names the column; an edited code is the
+        name it is now, quoted as the import read it. Bare, ``NetTotal`` would
+        fold to nettotal on PostgreSQL and NETTOTAL on Snowflake, and
+        ``New Total`` is not SQL.
+        """
+        if not isinstance(sql, str):
+            return None
+        return sql if physical_code(sql) == code else sql_ident(code)
+
+    def _columns_of(self, do_name: str) -> dict[str, Any]:
+        obj = (self.obml.get("dataObjects", {}) or {}).get(do_name) or {}
+        columns: dict[str, Any] = obj.get("columns", {}) or {}
+        return columns
+
+    def _render_computed(self, do_name: str, expression: str, seen: frozenset[str]) -> str | None:
+        """An OBML computed column as field SQL, or ``None`` when it has none."""
+        if QUALIFIED_REF.search(expression):
+            return None
+        columns = self._columns_of(do_name)
+        missing: list[str] = []
+
+        def sibling(match: re.Match[str]) -> str:
+            name = match.group(1)
+            col = columns.get(name)
+            if col is None or name in seen:
+                missing.append(name)
+                return "NULL"
+            if isinstance(col.get("expression"), str):
+                return f"({self._column_sql(do_name, name, seen)})"
+            code = str(col.get("code", name))
+            quoted = self._read_as_quoted(self._import_saved(col).get("obml_field_sql"), code)
+            if quoted is not None:
+                return quoted
+            return sql_ident(code) if needs_quoting(code) else code
+
+        text = SIBLING_REF.sub(sibling, expression)
+        if missing:
+            return None
+        try:
+            tree = sqlglot.parse_one(text)
+        except sqlglot.errors.ParseError:
+            return None
+
+        def cast(node: exp.Expr) -> exp.Expr:
+            # OBML's cast(x, 'double') back to SQL's CAST(x AS DOUBLE); sqlglot
+            # reads the two-argument form as CastToStrType.
+            target = node.args.get("to") if isinstance(node, exp.CastToStrType) else None
+            if isinstance(target, exp.Literal) and target.is_string:
+                return exp.Cast(this=node.this, to=exp.DataType.build(target.name))
+            return node
+
+        return str(tree.transform(cast).sql())
 
     def _convert_column(
         self, col_name: str, col_obj: dict, do_name: str, obml_dimensions: dict
@@ -442,15 +572,7 @@ class OBMLtoOSI:
         ``code``. The code can be a SQL expression (a calculated column from an
         OSI import), which must never become the field name.
         """
-        code = col_obj.get("code", col_name.lower().replace(" ", "_"))
-        # A field the import read as a quoted identifier keeps that SQL, since
-        # ``code`` holds only the name, which is not SQL when it has a space. Only
-        # while it still names the column: an edited code is the name it is now,
-        # quoted as the import read it. Bare, ``NetTotal`` would fold to nettotal
-        # on PostgreSQL and NETTOTAL on Snowflake, and ``New Total`` is not SQL.
-        stashed = self._stashed_field_sql(col_obj)
-        if stashed is not None:
-            code = stashed if physical_code(stashed) == code else sql_ident(code)
+        code = self._column_sql(do_name, col_name)
 
         dialects = [{"dialect": "ANSI_SQL", "expression": code}]
         # In Ossie's own language too where the code is inside it, as metrics

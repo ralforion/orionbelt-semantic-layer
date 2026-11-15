@@ -29,6 +29,11 @@ from osi_orionbelt._common import (
     OSI_TO_OBML_TYPE,
     physical_code,
 )
+from osi_orionbelt._field_expressions import (
+    NotRepresentableError,
+    render_obml,
+    unreadable,
+)
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
     FIELD_NAMES_KEY,
@@ -109,28 +114,6 @@ _PERCENTILE_NAMES = frozenset(
 )
 
 
-class _NotRepresentableError(Exception):
-    """A metric construct OBML has no form for; the metric is preserved verbatim."""
-
-
-def _obml_cast_type(to: exp.DataType) -> str | None:
-    """The OBML ``cast`` type a SQL cast target names, or ``None``.
-
-    OBML's ``cast(x, 'type')`` takes ``'double'`` or ``'decimal(p, s)'``.
-    ``DECIMAL(p)`` has scale 0; a bare ``DECIMAL`` leaves its precision to the
-    engine, so it has no OBML type, nor does any other target.
-    """
-    if to.this in (exp.DataType.Type.DOUBLE, exp.DataType.Type.FLOAT):
-        return "double"
-    if to.this == exp.DataType.Type.DECIMAL and to.expressions:
-        params = [p.this for p in to.expressions if isinstance(p, exp.DataTypeParam)]
-        digits = [p.name for p in params if isinstance(p, exp.Literal) and p.is_int]
-        if len(digits) == len(to.expressions) and len(digits) in (1, 2):
-            scale = digits[1] if len(digits) == 2 else "0"
-            return f"decimal({digits[0]}, {scale})"
-    return None
-
-
 def _restore_concept_links(
     extras: dict, target: dict, key: str = "obml_external_concept_mappings"
 ) -> None:
@@ -189,6 +172,18 @@ class _NameIndex:
         if len(col_hits) > 1:
             return f"is ambiguous: fields {sorted(col_hits)}"
         return (ds, col_hits[0]) if col_hits else ""
+
+
+def _source_key(identifier: exp.Expr) -> str:
+    """A source column as SQL compares it: a quoted name exactly, a bare one by case."""
+    if isinstance(identifier, exp.Identifier) and identifier.quoted:
+        return identifier.name
+    return identifier.name.upper()
+
+
+def _name_key(name: str) -> str:
+    """A field or column name as a bare reference to it resolves: regardless of case."""
+    return name.upper()
 
 
 class OSItoOBML:
@@ -559,6 +554,7 @@ class OSItoOBML:
         for field in fields:
             col_name, col_obj = self._convert_field(field)
             columns[col_name] = col_obj
+        self._computed_from_expressions(name, fields, columns)
 
         # ── Primary key flag propagation (OSI v0.2 first-class) ──
         # ``primary_key`` lists field names, which are the column names; mark
@@ -668,6 +664,95 @@ class OSItoOBML:
         self._carry_foreign_extensions(ds.get("custom_extensions"), do)
 
         return name, do
+
+    def _computed_from_expressions(
+        self, ds_name: str, fields: list, columns: dict[str, Any]
+    ) -> None:
+        """Make each field computed by an expression an OBML computed column.
+
+        ``amount_cents / 100.0`` in ``code`` compiled to a column named that,
+        which no table has. As a computed column, ``{amount_cents} / 100.0``,
+        each source column it reads is a sibling whose ``code`` is that
+        column: a field computing exactly that column where there is one, else
+        a column added for it (marked ``obml_source_column``, which the export
+        leaves out). An expression OBML's grammar cannot read is reported and
+        kept as it was (see ``_field_expressions``).
+        """
+        parsed: dict[str, exp.Expr] = {}
+        physical: dict[str, str] = {}  # source column, compared as SQL does -> column
+        for field in fields:
+            name = field.get("name")
+            entry = self._sql_dialect_entry(field.get("expression"))
+            if name not in columns or entry is None:
+                continue
+            try:
+                tree = sqlglot.parse_one(entry[1], read=_OSI_DIALECT_TO_SQLGLOT.get(entry[0]))
+            except Exception:  # noqa: BLE001 - unparseable SQL keeps its code, as before
+                continue
+            if isinstance(tree, exp.Column):
+                physical.setdefault(_source_key(tree.this), name)
+            else:
+                parsed[name] = tree
+        taken = {_name_key(col) for col in columns}
+        for name, tree in parsed.items():
+            sql = columns[name]["code"]
+            reason = unreadable(tree)
+            if reason is None:
+                try:
+                    expression = render_obml(
+                        tree,
+                        lambda c: exp.var(
+                            "{" + self._sibling_for(ds_name, c, columns, physical, taken) + "}"
+                        ),
+                    )
+                except NotRepresentableError as exc:
+                    reason = str(exc)
+            if reason is not None:
+                self.warnings.append(
+                    f"LOSSY: field '{ds_name}.{name}' is computed as {sql!r}, which OBML cannot "
+                    f"express as a computed column ({reason}); its code is kept as written, "
+                    f"and a query reading the column fails."
+                )
+                continue
+            column = columns[name]
+            del column["code"]
+            column["expression"] = expression
+            saved = {"obml_field_sql": sql, "obml_field_expression": expression}
+            column.setdefault("customExtensions", []).append(
+                {"vendor": _VENDOR_OSI, "data": json.dumps(saved)}
+            )
+
+    def _sibling_for(
+        self,
+        ds_name: str,
+        column: exp.Column,
+        columns: dict[str, Any],
+        physical: dict[str, str],
+        taken: set[str],
+    ) -> str:
+        """The column of *ds_name* whose code is the source column *column* reads."""
+        key = _source_key(column.this)
+        if key in physical:
+            return physical[key]
+        name = column.name
+        number = 2
+        while _name_key(name) in taken:
+            name = f"{column.name}_{number}"
+            number += 1
+        taken.add(_name_key(name))
+        physical[key] = name
+        columns[name] = {
+            "code": column.name,
+            "abstractType": self._infer_obml_type({"name": column.name}),
+            "customExtensions": [
+                {"vendor": _VENDOR_OSI, "data": json.dumps({"obml_source_column": True})}
+            ],
+        }
+        self.warnings.append(
+            f"Field '{ds_name}' computed from source column '{column.name}', which no field "
+            f"exposes as is; added column '{name}' for it."
+        )
+        return name
 
     def _convert_field(self, field: dict) -> tuple[str, dict]:
         """Convert an OSI field to an OBML column.
@@ -1267,7 +1352,7 @@ class OSItoOBML:
             # parse is preserved verbatim. The source dialect drives the grammar.
             try:
                 decomposed = self._decompose_metric(expr_text, _expr_dialect, index)
-            except _NotRepresentableError as exc:
+            except NotRepresentableError as exc:
                 self.warnings.append(f"Metric '{name}': {exc}.")
                 decomposed = None
             if decomposed is None:
@@ -1586,6 +1671,12 @@ class OSItoOBML:
         SQL expression. Shared by the column ``code`` selection and the
         metric-resolution index so the two can never disagree - an MDX expression
         the code path rejects must not be what the resolver indexes."""
+        entry = OSItoOBML._sql_dialect_entry(expr_obj)
+        return entry[1] if entry else None
+
+    @staticmethod
+    def _sql_dialect_entry(expr_obj: object) -> tuple[str, str] | None:
+        """``(dialect, expression)`` behind :meth:`_sql_dialect_expression`."""
         if not isinstance(expr_obj, dict):
             return None
         by_dialect: dict[str, str] = {}
@@ -1597,9 +1688,10 @@ class OSItoOBML:
                 and d["expression"]
             ):
                 by_dialect.setdefault(d["dialect"], d["expression"])
-        return by_dialect.get("ANSI_SQL") or next(
-            (e for dia, e in by_dialect.items() if dia not in _NON_SQL_DIALECTS),
-            None,
+        if "ANSI_SQL" in by_dialect:
+            return "ANSI_SQL", by_dialect["ANSI_SQL"]
+        return next(
+            ((dia, e) for dia, e in by_dialect.items() if dia not in _NON_SQL_DIALECTS), None
         )
 
     @staticmethod
@@ -1929,33 +2021,17 @@ class OSItoOBML:
         except Exception:
             return None
 
-    def _render_obml(self, node: exp.Expr) -> str:
+    @staticmethod
+    def _render_obml(node: exp.Expr) -> str:
         """Render a sqlglot expression to OBML, rewriting qualified column refs
         ``ds.col`` to ``{[ds].[col]}``. Bare columns and literals are left as-is,
-        so a numeric literal (``1.23``) is never mistaken for a reference.
+        so a numeric literal (``1.23``) is never mistaken for a reference. A SQL
+        cast becomes OBML's ``cast(x, 'double')`` (see ``render_obml``)."""
 
-        A SQL ``CAST(x AS DOUBLE)`` becomes OBML's ``cast(x, 'double')``, the
-        only form OBML parses; a target OBML's cast has no type for raises
-        :class:`_NotRepresentableError`."""
+        def column(n: exp.Column) -> exp.Expr:
+            return exp.var("{[" + n.table + "].[" + n.name + "]}") if n.table else n
 
-        def _rewrite(n: exp.Expr) -> exp.Expr:
-            if isinstance(n, exp.Column) and n.table:
-                return exp.var("{[" + n.table + "].[" + n.name + "]}")
-            if isinstance(n, exp.Cast):
-                target = None if isinstance(n, exp.TryCast) else _obml_cast_type(n.to)
-                if target is None:
-                    raise _NotRepresentableError(
-                        f"{n.sql()}: OBML's cast takes 'double' or 'decimal(p, s)'"
-                    )
-                # A replaced node's children are not visited, so the argument is
-                # rewritten here.
-                return exp.Anonymous(
-                    this="cast",
-                    expressions=[n.this.transform(_rewrite), exp.Literal.string(target)],
-                )
-            return n
-
-        return node.transform(_rewrite).sql()
+        return render_obml(node, column)
 
     def _decompose_metric(
         self,
@@ -2076,5 +2152,5 @@ class OSItoOBML:
         # at a metric's grain; written into the formula it failed every query.
         stray = next(iter(tree.find_all(exp.Column)), None)
         if stray is not None:
-            raise _NotRepresentableError(f"{stray.sql()} is read outside every aggregate")
+            raise NotRepresentableError(f"{stray.sql()} is read outside every aggregate")
         return ("complex", self._render_obml(tree), auto_measures)
