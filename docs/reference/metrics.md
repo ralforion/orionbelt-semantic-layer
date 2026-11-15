@@ -26,6 +26,8 @@ client library is not loaded.
 | `obsl_queries_total` | counter | `surface`, `dialect`, `source`, `outcome` | Queries run on a database |
 | `obsl_query_duration_seconds` | histogram | `surface`, `dialect`, `source` | How long they took, results fetched |
 
+- **`method`** is the request's method. A method HTTP does not define is
+  `other`, since a client can send any word as one.
 - **`route`** is the route's template, such as
   `/v1/sessions/{session_id}/query/execute`, so one series covers every
   session. A path no route has is `unmatched`.
@@ -58,8 +60,9 @@ Read at each scrape.
 | `obsl_compilation_cache_lookups_total` | counter | Lookups, by `result`: `hit`, `miss`, `bypass` (not cacheable) |
 | `obsl_compilation_cache_evictions_total` | counter | Compiled queries evicted to stay within the limits |
 
-The result cache's numbers are the ones `GET /v1/cache/stats` shows; a scrape
-that gets no answer from the cache within 2 s leaves them out.
+The result cache's numbers are the ones `GET /v1/cache/stats` shows. A scrape
+reads them on a thread of its own, not the API's, and does not wait for the
+queries using the cache. A scrape the cache cannot answer leaves them out.
 
 ## DuckDB worker pools
 

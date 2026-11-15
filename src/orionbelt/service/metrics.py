@@ -48,8 +48,6 @@ SURFACE: contextvars.ContextVar[str] = contextvars.ContextVar(
 #: Query durations, in seconds: from a cached lookup's few milliseconds to a
 #: warehouse scan of minutes.
 QUERY_BUCKETS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300)
-#: How long a scrape waits for the result cache's statistics.
-CACHE_STATS_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -99,16 +97,9 @@ def observe_query(
 class StateCollector:
     """The build, the sessions and the caches, read at each scrape."""
 
-    def __init__(
-        self,
-        *,
-        sessions: Any = None,
-        cache: Any = None,
-        loop: asyncio.AbstractEventLoop | None = None,
-    ) -> None:
+    def __init__(self, *, sessions: Any = None, cache: Any = None) -> None:
         self._sessions = sessions
         self._cache = cache
-        self._loop = loop
 
     def describe(self) -> list[Any]:
         return []
@@ -178,12 +169,16 @@ class StateCollector:
             yield lookups
 
     def _result_cache_stats(self) -> Any:
-        """The result cache's statistics, from the server's event loop; ``None`` if none came."""
-        if self._cache is None or self._loop is None or self._loop.is_closed():
+        """The result cache's statistics, read on the scrape's thread; ``None`` if none came.
+
+        Never on the server's event loop, where a backend's blocking reads
+        would hold up every request. ``Cache.stats`` runs on any thread and
+        waits on none of the cache's locks.
+        """
+        if self._cache is None:
             return None
         try:
-            future = asyncio.run_coroutine_threadsafe(self._cache.stats(), self._loop)
-            return future.result(timeout=CACHE_STATS_TIMEOUT_SECONDS)
+            return asyncio.run(self._cache.stats())
         except Exception:  # noqa: BLE001 - a scrape reports what it has
             logger.debug("result cache statistics unavailable for a scrape", exc_info=True)
             return None
@@ -251,12 +246,11 @@ def start(
     port: int,
     sessions: Any = None,
     cache: Any = None,
-    loop: asyncio.AbstractEventLoop | None = None,
 ) -> None:
     """Serve ``/metrics`` on ``host``:``port`` when ``enabled``; nothing otherwise.
 
-    ``sessions`` (the session manager), ``cache`` (the result cache) and
-    ``loop`` (the event loop the cache answers on) are read at each scrape.
+    ``sessions`` (the session manager) and ``cache`` (the result cache) are
+    read at each scrape, on the scrape's thread.
 
     Raises:
         OSError: The port cannot be bound.
@@ -278,7 +272,7 @@ def start(
     ProcessCollector(registry=registry)
     PlatformCollector(registry=registry)
     GCCollector(registry=registry)
-    registry.register(StateCollector(sessions=sessions, cache=cache, loop=loop))
+    registry.register(StateCollector(sessions=sessions, cache=cache))
     registry.register(PoolCollector())
     recorders = _Recorders(
         http_requests=Counter(

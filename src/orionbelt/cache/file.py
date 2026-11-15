@@ -108,11 +108,14 @@ class FileCache(Cache):
         self._sweep_task: asyncio.Task[None] | None = None
         self._next_sweep_at: float | None = None
         # Hit/miss counts accumulate in memory and flush to DuckDB lazily (on
-        # sweep / stats / shutdown). This keeps the read-hot ``get`` path off a
+        # sweep / shutdown). This keeps the read-hot ``get`` path off a
         # per-hit DuckDB UPDATE under the global lock — the counter write was a
         # synchronous OLTP point-write on an OLAP engine on every cache hit.
+        # ``_totals`` holds each counter's total, flushed and pending, which
+        # ``stats`` reports without touching DuckDB.
         self._counter_lock = threading.Lock()
         self._pending_counters: dict[str, int] = {}
+        self._totals: dict[str, int] = {}
 
         os.makedirs(self._results_dir, exist_ok=True)
         self._meta = duckdb.connect(self._meta_path)
@@ -123,6 +126,14 @@ class FileCache(Cache):
             "INSERT INTO cache_counters VALUES ('hits', 0), ('misses', 0), "
             "('heartbeat_invalidations', 0) ON CONFLICT DO NOTHING"
         )
+        for name, value in self._meta.execute("SELECT name, value FROM cache_counters").fetchall():
+            self._totals[str(name)] = int(value)
+        # ``stats`` reads on a connection of its own, under a lock of its own,
+        # so it can run on any thread (the metrics read it from their scrape
+        # thread) without waiting for ``_lock`` or touching ``_meta``, which
+        # refuses a second thread's call while it is busy.
+        self._stats_lock = threading.Lock()
+        self._stats_cursor: duckdb.DuckDBPyConnection | None = self._meta.cursor()
 
     # -- internals ----------------------------------------------------------
 
@@ -171,9 +182,10 @@ class FileCache(Cache):
             logger.debug("cache counter bump failed", exc_info=True)
 
     def _count(self, name: str, by: int = 1) -> None:
-        """Accumulate a counter in memory (flushed to DuckDB by :meth:`_flush_counters`)."""
+        """Count in memory: into the total, and pending for :meth:`_flush_counters`."""
         with self._counter_lock:
             self._pending_counters[name] = self._pending_counters.get(name, 0) + by
+            self._totals[name] = self._totals.get(name, 0) + by
 
     def _flush_counters(self) -> None:
         """Drain the in-memory counters into the DuckDB ``cache_counters`` table."""
@@ -427,35 +439,15 @@ class FileCache(Cache):
         for _, file_path in rows:
             self._unlink(file_path)
         if rows:
-            self._bump("heartbeat_invalidations", len(rows))
+            self._count("heartbeat_invalidations", len(rows))
         return len(rows)
 
     async def stats(self) -> CacheStats:
-        # Fold any in-memory hits/misses into the DuckDB counters before reading.
-        self._flush_counters()
-        try:
-            row = self._exec(
-                "SELECT count(*), coalesce(sum(size_bytes), 0), min(created_at) FROM cache_entries"
-            ).fetchone()
-            count = int(row[0]) if row else 0
-            total = int(row[1]) if row else 0
-            oldest = row[2] if row else None
-        except Exception:
-            count, total, oldest = 0, 0, None
-
-        try:
-            counters = self._exec("SELECT name, value FROM cache_counters").fetchall()
-            counter_map = dict(counters)
-        except Exception:
-            counter_map = {}
-
-        try:
-            tracked = self._exec(
-                "SELECT count(DISTINCT table_ref) FROM cache_entry_tables"
-            ).fetchone()
-            tracked_count = int(tracked[0]) if tracked else 0
-        except Exception:
-            tracked_count = 0
+        # Safe on any thread: the counters come from memory and the entries
+        # from the statistics cursor, so this never waits for ``_lock``.
+        with self._counter_lock:
+            counter_map = dict(self._totals)
+        count, total, oldest, tracked_count = self._read_entry_stats()
 
         hits = int(counter_map.get("hits", 0))
         misses = int(counter_map.get("misses", 0))
@@ -486,6 +478,34 @@ class FileCache(Cache):
             tracked_physical_tables=tracked_count,
             heartbeat_invalidations_total=int(counter_map.get("heartbeat_invalidations", 0)),
         )
+
+    def _read_entry_stats(self) -> tuple[int, int, datetime | None, int]:
+        """Entries, their bytes, the oldest's creation and the tables tracked.
+
+        Read on the statistics cursor: zeros when it fails or the cache is shut down.
+        """
+        count, total, oldest, tracked_count = 0, 0, None, 0
+        with self._stats_lock:
+            cursor = self._stats_cursor
+            if cursor is None:
+                return count, total, oldest, tracked_count
+            try:
+                row = cursor.execute(
+                    "SELECT count(*), coalesce(sum(size_bytes), 0), min(created_at) "
+                    "FROM cache_entries"
+                ).fetchone()
+                if row:
+                    count, total, oldest = int(row[0]), int(row[1]), row[2]
+            except Exception:
+                logger.debug("cache entry statistics unavailable", exc_info=True)
+            try:
+                tracked = cursor.execute(
+                    "SELECT count(DISTINCT table_ref) FROM cache_entry_tables"
+                ).fetchone()
+                tracked_count = int(tracked[0]) if tracked else 0
+            except Exception:
+                logger.debug("cache table statistics unavailable", exc_info=True)
+        return count, total, oldest, tracked_count
 
     async def record_hit(self, key: str) -> None:
         now = datetime.now(UTC)
@@ -582,6 +602,11 @@ class FileCache(Cache):
             self._sweep_task = None
         with contextlib.suppress(Exception):
             self._flush_counters()
+        # The statistics cursor first: ``_meta`` refuses to close while it is busy.
+        with contextlib.suppress(Exception), self._stats_lock:
+            cursor, self._stats_cursor = self._stats_cursor, None
+            if cursor is not None:
+                cursor.close()
         with contextlib.suppress(Exception), self._lock:
             self._meta.close()
 

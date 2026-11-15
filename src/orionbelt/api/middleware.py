@@ -55,11 +55,12 @@ class RequestTimingMiddleware(BaseHTTPMiddleware):
 class MetricsMiddleware:
     """Count each REST request for the Prometheus metrics (``service/metrics.py``).
 
-    By method, the route's template (``/v1/sessions/{session_id}/...``, so the
-    series do not grow with sessions; ``unmatched`` for a path no route has),
-    and status. It marks the request's queries as the ``rest`` surface. A
-    plain ASGI middleware: it passes requests straight on while the metrics
-    are off.
+    By method (``other`` for one HTTP does not define), the route's template
+    (``/v1/sessions/{session_id}/...``, so the series do not grow with
+    sessions; ``unmatched`` for a path no route has), and status: no label
+    takes a value the client chooses. It marks the request's queries as the
+    ``rest`` surface. A plain ASGI middleware: it passes requests straight on
+    while the metrics are off.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -86,8 +87,21 @@ class MetricsMiddleware:
         finally:
             metrics.SURFACE.reset(surface)
             metrics.observe_http(
-                scope["method"], _route_label(scope), status, time.monotonic() - started
+                _method_label(scope), _route_label(scope), status, time.monotonic() - started
             )
+
+
+#: The methods HTTP defines (RFC 9110, and PATCH from RFC 5789). A client can
+#: send any token as a method, so any other counts as ``other``.
+_METHODS = frozenset(
+    {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"}
+)
+
+
+def _method_label(scope: Scope) -> str:
+    """The request's method, or ``other`` for one HTTP does not define."""
+    method = scope.get("method", "")
+    return method if method in _METHODS else "other"
 
 
 def _route_label(scope: Scope) -> str:

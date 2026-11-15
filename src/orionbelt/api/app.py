@@ -609,7 +609,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         port=settings.metrics_port,
         sessions=mgr,
         cache=cache,
-        loop=asyncio.get_running_loop(),
     )
     try:
         yield

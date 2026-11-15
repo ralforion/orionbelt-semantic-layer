@@ -11,7 +11,6 @@ import asyncio
 import socket
 import subprocess
 import sys
-import threading
 import urllib.request
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -182,6 +181,27 @@ class TestRequests:
         assert {"/v1/models", "/v1/sessions", "/v1/sessions/{session_id}"} <= routes
         assert not any(sid in route for route in routes)
 
+    def test_methods_http_does_not_define_share_one_label(self, scrape: _Scraper) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from orionbelt.api.middleware import MetricsMiddleware
+
+        app = FastAPI()
+
+        @app.get("/v1/items")
+        def items() -> list[str]:
+            return []
+
+        app.add_middleware(MetricsMiddleware)
+        client = TestClient(app)
+        assert client.get("/v1/items").status_code == 200
+        for n in range(20):
+            assert client.request(f"MADEUP{n}", "/v1/items").status_code == 405
+        samples = scrape()["obsl_http_requests"]
+        assert {s.labels["method"] for s in samples} == {"GET", "other"}
+        assert value({"": samples}, "obsl_http_requests", method="other", status="405") == 20.0
+
 
 class TestQueries:
     def test_a_query_by_dialect_source_and_outcome(
@@ -259,20 +279,12 @@ class TestState:
                     miss_count_total=6,
                 )
 
-        loop = asyncio.new_event_loop()
-        thread = threading.Thread(target=loop.run_forever, daemon=True)
-        thread.start()
         port = _free_port()
-        metrics.start(
-            enabled=True, host="127.0.0.1", port=port, sessions=sessions, cache=Cache(), loop=loop
-        )
+        metrics.start(enabled=True, host="127.0.0.1", port=port, sessions=sessions, cache=Cache())
         try:
             found = _Scraper(port)()
         finally:
             metrics.stop()
-            loop.call_soon_threadsafe(loop.stop)
-            thread.join(5)
-            loop.close()
             sessions.stop()
         from orionbelt import __version__
 
@@ -291,17 +303,51 @@ class TestState:
             async def stats(self) -> CacheStats:
                 raise RuntimeError("cache down")
 
-        loop = asyncio.new_event_loop()
-        thread = threading.Thread(target=loop.run_forever, daemon=True)
-        thread.start()
         port = _free_port()
-        metrics.start(enabled=True, host="127.0.0.1", port=port, cache=Cache(), loop=loop)
+        metrics.start(enabled=True, host="127.0.0.1", port=port, cache=Cache())
         try:
             found = _Scraper(port)()
         finally:
             metrics.stop()
-            loop.call_soon_threadsafe(loop.stop)
-            thread.join(5)
-            loop.close()
         assert "obsl_build_info" in found
         assert "obsl_result_cache_entries" not in found
+
+    def test_a_scrape_reads_the_file_cache_while_its_lock_is_held(self, tmp_path: Any) -> None:
+        from orionbelt.cache.file import FileCache
+
+        # The scrape reads on its own thread, not the server's event loop,
+        # and does not wait for the lock the cache's operations take.
+        cache = FileCache(
+            cache_dir=str(tmp_path),
+            max_value_bytes=1024,
+            max_disk_bytes=1024 * 1024,
+            max_ttl_seconds=3600,
+            sweep_interval_seconds=60,
+        )
+        asyncio.run(
+            cache.set(
+                "k1",
+                b"payload",
+                ttl_seconds=300,
+                physical_tables=["t"],
+                datasource="s",
+                model_id="m",
+                query_hash="h",
+                dialect="d",
+                row_count=1,
+            )
+        )
+        assert asyncio.run(cache.get("k1")) is not None
+        assert asyncio.run(cache.get("absent")) is None
+        port = _free_port()
+        metrics.start(enabled=True, host="127.0.0.1", port=port, cache=cache)
+        try:
+            with cache._lock:
+                found = _Scraper(port)()
+        finally:
+            metrics.stop()
+            asyncio.run(cache.shutdown())
+        assert value(found, "obsl_result_cache_backend", backend="file") == 1.0
+        assert value(found, "obsl_result_cache_entries") == 1.0
+        assert value(found, "obsl_result_cache_lookups", result="hit") == 1.0
+        assert value(found, "obsl_result_cache_lookups", result="miss") == 1.0
