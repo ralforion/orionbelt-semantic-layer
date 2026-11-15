@@ -884,6 +884,32 @@ class TestMetrics:
         up = [s.value for s in found["obsl_duckdb_worker_up"]]
         assert up == [0.0]
 
+    def test_a_statement_counts_once_run_whether_it_fails_or_is_ended(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        source = lake(HARDCHARGER_WORKERS=W1, HARDCHARGER_QUERY_TIMEOUT_SECONDS="0.2")
+        workers[W1].queue_full = 1  # refused before it ran: a retry, not a statement
+        cursor = duckdb_pool.cursor(source)
+        cursor.execute("SELECT 1")
+        cursor.close()
+        cursor = duckdb_pool.cursor(source)
+        with pytest.raises(Exception, match="Parser Error"):
+            cursor.execute("BAD SQL")  # the query's own failure
+        cursor.close()
+        workers[W1].hang = True
+        cursor = duckdb_pool.cursor(source)
+        with pytest.raises(duckdb_pool.WorkerTimeoutError):
+            cursor.execute("SELECT 2")  # ended by the pool at its deadline
+        cursor.close()
+        found = self._scrape()
+
+        def by_reason(name: str) -> dict[str, float]:
+            return {s.labels["reason"]: s.value for s in found[name]}
+
+        assert [s.value for s in found["obsl_duckdb_worker_statements"]] == [3.0]
+        assert by_reason("obsl_duckdb_worker_retries") == {"rate_limited": 1.0}
+        assert by_reason("obsl_duckdb_worker_statements_ended") == {"deadline": 1.0}
+
     def test_a_connect_given_up_counts_as_a_retry_and_opening(
         self, workers: dict[str, FakeWorker]
     ) -> None:

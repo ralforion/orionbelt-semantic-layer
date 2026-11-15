@@ -48,7 +48,7 @@ DB_LAKE_DUCKDB_CONNECTION_SQL=SET search_path = 'lake.sales'
 | `DB_<NAME>_HARDCHARGER_QUERY_TIMEOUT_SECONDS` | `120` | Each statement's timeout, set on the worker |
 | `DB_<NAME>_HARDCHARGER_HEALTH_INTERVAL_SECONDS` | `5` | How often each worker's health is checked |
 | `DB_<NAME>_HARDCHARGER_CONNECT_TIMEOUT_SECONDS` | `10` | How long opening a connection to a worker may take |
-| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone`. They run like a query: with its timeout, and retried like one |
+| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone`. They run like a query: with its timeout, and retried like one. A session starts in the worker's time zone (UTC in the Hardcharger image), where DuckDB in process takes the host's; a `TIMESTAMPTZ` result carries that zone |
 | `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` | `10`, `30` | As for every source: how many of its queries run at once, and how long a query waits for a connection |
 
 Like a source's other settings, an unprefixed `HARDCHARGER_WORKERS` (and so
@@ -128,8 +128,8 @@ SQL's own connection only.
 
 With `METRICS_ENABLED=true`, OrionBelt's Prometheus metrics show each pool:
 per source and worker, whether it takes queries, its connections, the
-statements started on it, the queries run again and why, and the statements
-the pool ended. The [Metrics](../reference/metrics.md#duckdb-worker-pools)
+statements it ran, the queries run again and why, and the statements the pool
+ended. The [Metrics](../reference/metrics.md#duckdb-worker-pools)
 reference lists them, with a scrape configuration for them and for the
 workers' own (port 9091).
 

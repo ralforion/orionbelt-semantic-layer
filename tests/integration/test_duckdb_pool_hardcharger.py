@@ -147,6 +147,9 @@ def in_process(data: Path) -> DataSource:
     environ = {
         "DB_FILES_DUCKDB_DATABASE": ":memory:",
         "DB_FILES_DUCKDB_ALLOWED_PATHS": f"{data / 'data'}/",
+        # The workers' sessions run in UTC; in process DuckDB takes the host's
+        # zone, which a TIMESTAMPTZ column's type carries.
+        "DB_FILES_DUCKDB_CONNECTION_SQL": "SET TimeZone = 'UTC'",
     }
     return DataSource(name="files", dialect="duckdb", prefix="DB_FILES_", environ=environ)
 
