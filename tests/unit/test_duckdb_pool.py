@@ -910,6 +910,56 @@ class TestMetrics:
         assert by_reason("obsl_duckdb_worker_retries") == {"rate_limited": 1.0}
         assert by_reason("obsl_duckdb_worker_statements_ended") == {"deadline": 1.0}
 
+    def _counts(self) -> dict[str, tuple[float, dict[str, float], dict[str, float]]]:
+        """Per worker: statements, retries by reason, statements ended by reason."""
+        found = self._scrape()
+
+        def of(name: str, worker: str) -> dict[str, float]:
+            return {
+                s.labels["reason"]: s.value for s in found[name] if s.labels["worker"] == worker
+            }
+
+        return {
+            s.labels["worker"]: (
+                s.value,
+                of("obsl_duckdb_worker_retries", s.labels["worker"]),
+                of("obsl_duckdb_worker_statements_ended", s.labels["worker"]),
+            )
+            for s in found["obsl_duckdb_worker_statements"]
+        }
+
+    def test_a_session_setup_counts_as_a_statement_once_run(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        workers[W1].hang_on = "SET"  # W1's setup is ended at its deadline
+        source = lake(
+            DUCKDB_CONNECTION_SQL=TestOpening.SETUP, HARDCHARGER_QUERY_TIMEOUT_SECONDS="0.2"
+        )
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        with duckdb_pool.cursor(source) as cursor:
+            cursor.execute("SELECT 1")
+            assert cursor.fetch_arrow_table().column("worker")[0].as_py() == "w2"
+        assert self._counts() == {
+            "w1:31337": (1.0, {}, {"deadline": 1.0}),  # the setup the pool ended
+            "w2:31337": (2.0, {}, {}),  # the setup and the query
+        }
+
+    def test_a_session_setup_refused_or_failing(self, workers: dict[str, FakeWorker]) -> None:
+        workers[W1].setup_refusals = ["rate_limited"]  # refused before it ran: a retry
+        source = lake(HARDCHARGER_WORKERS=W1, DUCKDB_CONNECTION_SQL=TestOpening.SETUP)
+        with duckdb_pool.cursor(source) as cursor:
+            cursor.execute("SELECT 1")
+        assert self._counts() == {"w1:31337": (2.0, {"rate_limited": 1.0}, {})}
+        duckdb_pool.close_pools()
+        failing = lake(HARDCHARGER_WORKERS=W1, DUCKDB_CONNECTION_SQL="BAD SETUP")
+        with (
+            pytest.raises(duckdb_pool.PoolConfigError),
+            duckdb_pool.cursor(failing) as cursor,
+        ):
+            cursor.execute("SELECT 1")
+        assert self._counts() == {"w1:31337": (1.0, {}, {})}  # it ran, and failed on its own
+
     def test_a_connect_given_up_counts_as_a_retry_and_opening(
         self, workers: dict[str, FakeWorker]
     ) -> None:

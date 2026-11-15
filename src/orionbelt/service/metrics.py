@@ -210,8 +210,9 @@ class PoolCollector:
         )
         statements = CounterMetricFamily(
             "obsl_duckdb_worker_statements",
-            "Statements the worker ran, those that failed or that the pool ended included; "
-            "one it refused before running counts as a retry",
+            "Statements the worker ran, a session's setup (DUCKDB_CONNECTION_SQL) as one, "
+            "those that failed or that the pool ended included; one it refused before "
+            "running counts as a retry",
             labels=["source", "worker"],
         )
         retries = CounterMetricFamily(
