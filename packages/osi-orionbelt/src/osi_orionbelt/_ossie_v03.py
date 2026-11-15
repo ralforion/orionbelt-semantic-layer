@@ -50,6 +50,9 @@ _OSSIE_SQL = "OSSIE_SQL_2026"
 # A dataset-scoped metric may read a column of the dataset's source that no
 # field exposes as ``source.<column>``.
 _SOURCE_QUALIFIER = "source"
+# Set by the import on each lifted metric: ``{"dataset": ..., "metric": ...}``,
+# the metric as its dataset declared it.
+SCOPE_KEY = "_ossie_scope"
 
 
 def to_internal(doc: dict[str, Any], warn: Callable[[str], None]) -> dict[str, Any]:
@@ -167,7 +170,9 @@ def _lift_dataset_metrics(model: dict[str, Any], warn: Callable[[str], None]) ->
     dataset alone: ``SUM(amount)`` on ``orders`` is ``SUM(orders.amount)``, and
     ``COUNT(*)`` counts the dataset's rows, ``COUNT(orders.<primary key>)``.
     OBML has one namespace for measures, so a name another metric already takes
-    becomes ``"<dataset> <metric>"``, with a warning.
+    becomes ``"<dataset> <metric>"``, with a warning. Each lifted metric keeps
+    where it was declared (:data:`SCOPE_KEY`), so one the import cannot convert
+    is written back on its dataset.
     """
     own = _list(model.get("metrics"))
     # Lifted first: a model-scoped metric over ``AGG(dataset.metric)`` reuses the
@@ -184,11 +189,13 @@ def _lift_dataset_metrics(model: dict[str, Any], warn: Callable[[str], None]) ->
         ds_name = str(ds.get("name", ""))
         declared = ds.get("primary_key")
         pk: list[Any] = declared if isinstance(declared, list) else []
+        sources = _SourceColumns(ds, warn)
         for metric in _list(scoped):
             name = str(metric.get("name", ""))
             lifted = dict(metric)
-            if name in taken:
-                lifted["name"] = f"{ds_name} {name}"
+            lifted[SCOPE_KEY] = {"dataset": ds_name, "metric": copy.deepcopy(metric)}
+            lifted["name"] = _unique_name(name, ds_name, taken)
+            if lifted["name"] != name:
                 warn(
                     f"Dataset-scoped metric '{ds_name}.{name}' is imported as "
                     f"'{lifted['name']}': the model has another metric named '{name}'."
@@ -197,7 +204,7 @@ def _lift_dataset_metrics(model: dict[str, Any], warn: Callable[[str], None]) ->
             expression = lifted.get("expression")
             if isinstance(expression, dict):
                 dialects = [
-                    _qualified(d, ds_name, pk, name, warn)
+                    _qualified(d, ds_name, pk, name, sources, warn)
                     for d in _list(expression.get("dialects"))
                 ]
                 lifted["expression"] = {**expression, "dialects": dialects}
@@ -216,6 +223,76 @@ def _lift_dataset_metrics(model: dict[str, Any], warn: Callable[[str], None]) ->
                 ]
     if model_metrics:
         model["metrics"] = model_metrics + own
+
+
+def _unique_name(name: str, ds_name: str, taken: set[Any]) -> str:
+    """*name*, or ``"<dataset> <name>"`` (numbered on) when another metric takes it."""
+    if name not in taken:
+        return name
+    candidate = f"{ds_name} {name}"
+    number = 2
+    while candidate in taken:
+        candidate = f"{ds_name} {name} {number}"
+        number += 1
+    return candidate
+
+
+class _SourceColumns:
+    """The field of a dataset that computes a column of its source, as is.
+
+    ``source.amount`` names the physical column, not the field called
+    ``amount``, which may compute something else (``discounted_amount``). It
+    resolves to a field whose expression is exactly that column; where none
+    is, a field is added for it, since OBML reads only declared columns.
+    """
+
+    def __init__(self, ds: dict[str, Any], warn: Callable[[str], None]) -> None:
+        self._ds = ds
+        self._warn = warn
+        self._names = {str(f.get("name")) for f in _list(ds.get("fields"))}
+
+    def field_for(self, column: exp.Identifier, read: str | None, metric: str) -> str:
+        wanted = _identifier_key(column.sql(dialect=read))
+        for field in _list(self._ds.get("fields")):
+            if _identifier_key(_field_sql(field)) == wanted:
+                return str(field.get("name"))
+        name = f"source_{column.name}"
+        number = 2
+        while name in self._names:
+            name = f"source_{column.name}_{number}"
+            number += 1
+        self._names.add(name)
+        self._ds.setdefault("fields", []).append(
+            {
+                "name": name,
+                "expression": {
+                    "dialects": [{"dialect": _OSSIE_SQL, "expression": column.sql(dialect=read)}]
+                },
+            }
+        )
+        self._warn(
+            f"Dataset-scoped metric '{self._ds.get('name')}.{metric}' reads source column "
+            f"'{column.name}', which no field computes as is; added field '{name}' for it."
+        )
+        return name
+
+
+def _field_sql(field: dict[str, Any]) -> str:
+    """A field's SQL expression in the internal shape (portable form first)."""
+    expression = field.get("expression")
+    if isinstance(expression, dict):
+        for d in _list(expression.get("dialects")):
+            if d.get("dialect") in _OSI_DIALECT_TO_SQLGLOT and isinstance(d.get("expression"), str):
+                return str(d["expression"])
+    return ""
+
+
+def _identifier_key(text: str) -> str:
+    """An identifier compared as SQL compares it: quoted exactly, bare by case."""
+    text = text.strip()
+    if len(text) > 1 and text[0] == text[-1] == '"':
+        return text[1:-1]
+    return text.upper()
 
 
 def _agg_inlined(
@@ -251,7 +328,11 @@ def _agg_inlined(
             inlined = sqlglot.parse_one(body, read=read)
         except Exception:  # noqa: BLE001 - leave the call; the import preserves the metric
             continue
-        call.replace(inlined if isinstance(inlined, exp.Func) else exp.Paren(this=inlined))
+        replacement = inlined if isinstance(inlined, exp.Func) else exp.Paren(this=inlined)
+        if call is tree:  # the whole expression is the call: replace() has no parent to edit
+            tree = replacement
+        else:
+            call.replace(replacement)
         changed = True
     return {**dialect, "expression": tree.sql(dialect=read)} if changed else dialect
 
@@ -271,7 +352,12 @@ def _agg_argument(node: exp.Expr) -> exp.Expr | None:
 
 
 def _qualified(
-    dialect: dict[str, Any], ds_name: str, pk: list[Any], metric: str, warn: Callable[[str], None]
+    dialect: dict[str, Any],
+    ds_name: str,
+    pk: list[Any],
+    metric: str,
+    sources: _SourceColumns,
+    warn: Callable[[str], None],
 ) -> dict[str, Any]:
     """One dialect entry of a dataset-scoped metric, written as a model-scoped one.
 
@@ -290,7 +376,11 @@ def _qualified(
     table = exp.to_identifier(ds_name)
     for column in list(tree.find_all(exp.Column)):
         qualifier = column.table
-        if not qualifier or qualifier.lower() == _SOURCE_QUALIFIER:
+        if qualifier and qualifier.lower() == _SOURCE_QUALIFIER:
+            field = sources.field_for(column.this, read, metric)
+            column.set("this", exp.to_identifier(field))
+            column.set("table", table.copy())
+        elif not qualifier:
             column.set("table", table.copy())
     for count in list(tree.find_all(exp.Count)):
         if not isinstance(count.this, exp.Star):

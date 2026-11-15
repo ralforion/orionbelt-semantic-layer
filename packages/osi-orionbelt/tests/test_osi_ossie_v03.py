@@ -91,12 +91,16 @@ def _load(name: str) -> dict[str, Any]:
     return loaded
 
 
-def _unconverted(obml: dict[str, Any]) -> list[str]:
+def _stash(obml: dict[str, Any], key: str) -> list[Any]:
     for ext in obml.get("customExtensions", []):
         data = json.loads(ext["data"]) if ext.get("vendor") == "OSI" else {}
-        if "obml_unconverted_metrics" in data:
-            return [m["name"] for m in data["obml_unconverted_metrics"]]
+        if key in data:
+            return list(data[key])
     return []
+
+
+def _unconverted(obml: dict[str, Any]) -> list[str]:
+    return [m["name"] for m in _stash(obml, "obml_unconverted_metrics")]
 
 
 class TestSqlForm:
@@ -145,8 +149,45 @@ class TestDatasetScopedMetrics:
         del doc["datasets"][0]["primary_key"]
         obml, warnings = _convert(doc)
         assert "order_count" not in obml.get("measures", {})
-        assert "order_count" in _unconverted(obml)
+        kept = _stash(obml, "obml_unconverted_dataset_metrics")
+        assert [(k["dataset"], k["metric"]["name"]) for k in kept] == [("orders", "order_count")]
         assert any("'orders Count'" in w for w in warnings)
+
+    def test_a_kept_back_dataset_metric_is_written_back_on_its_dataset(self) -> None:
+        doc = _shop()
+        del doc["datasets"][0]["primary_key"]
+        back = conv.OBMLtoOSI(_convert(doc)[0]).convert()
+        orders = next(ds for ds in back["datasets"] if ds["name"] == "orders")
+        written = {m["name"]: m["expression"] for m in orders.get("metrics", [])}
+        assert written["order_count"]["dialects"][0]["expression"] == "COUNT(*)"
+        assert "order_count" not in {m["name"] for m in back.get("metrics", [])}
+        assert conv.validate_osi(back).valid
+
+    def test_a_source_column_is_the_physical_column_not_the_field_of_that_name(self) -> None:
+        # Field ``amount`` computes discounted_amount; source.amount is the column.
+        doc = _shop()
+        doc["datasets"][0]["fields"][2] = _field("amount", "discounted_amount")
+        doc["datasets"][0]["metrics"] = [
+            {"name": "gross", "expression": {"sql": "SUM(source.amount)"}}
+        ]
+        obml, warnings = _convert(doc)
+        column = obml["measures"]["gross"]["columns"][0]["column"]
+        assert column != "amount"
+        assert obml["dataObjects"]["orders"]["columns"][column]["code"] == "amount"
+        assert any("source column 'amount'" in w for w in warnings)
+
+    def test_a_generated_name_does_not_take_an_existing_one(self) -> None:
+        doc = _shop(
+            metrics=[
+                {"name": "total_revenue", "expression": {"sql": "MAX(orders.amount)"}},
+                {"name": "orders total_revenue", "expression": {"sql": "MIN(orders.amount)"}},
+            ]
+        )
+        obml, _ = _convert(doc)
+        aggregations = {n: m["aggregation"] for n, m in obml["measures"].items()}
+        assert aggregations["total_revenue"] == "max"
+        assert aggregations["orders total_revenue"] == "min"
+        assert aggregations["orders total_revenue 2"] == "sum"
 
     def test_a_source_column_resolves_to_the_field_computing_it(self) -> None:
         doc = _shop()
@@ -182,6 +223,15 @@ class TestDatasetScopedMetrics:
         obml, _ = _convert(doc)
         formula = obml["metrics"]["revenue_per_customer"]["expression"]
         assert formula.startswith("{[total_revenue]} /")
+
+    def test_agg_as_the_whole_expression(self) -> None:
+        doc = _shop(
+            metrics=[{"name": "revenue_again", "expression": {"sql": "AGG(orders.total_revenue)"}}]
+        )
+        obml, _ = _convert(doc)
+        assert obml["measures"]["revenue_again"]["columns"] == [
+            {"dataObject": "orders", "column": "amount"}
+        ]
 
 
 class TestNonportableExtensions:

@@ -122,6 +122,7 @@ class OBMLtoOSI:
         # Relationships OBML cannot join (a dataset joined to itself), kept by
         # the import verbatim.
         all_relationships.extend(self._restored_entries("obml_unconverted_relationships"))
+        self._restore_dataset_metrics(datasets)
 
         # ── Build semantic model ────────────────────────────────────
         sem_model: dict[str, Any] = {"name": self.model_name}
@@ -665,6 +666,27 @@ class OBMLtoOSI:
             }
 
         return rel
+
+    def _restore_dataset_metrics(self, datasets: list[dict]) -> None:
+        """Write the dataset-scoped metrics the import kept back onto their datasets.
+
+        A ``COUNT(*)`` on a dataset without a single-column primary key counts
+        that dataset's rows; written at model level it would count nothing in
+        particular.
+        """
+        by_name = {ds.get("name"): ds for ds in datasets}
+        for entry in self._restored_entries("obml_unconverted_dataset_metrics"):
+            metric = entry.get("metric")
+            dataset = by_name.get(entry.get("dataset"))
+            if not isinstance(metric, dict):
+                continue
+            if dataset is None:
+                self.warnings.append(
+                    f"Dataset-scoped metric '{metric.get('name')}' was kept for dataset "
+                    f"'{entry.get('dataset')}', which the model no longer has; left out."
+                )
+                continue
+            dataset.setdefault("metrics", []).append(metric)
 
     def _restored_entries(self, key: str) -> list[dict]:
         """Entries the import kept verbatim under *key* in its OSI-vendor stash."""

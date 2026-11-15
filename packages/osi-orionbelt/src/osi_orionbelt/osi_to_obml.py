@@ -35,7 +35,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
-from osi_orionbelt._ossie_v03 import to_internal
+from osi_orionbelt._ossie_v03 import SCOPE_KEY, to_internal
 from osi_orionbelt._portable import matching_names
 
 # sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
@@ -273,6 +273,8 @@ class OSItoOBML:
         self.warnings = []
         self._unconverted_metrics = []
         self._unconverted_relationships: list[dict] = []
+        # Dataset-scoped metrics kept back, with the dataset that declared them.
+        self._unconverted_dataset_metrics: list[dict] = []
         self._restored_names = set()
 
         # Ossie 0.3.0.dev0 shapes (``expression.sql``, dataset-scoped metrics,
@@ -345,10 +347,16 @@ class OSItoOBML:
         # (OBML -> OSI) direction re-emits them and a full OSI -> OBML -> OSI
         # roundtrip stays lossless. They are not queryable in OBML; a LOSSY
         # warning was already recorded per metric.
-        if self._unconverted_metrics or self._unconverted_relationships:
+        if (
+            self._unconverted_metrics
+            or self._unconverted_relationships
+            or self._unconverted_dataset_metrics
+        ):
             stash: dict[str, Any] = {FIELD_NAMES_KEY: FIELD_NAMES_COLUMN}
             if self._unconverted_metrics:
                 stash["obml_unconverted_metrics"] = self._unconverted_metrics
+            if self._unconverted_dataset_metrics:
+                stash["obml_unconverted_dataset_metrics"] = self._unconverted_dataset_metrics
             if self._unconverted_relationships:
                 stash["obml_unconverted_relationships"] = self._unconverted_relationships
             obml.setdefault("customExtensions", []).append(
@@ -1603,9 +1611,15 @@ class OSItoOBML:
         OBML cannot express the metric, but dropping it silently would break
         the README's roundtrip promise. Instead the original OSI metric is kept
         verbatim (re-emitted on OBML -> OSI) and a loud LOSSY warning is raised:
-        the metric is preserved but NOT queryable through OBML.
+        the metric is preserved but NOT queryable through OBML. A metric lifted
+        from a dataset is kept as its dataset declared it, with that dataset, so
+        the export writes it back there rather than as a model-level metric.
         """
-        self._unconverted_metrics.append(osi_metric)
+        scope = osi_metric.get(SCOPE_KEY)
+        if isinstance(scope, dict):
+            self._unconverted_dataset_metrics.append(scope)
+        else:
+            self._unconverted_metrics.append(osi_metric)
         self.warnings.append(
             f"LOSSY: OSI metric '{osi_metric.get('name', '?')}' has no OBML representation "
             f"({reason}); preserved verbatim for OSI -> OBML -> OSI roundtrip but it is "
