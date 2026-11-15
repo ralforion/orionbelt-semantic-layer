@@ -24,6 +24,7 @@ exercises the drift-diff logic without touching the network.
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import urllib.error
@@ -132,9 +133,9 @@ class TestDriftDiff:
 
 
 class _Response:
-    """Stands in for the ``urlopen`` context manager."""
+    """Stands in for the ``urlopen`` context manager; *body* may be an error ``read`` raises."""
 
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes | Exception) -> None:
         self._body = body
 
     def __enter__(self) -> _Response:
@@ -144,6 +145,8 @@ class _Response:
         return None
 
     def read(self) -> bytes:
+        if isinstance(self._body, Exception):
+            raise self._body
         return self._body
 
 
@@ -154,11 +157,11 @@ class TestDriftExitCodes:
     404, printed "skipping" and exited 0 for weeks, which read as "in sync".
     """
 
-    def _run(self, monkeypatch: Any, outcome: Any) -> int:
+    def _run(self, monkeypatch: Any, outcome: Any, *, on_read: bool = False) -> int:
         mod = _drift_module()
 
         def fake_urlopen(url: str, timeout: int) -> _Response:
-            if isinstance(outcome, Exception):
+            if isinstance(outcome, Exception) and not on_read:
                 raise outcome
             return _Response(outcome)
 
@@ -190,3 +193,15 @@ class TestDriftExitCodes:
     def test_server_error_skips(self, monkeypatch: Any) -> None:
         busy = urllib.error.HTTPError("u", 503, "Unavailable", Message(), None)
         assert self._run(monkeypatch, busy) == 0
+
+    def test_a_response_cut_short_skips(self, monkeypatch: Any) -> None:
+        # ``read`` raises IncompleteRead, an HTTPException rather than an
+        # OSError; escaping, it exited 1 and filed a drift issue with no report.
+        short = http.client.IncompleteRead(b"{", 4096)
+        assert self._run(monkeypatch, short, on_read=True) == 0
+
+    def test_json_that_is_not_an_object_exits_two(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, b"[]") == 2
+
+    def test_an_unexpected_error_exits_two_not_one(self, monkeypatch: Any) -> None:
+        assert self._run(monkeypatch, RuntimeError("boom")) == 2

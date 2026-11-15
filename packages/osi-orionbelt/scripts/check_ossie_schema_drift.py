@@ -23,12 +23,15 @@ exits non-zero when they differ, so a scheduled CI job can open an issue.
 
 Exit codes:
 
-- ``0``: in sync, or the fetch failed for a transient reason (network, server error).
-- ``1``: drift; the report lists it.
-- ``2``: the check itself is broken: the upstream URL is gone (HTTP 404/410) or
-  does not serve JSON. Upstream moved the schema once (``osi-schema.json`` ->
-  ``ossie-schema.json``) and the check kept passing on a 404, so this must fail
-  the run instead of reading as "in sync".
+- ``0``: in sync, or the fetch failed for a transient reason (network, server
+  error, a response cut short).
+- ``1``: drift; the report lists it. Nothing else exits 1: an uncaught exception
+  would, and it would file a drift issue with an empty report.
+- ``2``: the check itself is broken: the upstream URL is gone (HTTP 404/410),
+  does not serve a JSON schema, or the check failed in a way it does not expect.
+  Upstream moved the schema once (``osi-schema.json`` -> ``ossie-schema.json``)
+  and the check kept passing on a 404, so this must fail the run instead of
+  reading as "in sync".
 
 Usage::
 
@@ -38,6 +41,7 @@ Usage::
 
 from __future__ import annotations
 
+import http.client
 import json
 import sys
 import urllib.error
@@ -113,36 +117,35 @@ def diff(vendored: dict[str, Any], upstream: dict[str, Any]) -> list[str]:
     return lines
 
 
-def main() -> int:
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print(__doc__)
-        return 0
+def _broken(reason: str) -> int:
+    print(f"## Ossie schema drift check is broken\n\n{reason}")
+    return EXIT_BROKEN
 
+
+def _check() -> int:
     vendored = json.loads(VENDORED.read_text())
     try:
         with urllib.request.urlopen(UPSTREAM_URL, timeout=30) as resp:  # noqa: S310 (trusted host)
             body = resp.read()
     except urllib.error.HTTPError as exc:
         if exc.code in _GONE:
-            print(
-                f"## Ossie schema drift check is broken\n\nUpstream answered HTTP {exc.code} "
-                f"for {UPSTREAM_URL}: the schema moved or was removed. Point `UPSTREAM_URL` "
-                "at its new location."
+            return _broken(
+                f"Upstream answered HTTP {exc.code} for {UPSTREAM_URL}: the schema moved or "
+                "was removed. Point `UPSTREAM_URL` at its new location."
             )
-            return EXIT_BROKEN
         print(f"Could not fetch upstream schema ({exc}); skipping drift check.")
         return EXIT_IN_SYNC
-    except OSError as exc:  # URLError and timeouts: transient, not drift
-        print(f"Could not fetch upstream schema ({exc}); skipping drift check.")
+    # URLError and timeouts are OSErrors; a response cut short (IncompleteRead)
+    # or malformed is an HTTPException, which is not. All are transient.
+    except (OSError, http.client.HTTPException) as exc:
+        print(f"Could not fetch upstream schema ({exc!r}); skipping drift check.")
         return EXIT_IN_SYNC
     try:
         upstream = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        print(
-            f"## Ossie schema drift check is broken\n\n{UPSTREAM_URL} did not return a JSON "
-            f"schema ({exc})."
-        )
-        return EXIT_BROKEN
+        return _broken(f"{UPSTREAM_URL} did not return JSON ({exc}).")
+    if not isinstance(upstream, dict):
+        return _broken(f"{UPSTREAM_URL} returned JSON that is not a schema object.")
 
     lines = diff(vendored, upstream)
     if not lines:
@@ -157,6 +160,16 @@ def main() -> int:
         "and `test_osi_schema_freshness.py`."
     )
     return EXIT_DRIFT
+
+
+def main() -> int:
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        return EXIT_IN_SYNC
+    try:
+        return _check()
+    except Exception as exc:  # noqa: BLE001 - uncaught, Python exits 1, which reads as drift
+        return _broken(f"The check failed unexpectedly: {type(exc).__name__}: {exc}")
 
 
 if __name__ == "__main__":
