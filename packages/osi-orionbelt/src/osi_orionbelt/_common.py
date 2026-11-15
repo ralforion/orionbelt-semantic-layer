@@ -186,3 +186,27 @@ OBML_ABSTRACT_TO_OSI_DATATYPE = {
     "timestamp_tz": "DateTimeTz",
     "boolean": "Boolean",
 }
+
+
+# One quoted identifier, in each quoting style: the pattern, its escaped
+# delimiter, and what that stands for.
+_QUOTED_IDENTIFIERS = (
+    (re.compile(r'"((?:[^"]|"")+)"'), '""', '"'),
+    (re.compile(r"`((?:[^`]|``)+)`"), "``", "`"),
+    (re.compile(r"\[((?:[^\]]|\]\])+)\]"), "]]", "]"),
+)
+
+
+def physical_code(sql: str) -> str:
+    """The physical column name of a field whose SQL is one identifier.
+
+    OBML quotes a column's ``code`` itself, so a double-quoted, backtick or
+    bracket identifier gives its name, doubled delimiters undone. Anything else
+    (a bare name, an expression) is kept as written.
+    """
+    text = sql.strip()
+    for pattern, doubled, single in _QUOTED_IDENTIFIERS:
+        match = pattern.fullmatch(text)
+        if match:
+            return match.group(1).replace(doubled, single)
+    return text

@@ -27,6 +27,7 @@ from osi_orionbelt._common import (
     OSI_DATATYPE_TO_OBML_ABSTRACT,
     OSI_DATATYPE_TO_OBML_PHYSICAL,
     OSI_TO_OBML_TYPE,
+    physical_code,
 )
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
@@ -105,15 +106,6 @@ _PERCENTILE_NAMES = frozenset(
         "QUANTILE_CONT",
         "QUANTILE_DISC",
     }
-)
-
-
-# One quoted identifier, in each quoting style: the pattern, its escaped
-# delimiter, and what that stands for.
-_QUOTED_IDENTIFIERS = (
-    (re.compile(r'"((?:[^"]|"")+)"'), '""', '"'),
-    (re.compile(r"`((?:[^`]|``)+)`"), "``", "`"),
-    (re.compile(r"\[((?:[^\]]|\]\])+)\]"), "]]", "]"),
 )
 
 
@@ -695,7 +687,7 @@ class OSItoOBML:
             # OBML quotes ``code`` as a column name itself, so a quoted
             # identifier keeps only the name: '"Order Total"' was compiled to
             # "t"."""Order Total""". The authored SQL is kept for the export.
-            code = self._physical_code(sql_expr)
+            code = physical_code(sql_expr)
             if code != sql_expr:
                 field_sql_stash = sql_expr
         else:
@@ -1585,21 +1577,6 @@ class OSItoOBML:
         ):
             return ident[1:-1]
         return ident
-
-    @staticmethod
-    def _physical_code(sql: str) -> str:
-        """The physical column name of a field whose SQL is one identifier.
-
-        A double-quoted, backtick or bracket identifier gives its name, doubled
-        delimiters undone; anything else (a bare name, an expression) is kept as
-        written.
-        """
-        text = sql.strip()
-        for pattern, doubled, single in _QUOTED_IDENTIFIERS:
-            match = pattern.fullmatch(text)
-            if match:
-                return match.group(1).replace(doubled, single)
-        return text
 
     @staticmethod
     def _sql_dialect_expression(expr_obj: object) -> str | None:

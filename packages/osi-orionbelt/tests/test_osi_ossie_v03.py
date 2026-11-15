@@ -323,6 +323,18 @@ class TestQuotedFieldIdentifiers:
         total = next(f for f in orders["fields"] if f["name"] == "total")
         assert total["expression"]["dialects"][0]["expression"] == '"Order Total"'
 
+    def test_an_edited_code_wins_over_the_saved_sql(self) -> None:
+        doc = _shop()
+        doc["datasets"][0]["fields"].append(_field("total", '"Order Total"'))
+        obml, _ = _convert(doc)
+        obml["dataObjects"]["orders"]["columns"]["total"]["code"] = "new_total"
+        back = conv.OBMLtoOSI(obml).convert()
+        orders = next(ds for ds in back["datasets"] if ds["name"] == "orders")
+        total = next(f for f in orders["fields"] if f["name"] == "total")
+        assert total["expression"]["dialects"][0]["expression"] == "new_total"
+        again, _ = _convert(back)
+        assert again["dataObjects"]["orders"]["columns"]["total"]["code"] == "new_total"
+
     def test_import_stashes_stay_out_of_ai_context(self) -> None:
         doc = _shop()
         doc["datasets"][0]["fields"].append(_field("total", '"Order Total"', label="Total"))

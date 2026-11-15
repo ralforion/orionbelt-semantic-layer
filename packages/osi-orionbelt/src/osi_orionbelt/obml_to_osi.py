@@ -19,6 +19,7 @@ from osi_orionbelt._common import (
     OBML_ABSTRACT_TO_OSI_DATATYPE,
     OBML_TO_OSI_TYPE,
     obml_datatype_to_osi,
+    physical_code,
 )
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
@@ -441,11 +442,13 @@ class OBMLtoOSI:
         ``code``. The code can be a SQL expression (a calculated column from an
         OSI import), which must never become the field name.
         """
-        # A field the import read as a quoted identifier keeps that SQL: ``code``
-        # holds only the name, which is not SQL when it has a space.
-        code = self._stashed_field_sql(col_obj) or col_obj.get(
-            "code", col_name.lower().replace(" ", "_")
-        )
+        code = col_obj.get("code", col_name.lower().replace(" ", "_"))
+        # A field the import read as a quoted identifier keeps that SQL, since
+        # ``code`` holds only the name, which is not SQL when it has a space. Only
+        # while it still names the column: an edited code is written as it is now.
+        stashed = self._stashed_field_sql(col_obj)
+        if stashed is not None and physical_code(stashed) == code:
+            code = stashed
 
         dialects = [{"dialect": "ANSI_SQL", "expression": code}]
         # In Ossie's own language too where the code is inside it, as metrics
