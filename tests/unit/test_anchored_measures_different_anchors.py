@@ -73,6 +73,12 @@ measures:
     aggregation: sum
     anchor: Returns
     expression: '{[Returns].[Return Amount]} - {[Orders].[Order Amount]}'
+  Net Per Order Fixed:
+    resultType: int
+    aggregation: sum
+    anchor: Orders
+    filterContext: {mode: FIXED}
+    expression: '{[Orders].[Order Amount]} - {[Returns].[Return Amount]}'
   Revenue: {columns: [{dataObject: Orders, column: Order Amount}], aggregation: sum}
 metrics:
   Both: {expression: '{[Net]} + {[Net Per Order]}'}
@@ -162,3 +168,34 @@ def test_one_anchor_stays_a_single_plan(model: SemanticModel) -> None:
     query = QueryObject(select={"measures": ["Net Per Order", "Revenue"]})
     sql = CompilationPipeline().compile(query, model, "duckdb").sql
     assert "UNION ALL" not in sql.upper()
+
+
+NOT_200 = [{"field": "Orders.Order Amount", "op": "!=", "value": 200}]
+
+
+def test_a_filter_on_a_fact_keeps_each_leg_on_its_anchor(model: SemanticModel) -> None:
+    # Net conforms Orders and applies the filter in that subquery; the leg used
+    # to read the filter's table and root itself at Orders. Without O2:
+    # per customer C1 100 - 40, C2 50 - 10, C3 300 - 5; per order the same.
+    query = {"select": {"measures": ["Net", "Net Per Order"]}, "where": NOT_200}
+    assert _rows(model, query) == [(395, 395)]
+    query = {
+        "select": {"dimensions": ["Region"], "measures": ["Net", "Net Per Order"]},
+        "where": NOT_200,
+    }
+    assert sorted(_rows(model, query)) == [("EAST", 100, 100), ("WEST", 295, 295)]
+
+
+def _alone(model: SemanticModel, measure: str, where: list[dict[str, Any]]) -> Any:
+    return _rows(model, {"select": {"measures": [measure]}, "where": where})[0][0]
+
+
+@pytest.mark.parametrize("where", [[], NOT_200], ids=["unfiltered", "filtered"])
+def test_a_measure_computed_apart_leaves_the_other_anchor_its_leg(
+    model: SemanticModel, where: list[dict[str, Any]]
+) -> None:
+    # A filterContext measure is computed apart; the leg left standing is Net's,
+    # which the star fallback rooted at Orders, the base chosen for two anchors.
+    measures = ["Net", "Net Per Order Fixed"]
+    together = _rows(model, {"select": {"measures": measures}, "where": where})[0]
+    assert list(together) == [_alone(model, m, where) for m in measures]

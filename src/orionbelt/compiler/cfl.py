@@ -187,7 +187,18 @@ class CFLPlanner:
         # the query compiled to SQL naming a column that does not exist.
         self._reject_unreachable_dimensions(measures_by_object, resolved, model)
 
-        if len(measures_by_object) <= 1 and not cross_fact:
+        # A leg kept for one anchor is rooted at that anchor. Where it is the
+        # only leg left (another anchor's measure is computed apart, under a
+        # filterContext) but resolution based the query elsewhere, the star
+        # would root it at that base and join its conformed facts on a table it
+        # never joined; the union plans the one leg at its own rows instead.
+        anchors = set(resolved.anchored_measures.values())
+        off_base = [key for key in measures_by_object if key in anchors]
+        if (
+            len(measures_by_object) <= 1
+            and not cross_fact
+            and all(key == resolved.base_object for key in off_base)
+        ):
             # Single fact — delegate to star schema. Resolution let this query
             # past the reachability check because it looked multi-fact, and a
             # star has to serve every dimension from one root, so check now
@@ -545,15 +556,17 @@ class CFLPlanner:
         if cross_fact:
             all_measures.extend(cross_fact)
 
-        # Collect data objects referenced by WHERE filters — each leg
-        # must join these tables so the filter predicates are valid.
-        filter_objects: set[str] = set()
+        # Data objects each WHERE filter reads — a leg applying it must join
+        # these tables so the predicate is valid.
+        filter_reads: list[tuple[ResolvedFilter, set[str]]] = []
         for wf in resolved.where_filters:
-            self._collect_table_refs(wf.expression, filter_objects)
+            reads: set[str] = set()
+            self._collect_table_refs(wf.expression, reads)
             # An EXISTS body correlates to an outer table, which the walk above
             # cannot see: the body is a Select, not an expression. Each leg
             # emits that body in its own WHERE, so each leg has to join it.
-            cfl_projection.collect_correlated_tables(wf.expression, filter_objects)
+            cfl_projection.collect_correlated_tables(wf.expression, reads)
+            filter_reads.append((wf, reads))
 
         # Build one SELECT per fact object group.
         # Each leg computes its own LCA (least common ancestor) as the lead
@@ -567,6 +580,20 @@ class CFLPlanner:
         for obj_name, measures in measures_by_object.items():
             leg_builder = QueryBuilder()
             this_measure_names = {m.name for m in measures}
+            # The leg's measures as the base measures they compute, for a
+            # filter its anchored measures read in their conformed subqueries:
+            # the leg neither applies it nor joins what it reads, so it stays
+            # rooted at its anchor. Joining Orders for an Orders filter rooted
+            # a per-customer leg at Orders.
+            leg_bases = computed_measures(
+                model, (name for m in measures for name in (m.component_measures or [m.name]))
+            )
+            leg_filters = [
+                (wf, reads)
+                for wf, reads in filter_reads
+                if not (leg_bases and leg_bases <= wf.conformed_for)
+            ]
+            filter_objects: set[str] = set().union(*(reads for _, reads in leg_filters))
 
             # Compute reachability from this leg's fact object upfront.
             # Deliberately not ``descendants``: a leg is a star built out of
@@ -828,14 +855,7 @@ class CFLPlanner:
             # relevant, so the leg skips it and says so; one declared
             # ``enforce: always`` refuses the query.
             leg_objects = leg_required | {lead}
-            # The leg's measures as the base measures they compute, for a
-            # filter its anchored measures read in their conformed subqueries.
-            leg_bases = computed_measures(
-                model, (name for m in measures for name in (m.component_measures or [m.name]))
-            )
-            for wf in resolved.where_filters:
-                if leg_bases and leg_bases <= wf.conformed_for:
-                    continue
+            for wf, _reads in leg_filters:
                 missing: set[str] = set()
                 for condition in conjuncts(wf.expression):
                     condition_objects: set[str] = set()
