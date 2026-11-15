@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     # (e.g. "de", "en-US"). Empty → en-style separators ("," / ".").
     default_locale: str = ""
 
+    # Prometheus metrics (service/metrics.py): off unless enabled, and on a port
+    # of their own rather than the API's, so they stay off a public API.
+    metrics_enabled: bool = False
+    metrics_host: str = "0.0.0.0"  # noqa: S104 — server bind address
+    metrics_port: int = 9090
+
     # Arrow Flight SQL server (requires ob-flight-extension)
     flight_enabled: bool = False  # start gRPC Flight server on FLIGHT_PORT (implies query_execute)
     flight_port: int = 8815

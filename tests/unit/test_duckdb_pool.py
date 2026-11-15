@@ -381,7 +381,7 @@ class TestSettings:
         monkeypatch.setenv("DB_LAKE_DUCKDB_BACKEND", "hardcharger")
         monkeypatch.delenv("DB_LAKE_HARDCHARGER_WORKERS", raising=False)
         with pytest.raises(RuntimeError, match="DB_LAKE_HARDCHARGER_WORKERS"):
-            api_app._check_duckdb_workers()
+            api_app._start_duckdb_workers()
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +559,7 @@ class TestHealth:
         cursor = pool.cursor()
         cursor.execute("SELECT 1")
         assert cursor._lease is not None
-        pool._end(cursor._lease._statement, "a test ended it")
+        pool._end(cursor._lease._statement, "a test ended it", duckdb_pool.ENDED_DEADLINE)
         cursor._cursor.fetch_arrow_table = lambda: (_ for _ in ()).throw(OSError("closed"))
         with pytest.raises(WorkerTimeoutError, match="a test ended it"):
             cursor.fetch_arrow_table()
@@ -624,14 +624,17 @@ class TestSurfaces:
         assert duckdb_pool.pool(lake()) is old
         new = duckdb_pool.pool(lake(HARDCHARGER_CONNECTIONS_PER_WORKER="2"))
         assert new is not old
-        old._thread.join(2)
-        assert not old._thread.is_alive() and new._thread.is_alive()
+        for thread in old._threads:
+            thread.join(2)
+        assert not any(t.is_alive() for t in old._threads)
+        assert all(t.is_alive() for t in new._threads)
 
     def test_closing_the_pools_stops_their_threads(self, workers: dict[str, FakeWorker]) -> None:
         pool = duckdb_pool.pool(lake())
         duckdb_pool.close_pools()
-        pool._thread.join(2)
-        assert not pool._thread.is_alive()
+        for thread in pool._threads:
+            thread.join(2)
+        assert not any(thread.is_alive() for thread in pool._threads)
 
 
 # ---------------------------------------------------------------------------
@@ -786,3 +789,141 @@ class TestIdentity:
                 cursor.close()
         db_router.close_all_pools()
         assert answers == ["w1", "w2"]
+
+
+# ---------------------------------------------------------------------------
+# Threads, startup and metrics
+# ---------------------------------------------------------------------------
+
+
+class TestThreads:
+    def test_a_slow_health_check_does_not_hold_up_the_deadlines(
+        self, workers: dict[str, FakeWorker], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # W2's health check takes 2 s each time, as a silent worker's does.
+        health = duckdb_pool.Pool._health
+
+        def slow(self: Any, worker: Any) -> str:
+            if worker.name.startswith("w2"):
+                time.sleep(2)
+            return health(self, worker)
+
+        monkeypatch.setattr(duckdb_pool.Pool, "_health", slow)
+        workers[W1].hang = True
+        source = lake(
+            HARDCHARGER_QUERY_TIMEOUT_SECONDS="0.2", HARDCHARGER_HEALTH_INTERVAL_SECONDS="0.05"
+        )
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        started = time.monotonic()
+        with (
+            pytest.raises(WorkerTimeoutError, match="did not answer"),
+            duckdb_pool.cursor(source) as cursor,
+        ):
+            cursor.execute("SELECT 1")
+        # Deadline 0.2 s, grace 0.2 s: ended well before one slow health check.
+        assert time.monotonic() - started < 1.5
+
+    def test_the_pools_of_sources_on_workers_start_with_the_server(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        embedded = DataSource(name="files", dialect="duckdb", prefix="DB_FILES_", environ={})
+        duckdb_pool.start_pools([lake(), embedded])
+        assert list(duckdb_pool.snapshots()) == ["lake"]
+
+
+def _families(text: str) -> dict[str, list[Any]]:
+    from prometheus_client.parser import text_string_to_metric_families
+
+    return {f.name: f.samples for f in text_string_to_metric_families(text)}
+
+
+class TestMetrics:
+    def _scrape(self) -> dict[str, list[Any]]:
+        from prometheus_client import CollectorRegistry, generate_latest
+
+        from orionbelt.service import metrics
+
+        registry = CollectorRegistry()
+        registry.register(metrics.PoolCollector())
+        return _families(generate_latest(registry).decode())
+
+    def test_the_pools_state_and_counters(self, workers: dict[str, FakeWorker]) -> None:
+        source = lake(HARDCHARGER_CONNECTIONS_PER_WORKER="2")
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        workers[W1].queue_full = 1
+        assert run(source)
+        held = duckdb_pool.cursor(source)
+        held.execute("SELECT 1")
+        found = self._scrape()
+
+        def value(name: str, **labels: str) -> float:
+            return next(
+                s.value for s in found[name] if all(s.labels.get(k) == v for k, v in labels.items())
+            )
+
+        w1 = {"source": "lake", "worker": "w1:31337"}
+        assert value("obsl_duckdb_worker_up", **w1) == 1.0
+        assert value("obsl_duckdb_worker_retries", reason="rate_limited", **w1) == 1.0
+        assert value("obsl_duckdb_worker_connections", state="in_use", **w1) == 1.0
+        total = sum(s.value for s in found["obsl_duckdb_worker_statements"])
+        assert total >= 3  # the time zone probe, the query, the held one
+        held.close()
+
+    def test_statements_the_pool_ended_are_counted_by_reason(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        workers[W1].hang = True
+        source = lake(HARDCHARGER_WORKERS=W1, HARDCHARGER_QUERY_TIMEOUT_SECONDS="0.2")
+        with pytest.raises(ExecutionError):
+            run(source)
+        found = self._scrape()
+        ended = [s for s in found["obsl_duckdb_worker_statements_ended"]]
+        assert [(s.labels["reason"], s.value) for s in ended] == [("deadline", 1.0)]
+        up = [s.value for s in found["obsl_duckdb_worker_up"]]
+        assert up == [0.0]
+
+    def test_a_connect_given_up_counts_as_a_retry_and_opening(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        workers[W1].connect_hang = True
+        source = lake(HARDCHARGER_CONNECT_TIMEOUT_SECONDS="0.1")
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        assert run(source)[0][0] == "w2"
+        found = self._scrape()
+        w1 = {"source": "lake", "worker": "w1:31337"}
+        retries = {
+            s.labels["reason"]: s.value
+            for s in found["obsl_duckdb_worker_retries"]
+            if s.labels["worker"] == w1["worker"]
+        }
+        opening = [
+            s.value
+            for s in found["obsl_duckdb_worker_connections"]
+            if s.labels == {**w1, "state": "opening"}
+        ]
+        assert retries == {"connect_timeout": 1.0} and opening == [1.0]
+        workers[W1].release.set()
+
+    def test_metrics_are_served_only_when_enabled(self, workers: dict[str, FakeWorker]) -> None:
+        import socket
+        import urllib.request
+
+        from orionbelt.service import metrics
+
+        metrics.start(enabled=False, host="127.0.0.1", port=1)
+        assert metrics._SERVER is None
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        duckdb_pool.pool(lake())
+        metrics.start(enabled=True, host="127.0.0.1", port=port)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as response:
+                text = response.read().decode()
+        finally:
+            metrics.stop()
+        assert 'obsl_duckdb_worker_up{source="lake",worker="w1:31337"}' in text
+        assert metrics._SERVER is None

@@ -108,6 +108,12 @@ Every other source runs in OBSL, as without the workers.
   queue together: concurrent large results need memory of their own.
 - **Health.** A worker is healthy when its `/health` reports `serving`; a
   draining worker reports `not_serving` and counts as unhealthy.
+- **HTTP limits.** The init SQL's lake block sets DuckDB's `http_timeout` and
+  `http_retries` (`SET GLOBAL`), so a query whose object store or catalog stops
+  answering fails in about 30 s rather than 2 minutes.
+- **Metrics.** OBSL's Prometheus metrics (`METRICS_ENABLED=true` in `obsl.env`)
+  answer on `obsl:9090/metrics`, each worker's own on `hardcharger-N:9091`, both
+  on the project network only. Publish a port to scrape them from the host.
 
 When the catalog or object storage is down (checked by
 `tests/docker/test_compose.sh`):

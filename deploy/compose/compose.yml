@@ -28,6 +28,7 @@ services:
     ports:
       - '${OBSL_PORT:-8080}:8080'               # REST
       - '${OBSL_FLIGHT_PORT:-8815}:8815'        # Arrow Flight SQL, when FLIGHT_ENABLED=true
+    expose: ['9090']                            # Prometheus metrics, when METRICS_ENABLED=true
     networks: [obsl]
 
   # A local lake for development and tests, with COMPOSE_PROFILES=lake: an S3 endpoint

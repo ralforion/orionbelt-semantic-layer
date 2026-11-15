@@ -125,7 +125,7 @@ uncomment() {  # uncomment FILE HEADING...
 cp "$COMPOSE_DIR/obsl.env.example" "$WORK/obsl-shipped.env"
 uncomment "$COMPOSE_DIR/obsl.env.example" "Your models" "With the local lake" |
     sed 's/^MODEL_FILES=.*/MODEL_FILES=lake.yaml/' > "$WORK/obsl-lake.env"
-uncomment "$COMPOSE_DIR/obsl.env.example" "Your models" "With the workers" |
+uncomment "$COMPOSE_DIR/obsl.env.example" "Your models" "With the workers" "Prometheus metrics" |
     sed 's/^MODEL_FILES=.*/MODEL_FILES=lake.yaml/' > "$WORK/obsl-workers.env"
 cat > "$WORK/obsl-files.env" <<'EOF'
 MODEL_DIR=/models
@@ -138,7 +138,7 @@ DB_LAKE_DUCKDB_ALLOWED_PATHS=/data/
 EOF
 # The workers' init SQL: as shipped, and with its lake block uncommented.
 cp "$COMPOSE_DIR/hardcharger-init.sql.example" "$WORK/secrets/init-shipped.sql"
-sed -E 's/^-- (INSTALL|LOAD|CREATE OR REPLACE SECRET|ATTACH|GRANT) /\1 /' \
+sed -E 's/^-- (INSTALL|LOAD|SET GLOBAL|CREATE OR REPLACE SECRET|ATTACH|GRANT) /\1 /' \
     "$COMPOSE_DIR/hardcharger-init.sql.example" > "$WORK/secrets/init-lake.sql"
 chmod 644 "$WORK"/secrets/*.sql
 expect_line() {  # expect_line FILE PATTERN: the example's layout is what the test uncomments
@@ -150,8 +150,10 @@ expect_line() {  # expect_line FILE PATTERN: the example's layout is what the te
 expect_line obsl-lake.env '^MODEL_DIR=/models$'
 expect_line obsl-lake.env '^DB_LAKE_DUCKDB_INIT_SQL='
 expect_line obsl-workers.env '^DB_LAKE_DUCKDB_BACKEND=hardcharger$'
+expect_line obsl-workers.env '^METRICS_ENABLED=true$'
+expect_line obsl-lake.env '^DB_LAKE_DUCKDB_INIT_SQL=SET GLOBAL http_timeout'
 expect_line obsl-workers.env '^# DB_LAKE_DUCKDB_INIT_SQL='   # the in-process block stays off
-if grep -q -E '^-- (INSTALL|LOAD|CREATE|ATTACH|GRANT) ' "$WORK/secrets/init-lake.sql"; then
+if grep -q -E '^-- (INSTALL|LOAD|SET GLOBAL|CREATE|ATTACH|GRANT) ' "$WORK/secrets/init-lake.sql"; then
     echo "a lake line of the init SQL stayed commented: the example's layout changed" >&2
     exit 1
 fi
@@ -169,8 +171,6 @@ compose_env() {  # compose_env OBSL_ENV_FILE [INIT_SQL]: with INIT_SQL, the work
             echo "HARDCHARGER_ADMIN_PASSWORD=compose-test-admin"
             echo "HARDCHARGER_SECRET_KEY=$SECRET_KEY"
             echo "HARDCHARGER_INIT_SQL=$2"
-            # A short statement timeout, so a query on a stopped S3 ends within the test.
-            echo "HC_QUERY_TIMEOUT=10"
         fi
     } > "$WORK/compose.env"
 }
@@ -333,6 +333,81 @@ took=$(wait_healthy hardcharger-1 60)
 if [[ "$took" != timeout ]]; then pass "the stopped worker is healthy again (${took}s)"; else fail "worker restart" "not healthy within 60s"; fi
 check "queries still answer with both workers back" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
 
+# A worker stopped while it runs a query: killed (its connections close), or
+# paused (they stay open and nothing answers, as with a worker whose host
+# stopped). Its restart policy is off for the test, so a killed one stays down.
+# The query runs in OBSL's container against hardcharger-2 alone.
+long_query() {  # long_query OUTPUT_FILE: run a long query on hardcharger-2, in the background
+    dc exec -T obsl python - > "$1" 2>&1 <<'EOF' &
+import os
+import time
+
+os.environ["DB_LAKE_HARDCHARGER_WORKERS"] = "hardcharger://hardcharger-2?tls=false"
+from ob_flight.datasources import configured_datasources
+
+from orionbelt.service import db_executor
+
+source = next(s for s in configured_datasources() if s.name == "lake")
+long = "SELECT sum(hash(i)) AS s FROM range(100000000000) t(i)"
+started = time.monotonic()
+try:
+    rows = db_executor.execute_sql(long, dialect="duckdb", source=source).rows
+    print("ANSWERED", rows)
+except Exception as exc:
+    print("FAILED", round(time.monotonic() - started), str(exc)[:200])
+EOF
+}
+stopped_mid_query() {  # stopped_mid_query HOW (kill|pause) LABEL
+    long_query "$WORK/$1.txt"
+    local running=$! started
+    pause 4
+    docker "$1" "${PROJECT}-hardcharger-2-1" >/dev/null
+    started=$SECONDS
+    wait $running || true
+    local waited=$((SECONDS - started))
+    local outcome
+    outcome=$(grep -E '^(ANSWERED|FAILED)' "$WORK/$1.txt" || cat "$WORK/$1.txt")
+    if [[ "$outcome" == FAILED* ]] && (( waited < 40 )); then
+        local how="the connection failed"
+        if [[ "$outcome" == *WORKER_UNRESPONSIVE* ]]; then how="ended by the pool"; fi
+        pass "a worker $2 mid-query: the query fails within ${waited}s ($how), not with a short result"
+    else
+        fail "a worker $2 mid-query" "after ${waited}s: $outcome"
+    fi
+    LAST_OUTCOME=$outcome
+}
+docker update --restart=no "${PROJECT}-hardcharger-2-1" >/dev/null
+stopped_mid_query kill killed
+check "with that worker dead, OBSL's queries go to the other" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
+docker update --restart=unless-stopped "${PROJECT}-hardcharger-2-1" >/dev/null
+docker start "${PROJECT}-hardcharger-2-1" >/dev/null
+took=$(wait_healthy hardcharger-2 60)
+if [[ "$took" != timeout ]]; then pass "the killed worker is back (${took}s)"; else fail "killed worker back" "not healthy within 60s"; fi
+pause 6  # OBSL's pools see it back
+stopped_mid_query pause paused
+if [[ "$LAST_OUTCOME" == *WORKER_UNRESPONSIVE* ]]; then
+    pass "a paused worker's query is ended by the pool's health checks"
+else
+    fail "paused worker" "$LAST_OUTCOME"
+fi
+check "with that worker paused, OBSL's queries go to the other" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
+docker unpause "${PROJECT}-hardcharger-2-1" >/dev/null
+took=$(wait_healthy hardcharger-2 60)
+if [[ "$took" != timeout ]]; then pass "the paused worker answers again (${took}s)"; else fail "paused worker back" "not healthy within 60s"; fi
+
+# The metrics, from inside the project network (obsl.env.example's line).
+pause 6  # a health check of OBSL's pool sees the worker back
+scrape=$(dc exec -T obsl python -c "
+import urllib.request
+print(urllib.request.urlopen('http://localhost:9090/metrics', timeout=5).read().decode())" 2>&1)
+for w in hardcharger-1 hardcharger-2; do
+    line=$(echo "$scrape" | grep "^obsl_duckdb_worker_up{source=\"lake\",worker=\"$w:31337\"}" || true)
+    check "the metrics show $w taking queries" "1.0" "${line##* }"
+done
+counted=$(echo "$scrape" | grep '^obsl_duckdb_worker_statements_total{source="lake"' |
+    awk '$2 >= 1 { n++ } END { print n + 0 }')
+check "the metrics count statements on both workers" "2" "$counted"
+
 # ── 7. Failures ──────────────────────────────────────────────────────
 
 log "7. The catalog or S3 down"
@@ -359,7 +434,14 @@ docker restart "${PROJECT}-hardcharger-2-1" >/dev/null
 took=$(wait_healthy hardcharger-2 60)
 if [[ "$took" != timeout ]]; then pass "S3 down at a worker's start: the worker starts (${took}s)"; else fail "S3 down at start" "not healthy within 60s"; fi
 check "S3 down: files still read" "$EXPECTED_ROWS" "$(probe_rows hardcharger-2 "$PARQUET")"
-check "S3 down: an Iceberg query runs into the statement timeout" "TIMEOUT" "$(probe_refused hardcharger-2 "$ICEBERG")"
+started_at=$SECONDS
+refused=$(probe_refused hardcharger-2 "$ICEBERG")
+waited=$((SECONDS - started_at))
+if [[ "$refused" == INVALID_ARGUMENT ]] && (( waited < 60 )); then
+    pass "S3 down: an Iceberg query fails within ${waited}s, by the init SQL's HTTP limits"
+else
+    fail "S3 down" "after ${waited}s: $refused"
+fi
 docker start "${PROJECT}-lake-s3-1" >/dev/null
 pause 5
 check "S3 back: Iceberg reads again" "$EXPECTED_ROWS" "$(probe_rows hardcharger-2 "$ICEBERG")"

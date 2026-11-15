@@ -194,6 +194,20 @@ dataObjects:
   the token server has to be in `DUCKDB_ALLOWED_PATHS`. Left out, only the
   first token is fetched, and the first renewal fails with `Could not get
   token from ...`.
+- **A catalog or object store that stops answering.** DuckDB waits 30 s for
+  each HTTP request and tries it 3 more times: a query then waits about 2
+  minutes before it fails. Measured with the object store stopped, the catalog
+  itself hung, waiting for it. Shorter limits in the setup statements, before
+  the `ATTACH`, fail it sooner:
+
+  ```sql
+  SET GLOBAL http_timeout = 10; SET GLOBAL http_retries = 2;
+  ```
+
+  The query then failed in about 30 s (10 s, twice more), and the next one
+  read again once the store was back. The limit is per request, so it has
+  to leave room for the largest file read a query makes. `SET GLOBAL`, not
+  `SET`: a plain `SET` lasts for the setup's own connection only.
 
 This setup was tested with Apache Iceberg's REST catalog and MinIO, without sign-in, and with OAuth2 and bearer-token secrets against a local token server and a catalog that refuses expired tokens. Vended credentials and the AWS and Google catalogs were not tested.
 

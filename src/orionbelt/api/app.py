@@ -61,7 +61,7 @@ from orionbelt.api.routers import (
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
 from orionbelt.cache.factory import build_cache
-from orionbelt.service import db_executor
+from orionbelt.service import db_executor, metrics
 from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.federated_executor import FederationLimits, spill_directory
 from orionbelt.service.federated_executor import configure as configure_federation
@@ -179,16 +179,18 @@ def _warn_if_legacy_model_file_set() -> None:
         )
 
 
-def _check_duckdb_workers() -> None:
-    """Refuse to start when a DuckDB source on Hardcharger workers cannot run.
+def _start_duckdb_workers() -> None:
+    """Check and start the DuckDB sources on Hardcharger workers.
 
-    Its settings and the driver, by the source's name: found now rather than
-    at the source's first query. Data sources that are not usable as written
-    are reported where they are used, as before.
+    One that cannot run (its settings, the driver) refuses the start, by the
+    source's name: found now rather than at its first query. The others' pools
+    start, so their workers' health is known before the first query. Data
+    sources that are not usable as written are reported where they are used,
+    as before.
     """
     from orionbelt.service.datasource_selection import configured_datasource_list
     from orionbelt.service.db_executor import ExecutionUnavailableError
-    from orionbelt.service.duckdb_pool import PoolConfigError, check_sources
+    from orionbelt.service.duckdb_pool import PoolConfigError, check_sources, start_pools
 
     try:
         sources = configured_datasource_list()
@@ -196,6 +198,7 @@ def _check_duckdb_workers() -> None:
         return
     try:
         check_sources(sources)
+        start_pools(sources)
     except PoolConfigError as exc:
         raise RuntimeError(str(exc)) from None
 
@@ -219,7 +222,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings: Settings = app.state.settings
 
     _warn_if_legacy_model_file_set()
-    _check_duckdb_workers()
+    _start_duckdb_workers()
+    metrics.start(
+        enabled=settings.metrics_enabled, host=settings.metrics_host, port=settings.metrics_port
+    )
 
     # Read + validate every YAML before constructing the SessionManager —
     # fail fast at startup rather than emitting half-broken state.
@@ -618,6 +624,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         from orionbelt.service.duckdb_pool import close_pools
         from orionbelt.service.duckdb_source import close_instances
 
+        metrics.stop()
         close_pools()
         close_instances()
         try:
