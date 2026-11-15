@@ -80,6 +80,9 @@ class FakeWorker:
         self.setup_refusals: list[str] = []  # codes a SET is refused with, one each
         self.connect_hang = False  # connect blocks until released
         self.opened: list[FakeConnection] = []
+        self.connecting = 0  # connects running now, and the most at once
+        self.most_connecting = 0
+        self.lock = threading.Lock()
         self.sessions = 0  # opened
         self.live: set[int] = set()  # session ids the worker still has
         self.statements: list[str] = []
@@ -100,7 +103,14 @@ class FakeDriver:
         if worker.draining:
             raise DriverError("IO: the server is shutting down", "server_draining")
         if worker.connect_hang:
-            worker.release.wait(10)
+            with worker.lock:
+                worker.connecting += 1
+                worker.most_connecting = max(worker.most_connecting, worker.connecting)
+            try:
+                worker.release.wait(10)
+            finally:
+                with worker.lock:
+                    worker.connecting -= 1
         worker.sessions += 1
         worker.live.add(worker.sessions)
         conn = FakeConnection(worker, worker.sessions)
@@ -708,6 +718,32 @@ class TestOpening:
         # When it comes back after all, what it opened is closed.
         workers[W1].release.set()
         wait_until(lambda: workers[W1].opened and workers[W1].opened[0].closed)
+
+    def test_connects_that_do_not_come_back_stay_within_the_workers_limit(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        # The worker keeps answering its health check while its connects hang:
+        # each request would otherwise leave one more connect behind.
+        workers[W1].connect_hang = True
+        source = lake(
+            HARDCHARGER_WORKERS=W1,
+            HARDCHARGER_CONNECTIONS_PER_WORKER="1",
+            HARDCHARGER_CONNECT_TIMEOUT_SECONDS="0.1",
+            HARDCHARGER_HEALTH_INTERVAL_SECONDS="0.02",
+            ACQUIRE_TIMEOUT_SECONDS="0.3",
+        )
+        state = duckdb_pool.pool(source)._workers[0]
+        for _ in range(4):
+            with pytest.raises(ExecutionUnavailableError):
+                run(source)
+            wait_until(lambda: state.healthy)  # back in at its next health check
+        assert workers[W1].most_connecting == 1
+        assert state.in_use == 0 and state.abandoned == 1
+        # When the connect comes back, the worker has its connection again.
+        workers[W1].connect_hang = False
+        workers[W1].release.set()
+        wait_until(lambda: state.abandoned == 0)
+        assert run(source)[0][0] == "w1"
 
 
 # ---------------------------------------------------------------------------

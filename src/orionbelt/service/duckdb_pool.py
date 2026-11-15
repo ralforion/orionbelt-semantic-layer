@@ -407,6 +407,10 @@ class _WorkerState:
         self.healthy = True
         self.silent_checks = 0
         self.in_use = 0
+        #: Connects the pool gave up waiting for that have not come back yet.
+        #: They count against the worker's connections until they do, so a
+        #: worker that hangs them cannot be handed thread after thread.
+        self.abandoned = 0
         self.idle: list[Any] = []
 
 
@@ -580,7 +584,7 @@ class Pool:
                 healthy = [s for s in self._workers if s.healthy]
                 if not healthy:
                     raise WorkersUnavailableError(self._unavailable_message())
-                free = [s for s in healthy if s.in_use < limit]
+                free = [s for s in healthy if s.in_use + s.abandoned < limit]
                 if free:
                     choices = [s for s in free if s is not avoid] or free
                     start = next(self._turn) % len(self._workers)
@@ -608,7 +612,7 @@ class Pool:
             Exception: The driver's error for a worker that cannot be reached,
                 a full queue, a session gone, or a worker shutting down.
         """
-        conn = self._connect(state.worker)
+        conn = self._connect(state)
         sql = self._settings.connection_sql
         if not sql:
             return conn
@@ -644,22 +648,24 @@ class Pool:
                 cursor.close()
         return conn
 
-    def _connect(self, worker: Worker) -> Any:
+    def _connect(self, state: _WorkerState) -> Any:
         """Open a connection, giving up after ``HARDCHARGER_CONNECT_TIMEOUT_SECONDS``.
 
         The driver's connect cannot be interrupted, so it runs in a thread of
-        its own. One that comes back after the pool gave up closes what it
-        opened.
+        its own. The pool stops waiting for one that does not come back in
+        time, but counts it against the worker's connections until it does
+        (:attr:`_WorkerState.abandoned`), and closes what it opened then.
 
         Raises:
             _ConnectTimeoutError: It did not come back in time.
             Exception: The driver's error.
         """
+        worker = state.worker
         done = threading.Event()
-        lock = threading.Lock()
         outcome: dict[str, Any] = {}
 
         def connect() -> None:
+            conn: Any = None
             try:
                 conn = self._driver.connect(
                     uri=worker.uri,
@@ -669,33 +675,31 @@ class Pool:
                     db_kwargs={_RECONNECT_OPTION: "false"},
                 )
             except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread
-                with lock:
-                    outcome["error"] = exc
-            else:
-                with lock:
-                    late = outcome.get("abandoned", False)
-                    if not late:
-                        outcome["conn"] = conn
+                outcome["error"] = exc
+            with self._cond:
+                late = outcome.get("abandoned", False)
                 if late:
-                    with contextlib.suppress(Exception):
-                        conn.close()
-            finally:
+                    state.abandoned -= 1
+                    self._cond.notify_all()
+                else:
+                    outcome["conn"] = conn
                 done.set()
+            if late and conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
 
         threading.Thread(
             target=connect, name=f"obsl-duckdb-connect-{worker.name}", daemon=True
         ).start()
         if not done.wait(self._settings.connect_timeout_seconds):
-            with lock:
-                outcome["abandoned"] = True
-                conn = outcome.pop("conn", None)
-            if conn is not None:
-                with contextlib.suppress(Exception):
-                    conn.close()
-            raise _ConnectTimeoutError(
-                f"opening a connection did not come back within "
-                f"{self._settings.connect_timeout_seconds:g} s"
-            )
+            with self._cond:
+                if not done.is_set():
+                    outcome["abandoned"] = True
+                    state.abandoned += 1
+                    raise _ConnectTimeoutError(
+                        f"opening a connection did not come back within "
+                        f"{self._settings.connect_timeout_seconds:g} s"
+                    )
         if "error" in outcome:
             raise outcome["error"]
         return outcome["conn"]
@@ -842,7 +846,8 @@ class Pool:
         return (
             f"[DATA_SOURCE_BUSY] Data source '{self._source_name}' has all "
             f"{self._settings.connections_per_worker} connections of each healthy worker in "
-            f"use, and none was freed within {self._settings.acquire_timeout_seconds:g} s. "
+            "use or still opening, and none was freed within "
+            f"{self._settings.acquire_timeout_seconds:g} s. "
             "Retry later, or add a worker."
         )
 
