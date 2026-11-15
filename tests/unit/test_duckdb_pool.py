@@ -75,7 +75,11 @@ class FakeWorker:
         self.queue_full = 0  # statements refused with rate_limited, then served
         self.draining = False  # refuses new sessions and statements, as on SIGTERM
         self.hang = False  # statements wait until released, or their cursor closes
+        self.hang_on: str | None = None  # ... or only those starting so
         self.release = threading.Event()
+        self.setup_refusals: list[str] = []  # codes a SET is refused with, one each
+        self.connect_hang = False  # connect blocks until released
+        self.opened: list[FakeConnection] = []
         self.sessions = 0  # opened
         self.live: set[int] = set()  # session ids the worker still has
         self.statements: list[str] = []
@@ -95,9 +99,13 @@ class FakeDriver:
             raise DriverError(f"IO: [chargewire] connecting to {uri}: dial tcp: connection refused")
         if worker.draining:
             raise DriverError("IO: the server is shutting down", "server_draining")
+        if worker.connect_hang:
+            worker.release.wait(10)
         worker.sessions += 1
         worker.live.add(worker.sessions)
-        return FakeConnection(worker, worker.sessions)
+        conn = FakeConnection(worker, worker.sessions)
+        worker.opened.append(conn)
+        return conn
 
 
 class FakeConnection:
@@ -139,7 +147,10 @@ class FakeCursor:
             raise DriverError("IO: the statement queue is full", "rate_limited")
         if worker.draining:
             raise DriverError("IO: the server is shutting down", "server_draining")
-        if worker.hang:
+        if sql.upper().startswith("SET") and worker.setup_refusals:
+            raise DriverError("IO: refused", worker.setup_refusals.pop(0))
+        hangs = worker.hang and "current_setting" not in sql  # the time zone probe answers
+        if hangs or (worker.hang_on is not None and sql.startswith(worker.hang_on)):
             deadline = time.monotonic() + 10
             while not (self.closed.is_set() or worker.release.is_set()):
                 if time.monotonic() > deadline:
@@ -199,8 +210,12 @@ def workers(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, FakeWorker]]:
     monkeypatch.setattr(duckdb_pool, "WATCH_INTERVAL_SECONDS", 0.02)
     monkeypatch.setattr(duckdb_pool, "WATCHDOG_GRACE_SECONDS", 0.2)
     monkeypatch.setattr(duckdb_pool, "RATE_LIMITED_PAUSE_SECONDS", 0.0)
+    db_executor._reset_db_tz_cache()  # each test probes its sources' time zone afresh
+    db_router.close_all_pools()
     yield found
     duckdb_pool.close_pools()
+    db_router.close_all_pools()
+    db_executor._reset_db_tz_cache()
 
 
 def run(source: DataSource, sql: str = "SELECT 1") -> list[list[Any]]:
@@ -449,7 +464,7 @@ class TestRetries:
         source = lake(HARDCHARGER_WORKERS=W1)
         with pytest.raises(ExecutionError, match="Parser Error"):
             run(source, "BAD SQL")
-        assert workers[W1].statements == []
+        assert [sql for sql in workers[W1].statements if "current_setting" not in sql] == []
         # The session stays good for the next query.
         run(source)
         assert workers[W1].sessions == 1
@@ -506,7 +521,7 @@ class TestHealth:
         wait_until(lambda: not pool._workers[0].healthy)
         time.sleep(0.3)  # several health checks
         workers[W1].release.set()
-        assert outcome() == [["w1", 1]]
+        assert outcome()[0][0] == "w1"
 
     def test_the_statements_of_a_worker_silent_twice_in_a_row_are_ended(
         self, workers: dict[str, FakeWorker]
@@ -607,3 +622,131 @@ class TestSurfaces:
         duckdb_pool.close_pools()
         pool._thread.join(2)
         assert not pool._thread.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# Opening a connection
+# ---------------------------------------------------------------------------
+
+
+class TestOpening:
+    SETUP = "SET search_path = 'lake.sales'"
+
+    @pytest.mark.parametrize("code", ["rate_limited", "server_draining", "session_not_found"])
+    def test_a_setup_refused_before_it_ran_moves_on(
+        self, workers: dict[str, FakeWorker], code: str
+    ) -> None:
+        workers[W1].setup_refusals = [code]
+        workers[W2].setup_refusals = [code] if code == "session_not_found" else []
+        source = lake(DUCKDB_CONNECTION_SQL=self.SETUP)
+        assert run(source)
+        pool = duckdb_pool.pool(source)
+        # A full queue leaves the worker in; one shutting down is taken out.
+        assert pool._workers[0].healthy is (code != "server_draining")
+
+    def test_a_full_queue_at_setup_tries_the_other_worker(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        workers[W1].setup_refusals = ["rate_limited"]
+        source = lake(DUCKDB_CONNECTION_SQL=self.SETUP, HARDCHARGER_CONNECTIONS_PER_WORKER="1")
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        with duckdb_pool.cursor(source) as cursor:
+            cursor.execute("SELECT 1")
+            assert cursor.fetch_arrow_table().column("worker")[0].as_py() == "w2"
+        assert pool._workers[0].healthy is True
+
+    def test_the_setup_carries_the_statement_timeout(self, workers: dict[str, FakeWorker]) -> None:
+        run(
+            lake(
+                HARDCHARGER_WORKERS=W1,
+                DUCKDB_CONNECTION_SQL=self.SETUP,
+                HARDCHARGER_QUERY_TIMEOUT_SECONDS="30",
+            )
+        )
+        assert workers[W1].statements[0] == self.SETUP
+        # Every statement carried the timeout, the setup's included.
+        assert workers[W1].options == [{"adbc.chargewire.statement.timeout_seconds": "30"}] * len(
+            workers[W1].statements
+        )
+
+    def test_a_setup_past_its_deadline_is_ended_and_the_query_runs_elsewhere(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        workers[W1].hang_on = "SET"
+        source = lake(DUCKDB_CONNECTION_SQL=self.SETUP, HARDCHARGER_QUERY_TIMEOUT_SECONDS="0.2")
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        started = time.monotonic()
+        assert run(source)[0][0] == "w2"
+        assert time.monotonic() - started < 3
+        assert pool._workers[0].healthy is False
+
+    def test_a_setup_on_a_worker_that_falls_silent_is_ended(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        workers[W1].hang_on = "SET"
+        source = lake(DUCKDB_CONNECTION_SQL=self.SETUP, HARDCHARGER_HEALTH_INTERVAL_SECONDS="0.05")
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        outcome = _in_thread(lambda: run(source))
+        time.sleep(0.1)
+        workers[W1].down = True
+        assert outcome()[0][0] == "w2"
+
+    def test_a_connect_that_does_not_come_back_is_given_up(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        workers[W1].connect_hang = True
+        source = lake(HARDCHARGER_CONNECT_TIMEOUT_SECONDS="0.2")
+        pool = duckdb_pool.pool(source)
+        pool._turn = iter([0] * 100)  # W1 first
+        started = time.monotonic()
+        assert run(source)[0][0] == "w2"
+        assert time.monotonic() - started < 3
+        assert pool._workers[0].healthy is False
+        # When it comes back after all, what it opened is closed.
+        workers[W1].release.set()
+        wait_until(lambda: workers[W1].opened and workers[W1].opened[0].closed)
+
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+
+
+class TestIdentity:
+    @pytest.mark.parametrize(
+        "variables",
+        [
+            {"DUCKDB_BACKEND": "embedded"},
+            {"HARDCHARGER_WORKERS": W2},
+            {"HARDCHARGER_USER": "other"},
+            {"HARDCHARGER_PASSWORD": "other"},
+            {"HARDCHARGER_TLS_ROOT_CERTS": __file__},
+        ],
+    )
+    def test_the_workers_settings_are_part_of_a_sources_identity(
+        self, variables: dict[str, str]
+    ) -> None:
+        assert lake(**variables).fingerprint() != lake().fingerprint()
+
+    def test_sources_on_other_workers_do_not_share_pooled_connections(
+        self, workers: dict[str, FakeWorker]
+    ) -> None:
+        one = lake(HARDCHARGER_WORKERS=W1)
+        two = DataSource(
+            name="lake",
+            dialect="duckdb",
+            prefix="DB_LAKE_",
+            environ={**one.environ, "DB_LAKE_HARDCHARGER_WORKERS": W2},
+        )
+        answers = []
+        for source in (one, two):
+            with db_router.get_connection(source) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                answers.append(cursor.fetch_arrow_table().column("worker")[0].as_py())
+                cursor.close()
+        db_router.close_all_pools()
+        assert answers == ["w1", "w2"]

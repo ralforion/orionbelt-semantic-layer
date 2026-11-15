@@ -76,6 +76,10 @@ DEFAULT_PORT = 31337
 DEFAULT_CONNECTIONS_PER_WORKER = 4
 DEFAULT_QUERY_TIMEOUT_SECONDS = 120.0
 DEFAULT_HEALTH_INTERVAL_SECONDS = 5.0
+#: How long opening a connection (discovery, sign-in, session) may take. The
+#: driver has no timeout of its own, and a worker that stopped answering with
+#: its port still open holds it forever.
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 #: How long past its server-side timeout a statement may go unanswered before
 #: the pool ends it. The server answers a timed-out statement itself; one that
 #: says nothing for this long more is on a worker that stopped answering.
@@ -139,6 +143,10 @@ class WorkerTimeoutError(Exception):
     """A worker did not answer a statement within its deadline and grace."""
 
 
+class _ConnectTimeoutError(Exception):
+    """Opening a connection to a worker did not come back in time."""
+
+
 @dataclass(frozen=True)
 class Worker:
     """One Hardcharger server of a source.
@@ -166,6 +174,7 @@ class PoolSettings:
     connections_per_worker: int = DEFAULT_CONNECTIONS_PER_WORKER
     query_timeout_seconds: float = DEFAULT_QUERY_TIMEOUT_SECONDS
     health_interval_seconds: float = DEFAULT_HEALTH_INTERVAL_SECONDS
+    connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
     acquire_timeout_seconds: float = 30.0
 
     def key(self) -> str:
@@ -289,6 +298,9 @@ def pool_settings(source: PoolSource) -> PoolSettings:
         ),
         health_interval_seconds=_positive(
             source, "HARDCHARGER_HEALTH_INTERVAL_SECONDS", DEFAULT_HEALTH_INTERVAL_SECONDS, float
+        ),
+        connect_timeout_seconds=_positive(
+            source, "HARDCHARGER_CONNECT_TIMEOUT_SECONDS", DEFAULT_CONNECT_TIMEOUT_SECONDS, float
         ),
         acquire_timeout_seconds=float(acquire()) if callable(acquire) else 30.0,
     )
@@ -457,18 +469,9 @@ class Pool:
             except Exception:
                 self._release(state, conn, keep=False)
                 raise
-            statement = _Statement(
-                state,
-                cursor,
-                time.monotonic() + self._settings.query_timeout_seconds + WATCHDOG_GRACE_SECONDS,
-            )
-            with self._cond:
-                self._running.add(statement)
+            statement = self._track(state, cursor)
             try:
-                cursor.adbc_statement.set_options(
-                    **{_TIMEOUT_OPTION: str(max(1, round(self._settings.query_timeout_seconds)))}
-                )
-                cursor.execute(sql)
+                self._run(cursor, sql)
             except Exception as exc:
                 self._forget(statement)
                 with contextlib.suppress(Exception):
@@ -483,6 +486,24 @@ class Pool:
                     time.sleep(RATE_LIMITED_PAUSE_SECONDS)
                 continue
             return _Lease(self, state, conn, statement), cursor
+
+    def _track(self, state: _WorkerState, cursor: Any) -> _Statement:
+        """Put a statement about to run under the watchdog."""
+        statement = _Statement(
+            state,
+            cursor,
+            time.monotonic() + self._settings.query_timeout_seconds + WATCHDOG_GRACE_SECONDS,
+        )
+        with self._cond:
+            self._running.add(statement)
+        return statement
+
+    def _run(self, cursor: Any, sql: str) -> None:
+        """Run a statement with its timeout set on the worker."""
+        cursor.adbc_statement.set_options(
+            **{_TIMEOUT_OPTION: str(max(1, round(self._settings.query_timeout_seconds)))}
+        )
+        cursor.execute(sql)
 
     def _after_failure(
         self, state: _WorkerState, conn: Any, statement: _Statement, exc: BaseException
@@ -516,21 +537,34 @@ class Pool:
     # -- connections ------------------------------------------------------
 
     def _acquire(self, deadline: float, avoid: _WorkerState | None) -> tuple[_WorkerState, Any]:
-        """A worker with a connection free, and the connection (opened if none is idle)."""
+        """A worker with a connection free, and the connection (opened if none is idle).
+
+        Opening one fails like a statement does. A full queue (the connection
+        statements are queued too) tries another worker, a lost session opens
+        another, and a worker that cannot be reached, is shutting down, or did
+        not answer in time is taken out. None of it ran the query.
+        """
         while True:
             state, conn = self._reserve(deadline, avoid)
             if conn is not None:
                 return state, conn
             try:
-                return state, self._open(state.worker)
+                return state, self._open(state)
             except PoolConfigError:
                 self._release(state, None, keep=False)
                 raise
             except Exception as exc:
                 self._release(state, None, keep=False)
-                self._take_out(state, f"could not connect: {exc}")
+                code = _chargewire_code(exc)
+                if code == _QUEUE_FULL:
+                    avoid = state
+                    time.sleep(RATE_LIMITED_PAUSE_SECONDS)
+                elif code != _SESSION_GONE and not isinstance(exc, WorkerTimeoutError):
+                    # (The watchdog took out a worker whose setup it ended.)
+                    self._take_out(state, f"could not connect: {exc}")
                 if time.monotonic() >= deadline:
-                    raise WorkersUnavailableError(self._unavailable_message()) from None
+                    message = self._busy_message() if code == _QUEUE_FULL else None
+                    raise WorkersUnavailableError(message or self._unavailable_message()) from None
 
     def _reserve(
         self, deadline: float, avoid: _WorkerState | None
@@ -561,38 +595,110 @@ class Pool:
                     raise WorkersUnavailableError(self._busy_message())
                 self._cond.wait(remaining)
 
-    def _open(self, worker: Worker) -> Any:
+    def _open(self, state: _WorkerState) -> Any:
         """A new connection to a worker, its session set up by ``DUCKDB_CONNECTION_SQL``.
 
+        The statements run like a query: with the statement timeout, under the
+        watchdog, and ended with the worker's other statements when it stops
+        answering.
+
         Raises:
-            PoolConfigError: The connection statements failed.
-            Exception: The driver's error when the worker cannot be reached.
+            PoolConfigError: The connection statements failed on their own.
+            WorkerTimeoutError: The pool ended them: the worker stopped answering.
+            Exception: The driver's error for a worker that cannot be reached,
+                a full queue, a session gone, or a worker shutting down.
         """
-        conn = self._driver.connect(
-            uri=worker.uri,
-            username=self._settings.user,
-            password=self._settings.password,
-            tls_root_certs=self._settings.tls_root_certs,
-            db_kwargs={_RECONNECT_OPTION: "false"},
-        )
-        if self._settings.connection_sql:
+        conn = self._connect(state.worker)
+        sql = self._settings.connection_sql
+        if not sql:
+            return conn
+        try:
             cursor = conn.cursor()
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()
+            raise
+        statement = self._track(state, cursor)
+        try:
+            self._run(cursor, sql)
+        except Exception as exc:
+            # The cursor first: the driver refuses to close a connection with one open.
+            with contextlib.suppress(Exception):
+                cursor.close()
+            with contextlib.suppress(Exception):
+                conn.close()
+            if statement.ended_by_pool is not None:
+                raise WorkerTimeoutError(statement.ended_by_pool) from None
+            if _chargewire_code(exc) in (_QUEUE_FULL, _SESSION_GONE, _DRAINING) or _unreachable(
+                exc
+            ):
+                raise
+            # Without the chained error: it would carry the statements.
+            raise PoolConfigError(
+                f"Data source '{self._source_name}': DUCKDB_CONNECTION_SQL failed on "
+                f"worker {state.worker.name}: {type(exc).__name__}."
+            ) from None
+        finally:
+            self._forget(statement)
+            with contextlib.suppress(Exception):
+                cursor.close()
+        return conn
+
+    def _connect(self, worker: Worker) -> Any:
+        """Open a connection, giving up after ``HARDCHARGER_CONNECT_TIMEOUT_SECONDS``.
+
+        The driver's connect cannot be interrupted, so it runs in a thread of
+        its own. One that comes back after the pool gave up closes what it
+        opened.
+
+        Raises:
+            _ConnectTimeoutError: It did not come back in time.
+            Exception: The driver's error.
+        """
+        done = threading.Event()
+        lock = threading.Lock()
+        outcome: dict[str, Any] = {}
+
+        def connect() -> None:
             try:
-                cursor.execute(self._settings.connection_sql)
-            except Exception as exc:
-                with contextlib.suppress(Exception):
-                    cursor.close()
+                conn = self._driver.connect(
+                    uri=worker.uri,
+                    username=self._settings.user,
+                    password=self._settings.password,
+                    tls_root_certs=self._settings.tls_root_certs,
+                    db_kwargs={_RECONNECT_OPTION: "false"},
+                )
+            except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread
+                with lock:
+                    outcome["error"] = exc
+            else:
+                with lock:
+                    late = outcome.get("abandoned", False)
+                    if not late:
+                        outcome["conn"] = conn
+                if late:
+                    with contextlib.suppress(Exception):
+                        conn.close()
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=connect, name=f"obsl-duckdb-connect-{worker.name}", daemon=True
+        ).start()
+        if not done.wait(self._settings.connect_timeout_seconds):
+            with lock:
+                outcome["abandoned"] = True
+                conn = outcome.pop("conn", None)
+            if conn is not None:
                 with contextlib.suppress(Exception):
                     conn.close()
-                if _unreachable(exc):
-                    raise
-                # Without the chained error: it would carry the statements.
-                raise PoolConfigError(
-                    f"Data source '{self._source_name}': DUCKDB_CONNECTION_SQL failed on "
-                    f"worker {worker.name}: {type(exc).__name__}."
-                ) from None
-            cursor.close()
-        return conn
+            raise _ConnectTimeoutError(
+                f"opening a connection did not come back within "
+                f"{self._settings.connect_timeout_seconds:g} s"
+            )
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["conn"]
 
     def _release(self, state: _WorkerState, conn: Any | None, *, keep: bool) -> None:
         """Give a connection back: idle for the next query, or closed."""

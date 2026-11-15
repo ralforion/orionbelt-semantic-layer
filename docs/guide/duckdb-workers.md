@@ -47,7 +47,8 @@ DB_LAKE_DUCKDB_CONNECTION_SQL=SET search_path = 'lake.sales'
 | `DB_<NAME>_HARDCHARGER_CONNECTIONS_PER_WORKER` | `4` | Connections of one worker in use at once. Keep it within the worker's statement concurrency plus its queue |
 | `DB_<NAME>_HARDCHARGER_QUERY_TIMEOUT_SECONDS` | `120` | Each statement's timeout, set on the worker |
 | `DB_<NAME>_HARDCHARGER_HEALTH_INTERVAL_SECONDS` | `5` | How often each worker's health is checked |
-| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone` |
+| `DB_<NAME>_HARDCHARGER_CONNECT_TIMEOUT_SECONDS` | `10` | How long opening a connection to a worker may take |
+| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone`. They run like a query: with its timeout, and retried like one |
 | `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` | `10`, `30` | As for every source: how many of its queries run at once, and how long a query waits for a connection |
 
 Like a source's other settings, an unprefixed `HARDCHARGER_WORKERS` (and so
@@ -88,7 +89,7 @@ privilege it needs.
 | When | What happens |
 |---|---|
 | Every query | It goes to the healthy worker with the fewest connections in use, the workers in turn on a tie, and keeps that worker's connection until its result is read |
-| A worker cannot be reached | The worker takes no more queries, and the query runs on another |
+| A worker cannot be reached, or opening a connection to it does not come back in time | The worker takes no more queries, and the query runs on another |
 | The worker no longer has the session (it restarted, or ended a session left idle) | A new session runs `DUCKDB_CONNECTION_SQL`, then the query |
 | A worker's statement queue is full (HTTP 429) | The query runs again, on another worker if one has a connection free |
 | A worker is shutting down (it refuses new statements, HTTP 503) | It takes no more queries, the query runs on another, and the queries running on it finish |
