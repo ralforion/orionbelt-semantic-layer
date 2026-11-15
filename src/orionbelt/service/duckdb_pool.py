@@ -427,8 +427,8 @@ class _WorkerState:
         #: worker that hangs them cannot be handed thread after thread.
         self.abandoned = 0
         self.idle: list[Any] = []
-        # For the metrics: statements started, retries and statements the
-        # pool ended, by reason.
+        # For the metrics: statements the worker ran (failed and ended ones
+        # included), retries, and statements the pool ended, by reason.
         self.statements = 0
         self.retries: Counter[str] = Counter()
         self.ended: Counter[str] = Counter()
@@ -517,8 +517,7 @@ class Pool:
                 if retry == _QUEUE_FULL:
                     time.sleep(RATE_LIMITED_PAUSE_SECONDS)
                 continue
-            with self._cond:
-                state.statements += 1
+            self._count_started(state)
             return _Lease(self, state, conn, statement), cursor
 
     def _track(self, state: _WorkerState, cursor: Any) -> _Statement:
@@ -542,11 +541,25 @@ class Pool:
     def _after_failure(
         self, state: _WorkerState, conn: Any, statement: _Statement, exc: BaseException
     ) -> str | None:
-        """Settle a failed statement's connection; what to retry, or ``None`` to raise."""
-        retry = self._settle(state, conn, statement, exc)
-        if retry is not None:
+        """Settle a failed statement's connection; what to retry, or ``None`` to raise.
+
+        A statement the worker refused before running it counts as a retry;
+        one that failed on its own or that the pool ended, as started.
+        """
+        try:
+            retry = self._settle(state, conn, statement, exc)
+        except WorkerTimeoutError:
+            self._count_started(state)
+            raise
+        if retry is None:
+            self._count_started(state)
+        else:
             self._count_retry(state, retry)
         return retry
+
+    def _count_started(self, state: _WorkerState) -> None:
+        with self._cond:
+            state.statements += 1
 
     def _count_retry(self, state: _WorkerState, reason: str) -> None:
         with self._cond:

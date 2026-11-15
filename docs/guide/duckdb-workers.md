@@ -48,7 +48,7 @@ DB_LAKE_DUCKDB_CONNECTION_SQL=SET search_path = 'lake.sales'
 | `DB_<NAME>_HARDCHARGER_QUERY_TIMEOUT_SECONDS` | `120` | Each statement's timeout, set on the worker |
 | `DB_<NAME>_HARDCHARGER_HEALTH_INTERVAL_SECONDS` | `5` | How often each worker's health is checked |
 | `DB_<NAME>_HARDCHARGER_CONNECT_TIMEOUT_SECONDS` | `10` | How long opening a connection to a worker may take |
-| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone`. They run like a query: with its timeout, and retried like one |
+| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone`. They run like a query: with its timeout, and retried like one. A session starts in the worker's time zone (UTC in the Hardcharger image), where DuckDB in process takes the host's; a `TIMESTAMPTZ` result carries that zone |
 | `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` | `10`, `30` | As for every source: how many of its queries run at once, and how long a query waits for a connection |
 
 Like a source's other settings, an unprefixed `HARDCHARGER_WORKERS` (and so
@@ -142,7 +142,7 @@ For the pools, read at each scrape, labelled by `source` and `worker` (the
 |---|---|---|
 | `obsl_duckdb_worker_up` | gauge | 1 while the worker takes queries, 0 while the pool keeps it out |
 | `obsl_duckdb_worker_connections` | gauge | Connections by `state`: `in_use` (held by a query), `idle`, `opening` (a connect given up on that has not come back) |
-| `obsl_duckdb_worker_statements_total` | counter | Statements started on the worker |
+| `obsl_duckdb_worker_statements_total` | counter | Statements the worker ran, those that failed or that the pool ended included. One it refused before running counts as a retry |
 | `obsl_duckdb_worker_retries_total` | counter | Queries run again because the worker did not start them, by `reason`: `unreachable`, `connect_timeout`, `session_not_found`, `rate_limited`, `server_draining` |
 | `obsl_duckdb_worker_statements_ended_total` | counter | Statements the pool ended, by `reason`: `deadline` or `unresponsive` |
 

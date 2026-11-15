@@ -8,7 +8,7 @@ What they report:
 
 - **The DuckDB worker pools** (:mod:`orionbelt.service.duckdb_pool`), read at
   each scrape: per source and worker, whether the worker takes queries, its
-  connections by state, the statements started on it, the queries run again
+  connections by state, the statements it ran, the queries run again
   because it did not start them, and the statements the pool ended. A worker
   is labelled by the address its source lists, ``host:port``.
 - **The process**: CPU, memory and open files where the system reports them,
@@ -52,7 +52,8 @@ class PoolCollector:
         )
         statements = CounterMetricFamily(
             "obsl_duckdb_worker_statements",
-            "Statements started on the worker",
+            "Statements the worker ran, those that failed or that the pool ended included; "
+            "one it refused before running counts as a retry",
             labels=["source", "worker"],
         )
         retries = CounterMetricFamily(
