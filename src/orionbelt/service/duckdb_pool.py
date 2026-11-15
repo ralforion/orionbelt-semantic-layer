@@ -59,6 +59,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -98,6 +99,12 @@ _SESSION_GONE = "session_not_found"
 _QUEUE_FULL = "rate_limited"
 #: A worker shutting down refuses new statements and finishes the running ones.
 _DRAINING = "server_draining"
+#: The other retry reasons the metrics count.
+_UNREACHABLE = "unreachable"
+_CONNECT_TIMEOUT = "connect_timeout"
+#: Why the pool ended a statement: its deadline passed, or its worker fell silent.
+ENDED_DEADLINE = "deadline"
+ENDED_UNRESPONSIVE = "unresponsive"
 #: Health check answers: ``serving``; answered, but not serving (draining, or
 #: still starting); no answer at all.
 SERVING, NOT_SERVING, SILENT = "serving", "not_serving", "silent"
@@ -386,6 +393,14 @@ def _chargewire_code(exc: BaseException) -> str | None:
     return None
 
 
+def _opening_failure(exc: BaseException) -> str:
+    """Why opening a connection failed, as a retry reason for the metrics."""
+    if isinstance(exc, _ConnectTimeoutError):
+        return _CONNECT_TIMEOUT
+    code = _chargewire_code(exc)
+    return code if code in (_QUEUE_FULL, _SESSION_GONE, _DRAINING) else _UNREACHABLE
+
+
 def _unreachable(exc: BaseException) -> bool:
     """Whether a driver error means the worker could not be reached at all.
 
@@ -412,6 +427,11 @@ class _WorkerState:
         #: worker that hangs them cannot be handed thread after thread.
         self.abandoned = 0
         self.idle: list[Any] = []
+        # For the metrics: statements the worker ran (failed and ended ones
+        # included), retries, and statements the pool ended, by reason.
+        self.statements = 0
+        self.retries: Counter[str] = Counter()
+        self.ended: Counter[str] = Counter()
 
 
 class _Statement:
@@ -441,10 +461,18 @@ class Pool:
             if settings.tls_root_certs
             else None
         )
-        self._thread = threading.Thread(
-            target=self._watch, name=f"obsl-duckdb-pool-{source_name}", daemon=True
-        )
-        self._thread.start()
+        # Two threads: a health check waits up to HEALTH_TIMEOUT_SECONDS for
+        # each silent worker, which must not hold up the deadlines.
+        self._threads = [
+            threading.Thread(
+                target=self._watch, name=f"obsl-duckdb-deadlines-{source_name}", daemon=True
+            ),
+            threading.Thread(
+                target=self._watch_health, name=f"obsl-duckdb-health-{source_name}", daemon=True
+            ),
+        ]
+        for thread in self._threads:
+            thread.start()
 
     # -- queries ----------------------------------------------------------
 
@@ -489,6 +517,7 @@ class Pool:
                 if retry == _QUEUE_FULL:
                     time.sleep(RATE_LIMITED_PAUSE_SECONDS)
                 continue
+            self._count_started(state)
             return _Lease(self, state, conn, statement), cursor
 
     def _track(self, state: _WorkerState, cursor: Any) -> _Statement:
@@ -512,7 +541,33 @@ class Pool:
     def _after_failure(
         self, state: _WorkerState, conn: Any, statement: _Statement, exc: BaseException
     ) -> str | None:
-        """Settle a failed statement's connection; what to retry, or ``None`` to raise."""
+        """Settle a failed statement's connection; what to retry, or ``None`` to raise.
+
+        A statement the worker refused before running it counts as a retry;
+        one that failed on its own or that the pool ended, as started.
+        """
+        try:
+            retry = self._settle(state, conn, statement, exc)
+        except WorkerTimeoutError:
+            self._count_started(state)
+            raise
+        if retry is None:
+            self._count_started(state)
+        else:
+            self._count_retry(state, retry)
+        return retry
+
+    def _count_started(self, state: _WorkerState) -> None:
+        with self._cond:
+            state.statements += 1
+
+    def _count_retry(self, state: _WorkerState, reason: str) -> None:
+        with self._cond:
+            state.retries[reason] += 1
+
+    def _settle(
+        self, state: _WorkerState, conn: Any, statement: _Statement, exc: BaseException
+    ) -> str | None:
         if statement.ended_by_pool is not None:
             self._release(state, conn, keep=False)
             raise WorkerTimeoutError(statement.ended_by_pool) from exc
@@ -533,7 +588,7 @@ class Pool:
         if _unreachable(exc):
             self._release(state, conn, keep=False)
             self._take_out(state, f"unreachable: {exc}")
-            return "unreachable"
+            return _UNREACHABLE
         # The query's own failure; the session is still good.
         self._release(state, conn, keep=True)
         return None
@@ -560,6 +615,8 @@ class Pool:
             except Exception as exc:
                 self._release(state, None, keep=False)
                 code = _chargewire_code(exc)
+                if not isinstance(exc, WorkerTimeoutError):
+                    self._count_retry(state, _opening_failure(exc))
                 if code == _QUEUE_FULL:
                     avoid = state
                     time.sleep(RATE_LIMITED_PAUSE_SECONDS)
@@ -604,7 +661,9 @@ class Pool:
 
         The statements run like a query: with the statement timeout, under the
         watchdog, and ended with the worker's other statements when it stops
-        answering.
+        answering. They count as one statement started, as a query does: once
+        the worker ran them, failed or ended by the pool too; refused before
+        running, they count as a retry (:meth:`_acquire`).
 
         Raises:
             PoolConfigError: The connection statements failed on their own.
@@ -632,11 +691,13 @@ class Pool:
             with contextlib.suppress(Exception):
                 conn.close()
             if statement.ended_by_pool is not None:
+                self._count_started(state)
                 raise WorkerTimeoutError(statement.ended_by_pool) from None
             if _chargewire_code(exc) in (_QUEUE_FULL, _SESSION_GONE, _DRAINING) or _unreachable(
                 exc
             ):
                 raise
+            self._count_started(state)
             # Without the chained error: it would carry the statements.
             raise PoolConfigError(
                 f"Data source '{self._source_name}': DUCKDB_CONNECTION_SQL failed on "
@@ -646,6 +707,7 @@ class Pool:
             self._forget(statement)
             with contextlib.suppress(Exception):
                 cursor.close()
+        self._count_started(state)
         return conn
 
     def _connect(self, state: _WorkerState) -> Any:
@@ -756,20 +818,27 @@ class Pool:
             with contextlib.suppress(Exception):
                 conn.close()
         for statement in running:
-            self._end(statement, f"worker {state.worker.name} stopped answering its health checks")
+            self._end(
+                statement,
+                f"worker {state.worker.name} stopped answering its health checks",
+                ENDED_UNRESPONSIVE,
+            )
 
-    def _end(self, statement: _Statement, reason: str) -> None:
+    def _end(self, statement: _Statement, reason: str, kind: str) -> None:
         """End a statement from this thread by closing its cursor.
 
         A cancel would be sent to the same unresponsive worker and wait with
         it; closing the cursor ends a blocked read or ``execute`` at once.
+        ``kind`` is :data:`ENDED_DEADLINE` or :data:`ENDED_UNRESPONSIVE`.
         """
-        if statement.ended_by_pool is not None:
-            return
-        statement.ended_by_pool = (
-            f"[WORKER_UNRESPONSIVE] Data source '{self._source_name}': {reason}; the query "
-            "was ended, and the worker takes no queries until it answers again."
-        )
+        with self._cond:
+            if statement.ended_by_pool is not None:
+                return
+            statement.ended_by_pool = (
+                f"[WORKER_UNRESPONSIVE] Data source '{self._source_name}': {reason}; the query "
+                "was ended, and the worker takes no queries until it answers again."
+            )
+            statement.state.ended[kind] += 1
         with contextlib.suppress(Exception):
             statement.cursor.close()
 
@@ -813,9 +882,14 @@ class Pool:
                     end_running=state.silent_checks >= SILENT_CHECKS_TO_END,
                 )
 
+    def _watch_health(self) -> None:
+        """The health thread: every worker at once when the pool starts, then each interval."""
+        while not self._stop.is_set():
+            self._check_health()
+            self._stop.wait(self._settings.health_interval_seconds)
+
     def _watch(self) -> None:
-        """The pool's thread: deadlines every half second, health every interval."""
-        next_health = 0.0
+        """The deadline thread: statements past their deadline, every half second."""
         while not self._stop.wait(WATCH_INTERVAL_SECONDS):
             now = time.monotonic()
             with self._cond:
@@ -826,11 +900,9 @@ class Pool:
                     f"worker {statement.state.worker.name} did not answer within "
                     f"{self._settings.query_timeout_seconds:g} s and "
                     f"{WATCHDOG_GRACE_SECONDS:g} s more",
+                    ENDED_DEADLINE,
                 )
                 self._take_out(statement.state, "a statement went unanswered past its deadline")
-            if now >= next_health:
-                self._check_health()
-                next_health = time.monotonic() + self._settings.health_interval_seconds
 
     # -- messages ---------------------------------------------------------
 
@@ -851,8 +923,25 @@ class Pool:
             "Retry later, or add a worker."
         )
 
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Each worker's state and counters, for the metrics."""
+        with self._cond:
+            return [
+                {
+                    "worker": s.worker.name,
+                    "healthy": s.healthy,
+                    "in_use": s.in_use,
+                    "idle": len(s.idle),
+                    "opening": s.abandoned,
+                    "statements": s.statements,
+                    "retries": dict(s.retries),
+                    "ended": dict(s.ended),
+                }
+                for s in self._workers
+            ]
+
     def close(self) -> None:
-        """Stop the thread and close the idle connections; leases still out close on release."""
+        """Stop the threads and close the idle connections; leases out close on release."""
         self._stop.set()
         with self._cond:
             idle = [conn for s in self._workers for conn in s.idle]
@@ -862,8 +951,9 @@ class Pool:
         for conn in idle:
             with contextlib.suppress(Exception):
                 conn.close()
-        if self._thread is not threading.current_thread():
-            self._thread.join(timeout=HEALTH_TIMEOUT_SECONDS * (len(self._workers) + 1))
+        for thread in self._threads:
+            if thread is not threading.current_thread():
+                thread.join(timeout=HEALTH_TIMEOUT_SECONDS * (len(self._workers) + 1))
 
 
 class _Lease:
@@ -1024,6 +1114,27 @@ def cursor(source: PoolSource) -> PoolCursor:
 def connection(source: PoolSource) -> PoolConnection:
     """A DB-API connection on a source's workers, for code that wants one."""
     return PoolConnection(pool(source))
+
+
+def start_pools(sources: Iterable[Any]) -> None:
+    """Start the pools of the DuckDB sources on workers, at server startup.
+
+    Their health checks run from then on, so the first query finds the
+    workers' state known, and the metrics show them before any query.
+
+    Raises:
+        PoolConfigError: A source on the workers cannot run.
+    """
+    for source in sources:
+        if getattr(source, "dialect", None) == "duckdb" and uses_pool(source):
+            pool(source)
+
+
+def snapshots() -> dict[str, list[dict[str, Any]]]:
+    """Each pool's :meth:`Pool.snapshot`, by source name."""
+    with _POOLS_LOCK:
+        pools = {name: found for name, (_, found) in _POOLS.items()}
+    return {name: found.snapshot() for name, found in pools.items()}
 
 
 def close_pools() -> None:

@@ -41,6 +41,14 @@ CREATE ROLE IF NOT EXISTS lake_reader;
 GRANT READ FILESYSTEM ON LOCATION '/data/' TO lake_reader;
 CREATE USER IF NOT EXISTS obsl_lake WITH PASSWORD '{PASSWORD}';
 GRANT lake_reader TO obsl_lake;
+CREATE ROLE IF NOT EXISTS sales_reader;
+GRANT READ FILESYSTEM ON LOCATION '/data/sales/' TO sales_reader;
+CREATE USER IF NOT EXISTS obsl_sales WITH PASSWORD '{PASSWORD}';
+GRANT sales_reader TO obsl_sales;
+CREATE ROLE IF NOT EXISTS hr_reader;
+GRANT READ FILESYSTEM ON LOCATION '/data/hr/' TO hr_reader;
+CREATE USER IF NOT EXISTS obsl_hr WITH PASSWORD '{PASSWORD}';
+GRANT hr_reader TO obsl_hr;
 """
 #: One column of each kind a model reads.
 COLUMNS = """
@@ -72,8 +80,14 @@ def data(tmp_path_factory: pytest.TempPathFactory) -> Path:
         f"COPY (SELECT {COLUMNS} FROM range(30) t(i)) "
         f"TO '{folder / 'data' / 'orders.parquet'}' (FORMAT parquet)"
     )
+    for area in ("sales", "hr"):
+        (folder / "data" / area).mkdir()
+        duckdb.sql(
+            f"COPY (SELECT '{area}' AS area) TO '{folder / 'data' / area / 'rows.parquet'}' "
+            "(FORMAT parquet)"
+        )
     (folder / "init.sql").write_text(INIT_SQL)
-    for path in (folder, folder / "data", folder / "init.sql", folder / "data" / "orders.parquet"):
+    for path in [folder, *folder.rglob("*")]:
         path.chmod(0o755 if path.is_dir() else 0o644)
     return folder
 
@@ -114,22 +128,28 @@ def _address(worker: DockerContainer) -> str:
     return f"{worker.get_container_host_ip()}:{worker.get_exposed_port(31337)}"
 
 
-def on_workers(workers: list[DockerContainer], **variables: str) -> DataSource:
+def on_workers(
+    workers: list[DockerContainer], name: str = "lake", user: str = "obsl_lake", **variables: str
+) -> DataSource:
     settings = {
         "DUCKDB_BACKEND": "hardcharger",
         "HARDCHARGER_WORKERS": ",".join(f"hardcharger://{_address(w)}?tls=false" for w in workers),
-        "HARDCHARGER_USER": "obsl_lake",
+        "HARDCHARGER_USER": user,
         "HARDCHARGER_PASSWORD": PASSWORD,
         **variables,
     }
-    environ = {f"DB_LAKE_{name}": value for name, value in settings.items()}
-    return DataSource(name="lake", dialect="duckdb", prefix="DB_LAKE_", environ=environ)
+    prefix = f"DB_{name.upper()}_"
+    environ = {f"{prefix}{key}": value for key, value in settings.items()}
+    return DataSource(name=name, dialect="duckdb", prefix=prefix, environ=environ)
 
 
 def in_process(data: Path) -> DataSource:
     environ = {
         "DB_FILES_DUCKDB_DATABASE": ":memory:",
         "DB_FILES_DUCKDB_ALLOWED_PATHS": f"{data / 'data'}/",
+        # The workers' sessions run in UTC; in process DuckDB takes the host's
+        # zone, which a TIMESTAMPTZ column's type carries.
+        "DB_FILES_DUCKDB_CONNECTION_SQL": "SET TimeZone = 'UTC'",
     }
     return DataSource(name="files", dialect="duckdb", prefix="DB_FILES_", environ=environ)
 
@@ -208,3 +228,26 @@ class TestOnWorkers:
             assert cursor.fetch_arrow_table().to_pylist() == [{"answer": 42}]
         finally:
             conn.close()
+
+
+class TestSourcesSharingWorkers:
+    """Two sources on the same workers, each with its own user: each reads its own files."""
+
+    def test_each_source_reads_its_own_grant_and_not_the_others(
+        self, workers: list[DockerContainer]
+    ) -> None:
+        sales = on_workers(workers, name="sales", user="obsl_sales")
+        hr = on_workers(workers, name="hr", user="obsl_hr")
+        assert sales.fingerprint() != hr.fingerprint()
+
+        def read(source: DataSource, area: str) -> list[list[Any]]:
+            sql = f"SELECT area FROM read_parquet('/data/{area}/rows.parquet')"
+            return execute_sql(sql, dialect="duckdb", source=source).rows
+
+        for _ in range(2):  # both workers, each with its own store
+            assert read(sales, "sales") == [["sales"]]
+            assert read(hr, "hr") == [["hr"]]
+        with pytest.raises(ExecutionError, match="obsl_sales"):
+            read(sales, "hr")
+        with pytest.raises(ExecutionError, match="obsl_hr"):
+            read(hr, "sales")

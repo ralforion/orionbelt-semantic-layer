@@ -39,6 +39,7 @@ images. Licences are read from each distribution's metadata.
 | jsonschema | MIT |
 | networkx | BSD-3-Clause |
 | opentelemetry-api | Apache-2.0 |
+| prometheus-client | Apache-2.0 AND BSD-2-Clause |
 | pydantic | MIT |
 | pydantic-settings | MIT |
 | pytz | MIT |
@@ -92,11 +93,13 @@ Built from `Dockerfile` with `OB_EXTRA` defaulting to `flight-duckdb-only`.
 ### `ralforion/orionbelt-semantic-layer-flight`
 
 Built from `Dockerfile.flight` with the `flight` extra, which adds every vendor
-driver.
+driver, and the `hardcharger` extra, the driver for DuckDB sources whose queries
+run on Hardcharger workers.
 
 | Package | Licence |
 |---|---|
 | pyarrow | Apache-2.0 |
+| adbc-driver-hardcharger | Apache-2.0 |
 | ob-flight-extension, ob-driver-core, osi-orionbelt, and the eight `ob-<vendor>` drivers | OrionBelt's own — see below |
 
 The vendor drivers each depend on that vendor's own client SDK

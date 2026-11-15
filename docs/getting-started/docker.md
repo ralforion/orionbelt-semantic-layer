@@ -58,8 +58,9 @@ docker compose up -d --wait
   ([Files and Lakehouse Tables](../guide/files-and-lakehouse.md)). Uncomment it
   with the profile: without the profile there is no catalog to attach.
 - **Federation's spill files** go to a volume at `/app/spill` (below).
-- **DuckDB workers.** `compose.pool.yml` adds DuckDB servers beside OBSL. OBSL
-  does not send queries to them yet.
+- **DuckDB workers.** `compose.pool.yml` adds DuckDB servers beside OBSL, for
+  the DuckDB sources set to run on them ([DuckDB Workers](../guide/duckdb-workers.md)).
+  The `-flight` image carries their driver.
 
 The directory's
 [README](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/deploy/compose)

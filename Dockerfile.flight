@@ -9,16 +9,17 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy workspace members first (cached layer). The flight extra depends on the
 # osi-orionbelt workspace member under packages/, so it must be present before
-# the first sync resolves that extra.
+# the first sync resolves that extra. The hardcharger extra is the driver for
+# DuckDB sources whose queries run on Hardcharger workers.
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY drivers/ drivers/
 COPY packages/ packages/
-RUN uv sync --no-dev --no-install-project --extra flight --frozen
+RUN uv sync --no-dev --no-install-project --extra flight --extra hardcharger --frozen
 
 # Copy source and install everything (osi-orionbelt vendors its own schemas).
 COPY src/ src/
 COPY schema/ schema/
-RUN uv sync --no-dev --no-editable --extra flight --frozen
+RUN uv sync --no-dev --no-editable --extra flight --extra hardcharger --frozen
 
 # The ADBC MySQL driver ob_mysql reads through (not on PyPI; pinned and
 # checksummed). Without it ob_mysql falls back to PyMySQL.

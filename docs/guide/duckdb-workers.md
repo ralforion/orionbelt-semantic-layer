@@ -25,10 +25,10 @@ DB_LAKE_HARDCHARGER_PASSWORD=change-me
 DB_LAKE_DUCKDB_CONNECTION_SQL=SET search_path = 'lake.sales'
 ```
 
-- **The driver.** Install OrionBelt with its `hardcharger` extra:
-  `pip install 'orionbelt-semantic-layer[hardcharger]'`. An image built from
-  the repository takes it with
-  `--build-arg OB_EXTRA="flight-duckdb-only hardcharger"`.
+- **The driver.** The `ralforion/orionbelt-semantic-layer-flight` image
+  carries it. Otherwise install OrionBelt with its `hardcharger` extra,
+  `pip install 'orionbelt-semantic-layer[hardcharger]'`, or build the API
+  image with `--build-arg OB_EXTRA="flight-duckdb-only hardcharger"`.
 - **The models do not change.** The dialect is still `duckdb`, and the SQL is
   the same. REST, the Postgres wire, Flight SQL, `EXPLAIN`, online validation
   and value search all run it on the workers.
@@ -48,7 +48,7 @@ DB_LAKE_DUCKDB_CONNECTION_SQL=SET search_path = 'lake.sales'
 | `DB_<NAME>_HARDCHARGER_QUERY_TIMEOUT_SECONDS` | `120` | Each statement's timeout, set on the worker |
 | `DB_<NAME>_HARDCHARGER_HEALTH_INTERVAL_SECONDS` | `5` | How often each worker's health is checked |
 | `DB_<NAME>_HARDCHARGER_CONNECT_TIMEOUT_SECONDS` | `10` | How long opening a connection to a worker may take |
-| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone`. They run like a query: with its timeout, and retried like one |
+| `DB_<NAME>_DUCKDB_CONNECTION_SQL` | | Statements each session on a worker runs first, such as `SET search_path` and `SET TimeZone`. They run like a query: with its timeout, and retried like one. A session starts in the worker's time zone (UTC in the Hardcharger image), where DuckDB in process takes the host's; a `TIMESTAMPTZ` result carries that zone |
 | `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS` | `10`, `30` | As for every source: how many of its queries run at once, and how long a query waits for a connection |
 
 Like a source's other settings, an unprefixed `HARDCHARGER_WORKERS` (and so
@@ -100,6 +100,68 @@ privilege it needs.
 | No worker answers | The query is refused with HTTP 503, `[WORKERS_UNAVAILABLE]` |
 | Every connection stayed in use for the whole wait | HTTP 503, `[DATA_SOURCE_BUSY]` |
 
+The pools of the sources on workers start with the server, so each worker's
+health is known before the first query.
+
+## When object storage or a catalog stops answering
+
+DuckDB waits 30 s for each HTTP request and tries it 3 more times, so a query
+on a worker waits about 2 minutes before it fails. Shorter limits in the
+workers' init SQL, before the `ATTACH`, fail it sooner:
+
+```sql
+SET GLOBAL http_timeout = 10;
+SET GLOBAL http_retries = 2;
+```
+
+| Measured, object store stopped | Default | With the limits above |
+|---|---|---|
+| An Iceberg query on a worker | Failed after 120 s | Failed after about 30 s |
+| The next query, the store back | Read | Read |
+
+The catalog was what hung: asked for a table, it waited on the object store
+too. The limit is per request, so it has to leave room for the largest file
+read a query makes. It has to be `SET GLOBAL`: a plain `SET` lasts for the init
+SQL's own connection only.
+
+## Metrics
+
+OrionBelt serves Prometheus metrics when `METRICS_ENABLED=true`, on a port of
+its own, not the API's:
+
+| Setting | Default | What it sets |
+|---|---|---|
+| `METRICS_ENABLED` | `false` | Serve `/metrics` |
+| `METRICS_HOST` | `0.0.0.0` | The address it listens on |
+| `METRICS_PORT` | `9090` | Its port |
+
+For the pools, read at each scrape, labelled by `source` and `worker` (the
+`host:port` the source lists):
+
+| Metric | Type | What it counts |
+|---|---|---|
+| `obsl_duckdb_worker_up` | gauge | 1 while the worker takes queries, 0 while the pool keeps it out |
+| `obsl_duckdb_worker_connections` | gauge | Connections by `state`: `in_use` (held by a query), `idle`, `opening` (a connect given up on that has not come back) |
+| `obsl_duckdb_worker_statements_total` | counter | Statements the worker ran, a session's setup (`DUCKDB_CONNECTION_SQL`) as one, those that failed or that the pool ended included. One it refused before running counts as a retry |
+| `obsl_duckdb_worker_retries_total` | counter | Queries run again because the worker did not start them, by `reason`: `unreachable`, `connect_timeout`, `session_not_found`, `rate_limited`, `server_draining` |
+| `obsl_duckdb_worker_statements_ended_total` | counter | Statements the pool ended, by `reason`: `deadline` or `unresponsive` |
+
+The process's own metrics come with them: CPU, memory and open files where the
+system reports them, the Python version, and garbage collection. Each worker
+serves Hardcharger's own metrics too, on its port 9091
+(`HARDCHARGER_ENABLE_METRICS`), with its queue and statements. A scrape
+configuration for both:
+
+```yaml
+scrape_configs:
+  - job_name: obsl
+    static_configs:
+      - targets: ["obsl:9090"]
+  - job_name: hardcharger
+    static_configs:
+      - targets: ["hardcharger-1:9091", "hardcharger-2:9091"]
+```
+
 ## In Docker Compose
 
 The repository's `deploy/compose/` runs OrionBelt and two workers in one
@@ -118,5 +180,6 @@ has every setting of the workers, and a worker on another machine over TLS.
 - **A worker needs its catalog to start.** A worker whose init SQL cannot
   attach a catalog does not start. Docker restarts it until the catalog
   answers.
-- **Object storage that does not answer.** A query then waits until its
-  statement timeout.
+- **Object storage or a catalog that does not answer.** A query waits until
+  DuckDB's HTTP limits give up, about 2 minutes by default; see
+  [above](#when-object-storage-or-a-catalog-stops-answering).

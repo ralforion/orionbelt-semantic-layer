@@ -76,6 +76,9 @@ dependencies = [
     # next to the existing fastapi / rdflib / sqlglot dependencies, and the
     # CLI is a core entry point alongside orionbelt-api / orionbelt-ui.
     "typer>=0.12,<1.0",
+    # Prometheus metrics (METRICS_ENABLED, off by default): pure Python, no
+    # dependencies of its own; imported only when the metrics are on.
+    "prometheus-client>=0.24,<1.0",
 ]
 
 [project.scripts]
