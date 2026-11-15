@@ -324,7 +324,7 @@ class TestRestoredMetricMetadata:
 
         restored = next(m for m in osi_again["metrics"] if m["name"] == "Cube Metric")
         assert [d["dialect"] for d in restored["expression"]["dialects"]] == ["MDX"]
-        assert any(e["vendor_name"] == "GOODDATA" for e in restored["custom_extensions"])
+        assert any(e["vendor_name"] == "GOODDATA" for e in restored["nonportable_extensions"])
 
     def test_no_root_dialects_or_vendors_emitted(self) -> None:
         # The output must stay schema-conformant: no root-level dialects/vendors,

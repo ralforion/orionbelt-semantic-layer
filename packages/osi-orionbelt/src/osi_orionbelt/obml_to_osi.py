@@ -29,6 +29,7 @@ from osi_orionbelt._field_names import (
     rename_metric,
 )
 from osi_orionbelt._ossie_sql import ossie_sql, subset_violations
+from osi_orionbelt._ossie_v03 import to_v03
 from osi_orionbelt._portable import (
     NotPortableError,
     PortableRenderer,
@@ -118,6 +119,9 @@ class OBMLtoOSI:
         # This closes the OSI -> OBML -> OSI roundtrip for non-SQL or
         # non-decomposable metrics.
         self._merge_restored_metrics(osi_metrics)
+        # Relationships OBML cannot join (a dataset joined to itself), kept by
+        # the import verbatim.
+        all_relationships.extend(self._restored_entries("obml_unconverted_relationships"))
 
         # ── Build semantic model ────────────────────────────────────
         sem_model: dict[str, Any] = {"name": self.model_name}
@@ -193,9 +197,9 @@ class OBMLtoOSI:
         # The root is additionalProperties:false, so there are no root-level
         # ``dialects`` / ``vendors`` arrays: dialects live per expression in
         # ``expression.dialects[]`` and vendors per entity in
-        # ``custom_extensions[].vendor_name``.
+        # ``nonportable_extensions[].vendor_name``.
         osi.update(sem_model)
-        return osi
+        return to_v03(osi, self.warnings.append)
 
     def _emit_foreign_extensions(self, obml_exts: list[dict] | None, osi_exts: list[dict]) -> None:
         """Re-emit third-party OBML customExtensions as OSI custom_extensions.
@@ -424,17 +428,12 @@ class OBMLtoOSI:
         """
         code = col_obj.get("code", col_name.lower().replace(" ", "_"))
 
-        field: dict[str, Any] = {
-            "name": col_name,
-            "expression": {
-                "dialects": [
-                    {
-                        "dialect": "ANSI_SQL",
-                        "expression": code,
-                    }
-                ]
-            },
-        }
+        dialects = [{"dialect": "ANSI_SQL", "expression": code}]
+        # In Ossie's own language too where the code is inside it, as metrics
+        # are: a field imported from ``OSSIE_SQL_2026`` kept only ``ANSI_SQL``.
+        if not subset_violations(code):
+            dialects.append({"dialect": "OSSIE_SQL_2026", "expression": code})
+        field: dict[str, Any] = {"name": col_name, "expression": {"dialects": dialects}}
 
         # Check if this column is used as a dimension
         is_dimension = False
@@ -666,6 +665,21 @@ class OBMLtoOSI:
             }
 
         return rel
+
+    def _restored_entries(self, key: str) -> list[dict]:
+        """Entries the import kept verbatim under *key* in its OSI-vendor stash."""
+        restored: list[dict] = []
+        for ext in self.obml.get("customExtensions", []) or []:
+            if ext.get("vendor") not in _OSI_VENDOR_READ:
+                continue
+            try:
+                data = json.loads(ext.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            entries = data.get(key) if isinstance(data, dict) else None
+            if isinstance(entries, list):
+                restored.extend(e for e in entries if isinstance(e, dict))
+        return restored
 
     def _restore_unconverted_metrics(self) -> list[dict]:
         """Recover OSI metrics preserved verbatim during OSI -> OBML import.

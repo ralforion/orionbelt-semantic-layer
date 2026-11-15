@@ -2840,7 +2840,7 @@ wheels = [
 
 [[package]]
 name = "osi-orionbelt"
-version = "0.6.2"
+version = "0.7.0"
 source = { editable = "packages/osi-orionbelt" }
 dependencies = [
     { name = "jsonschema" },

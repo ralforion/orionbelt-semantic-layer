@@ -40,7 +40,7 @@ class TestOwnVendorTags:
             },
         }
         osi = conv.OBMLtoOSI(obml).convert()
-        ce = osi["custom_extensions"]
+        ce = osi["nonportable_extensions"]
         assert all(e["vendor_name"] == "ORIONBELT" for e in ce)
 
     def test_osi_to_obml_native_stash_uses_osi_vendor(self) -> None:
@@ -110,10 +110,10 @@ class TestForeignVendorRoundtrip:
         obml = conv.OSItoOBML(self._osi_with_foreign()).convert()
         osi = conv.OBMLtoOSI(obml, "demo").convert()
         sm = osi
-        model_vendors = {e["vendor_name"] for e in sm["custom_extensions"]}
-        ds_vendors = {e["vendor_name"] for e in sm["datasets"][0]["custom_extensions"]}
+        model_vendors = {e["vendor_name"] for e in sm["nonportable_extensions"]}
+        ds_vendors = {e["vendor_name"] for e in sm["datasets"][0]["nonportable_extensions"]}
         field_vendors = {
-            e["vendor_name"] for e in sm["datasets"][0]["fields"][0]["custom_extensions"]
+            e["vendor_name"] for e in sm["datasets"][0]["fields"][0]["nonportable_extensions"]
         }
         assert "DBT" in model_vendors
         assert "SALESFORCE" in ds_vendors
@@ -153,7 +153,7 @@ class TestForeignVendorRoundtrip:
         ]
         osi_out = conv.OBMLtoOSI(obml, "demo").convert()
         metric = osi_out["metrics"][0]
-        assert any(e["vendor_name"] == "LOOKER" for e in metric["custom_extensions"])
+        assert any(e["vendor_name"] == "LOOKER" for e in metric["nonportable_extensions"])
 
     def test_foreign_dimension_emitted_to_field(self) -> None:
         # OSI has no separate dimension entity, so an OBML dimension's foreign
@@ -180,7 +180,7 @@ class TestForeignVendorRoundtrip:
         }
         osi = conv.OBMLtoOSI(obml).convert()
         field = next(f for f in osi["datasets"][0]["fields"] if f["name"] == "Status")
-        assert any(e["vendor_name"] == "TABLEAU" for e in field["custom_extensions"])
+        assert any(e["vendor_name"] == "TABLEAU" for e in field["nonportable_extensions"])
 
 
 class TestLegacyBackCompat:

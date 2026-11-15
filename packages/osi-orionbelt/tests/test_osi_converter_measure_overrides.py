@@ -271,11 +271,10 @@ class TestMeasureAggregationRoundtrip:
         obml = self._delegated_obml()
         osi = conv.OBMLtoOSI(obml).convert()
         metric = next(m for m in self._osi_metrics(osi) if m["name"] == "Total Revenue")
-        exts = metric.get("custom_extensions", [])
-        assert exts, "expected custom_extensions to carry the obml_aggregation marker"
-        import json as _json
+        exts = metric.get("nonportable_extensions", [])
+        assert exts, "expected nonportable_extensions to carry the obml_aggregation marker"
 
-        common = [_json.loads(e["data"]) for e in exts if e.get("vendor_name") == "ORIONBELT"]
+        common = [e["data"] for e in exts if e.get("vendor_name") == "ORIONBELT"]
         assert any(e.get("obml_aggregation") == "measure" for e in common), (
             "obml_aggregation marker missing from COMMON extras"
         )

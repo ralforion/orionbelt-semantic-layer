@@ -35,6 +35,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
+from osi_orionbelt._ossie_v03 import to_internal
 from osi_orionbelt._portable import matching_names
 
 # sqlglot aggregate ``sql_name()`` -> OBML aggregation, for the aggregates OBML
@@ -105,6 +106,28 @@ _PERCENTILE_NAMES = frozenset(
         "QUANTILE_DISC",
     }
 )
+
+
+class _NotRepresentableError(Exception):
+    """A metric construct OBML has no form for; the metric is preserved verbatim."""
+
+
+def _obml_cast_type(to: exp.DataType) -> str | None:
+    """The OBML ``cast`` type a SQL cast target names, or ``None``.
+
+    OBML's ``cast(x, 'type')`` takes ``'double'`` or ``'decimal(p, s)'``.
+    ``DECIMAL(p)`` has scale 0; a bare ``DECIMAL`` leaves its precision to the
+    engine, so it has no OBML type, nor does any other target.
+    """
+    if to.this in (exp.DataType.Type.DOUBLE, exp.DataType.Type.FLOAT):
+        return "double"
+    if to.this == exp.DataType.Type.DECIMAL and to.expressions:
+        params = [p.this for p in to.expressions if isinstance(p, exp.DataTypeParam)]
+        digits = [p.name for p in params if isinstance(p, exp.Literal) and p.is_int]
+        if len(digits) == len(to.expressions) and len(digits) in (1, 2):
+            scale = digits[1] if len(digits) == 2 else "0"
+            return f"decimal({digits[0]}, {scale})"
+    return None
 
 
 def _restore_concept_links(
@@ -249,8 +272,12 @@ class OSItoOBML:
         # metrics). Both are populated as a side effect of conversion below.
         self.warnings = []
         self._unconverted_metrics = []
+        self._unconverted_relationships: list[dict] = []
         self._restored_names = set()
 
+        # Ossie 0.3.0.dev0 shapes (``expression.sql``, dataset-scoped metrics,
+        # ``nonportable_extensions``) become the 0.2 shape the rest reads.
+        self.osi = to_internal(self.osi, self.warnings.append)
         # v0.1.x inputs need the legacy shim to promote pre-v0.2
         # custom_extensions into v0.2 first-class fields before we parse.
         self._normalize_legacy_v01()
@@ -281,7 +308,7 @@ class OSItoOBML:
 
         # ── DataObjects ─────────────────────────────────────────────
         datasets = model.get("datasets", [])
-        relationships = model.get("relationships", [])
+        relationships = self._joinable_relationships(model.get("relationships", []))
 
         # Build lookup: dataset_name → dataset. Stashed on self so relationship
         # cardinality inference can reach each dataset's primary_key/unique_keys.
@@ -292,15 +319,6 @@ class OSItoOBML:
         rel_by_from: dict[str, list] = {}
         for rel in relationships:
             rel_by_from.setdefault(rel["from"], []).append(rel)
-
-        # Collect join key columns: (dataset_name, field_name) pairs
-        # These should NOT become dimensions (they are FK/PK join keys)
-        self._join_key_columns: set[tuple[str, str]] = set()
-        for rel in relationships:
-            for col in rel.get("from_columns", []):
-                self._join_key_columns.add((rel["from"], col))
-            for col in rel.get("to_columns", []):
-                self._join_key_columns.add((rel["to"], col))
 
         data_objects: dict[str, Any] = {}
         for ds in datasets:
@@ -327,17 +345,14 @@ class OSItoOBML:
         # (OBML -> OSI) direction re-emits them and a full OSI -> OBML -> OSI
         # roundtrip stays lossless. They are not queryable in OBML; a LOSSY
         # warning was already recorded per metric.
-        if self._unconverted_metrics:
+        if self._unconverted_metrics or self._unconverted_relationships:
+            stash: dict[str, Any] = {FIELD_NAMES_KEY: FIELD_NAMES_COLUMN}
+            if self._unconverted_metrics:
+                stash["obml_unconverted_metrics"] = self._unconverted_metrics
+            if self._unconverted_relationships:
+                stash["obml_unconverted_relationships"] = self._unconverted_relationships
             obml.setdefault("customExtensions", []).append(
-                {
-                    "vendor": _VENDOR_OSI,
-                    "data": json.dumps(
-                        {
-                            "obml_unconverted_metrics": self._unconverted_metrics,
-                            FIELD_NAMES_KEY: FIELD_NAMES_COLUMN,
-                        }
-                    ),
-                }
+                {"vendor": _VENDOR_OSI, "data": json.dumps(stash)}
             )
 
         # ── Restore model-level properties from custom_extensions ────
@@ -370,6 +385,32 @@ class OSItoOBML:
 
         self._restore_column_names(obml, datasets)
         return obml
+
+    def _joinable_relationships(self, relationships: list) -> list[dict]:
+        """The relationships OBML can join, keeping the rest for the roundtrip.
+
+        A relationship from a dataset to itself (``emp.mgr -> emp.empno``) is a
+        self-join, which OBML refuses as a cycle: converted, it stopped the whole
+        model from loading. It is left out with a warning and preserved verbatim,
+        so OSI -> OBML -> OSI keeps it.
+        """
+        joinable: list[dict] = []
+        for rel in relationships or []:
+            if (
+                isinstance(rel, dict)
+                and rel.get("from") is not None
+                and rel["from"] == rel.get("to")
+            ):
+                self._unconverted_relationships.append(rel)
+                self.warnings.append(
+                    f"LOSSY: relationship '{rel.get('name')}' joins dataset '{rel['from']}' "
+                    f"to itself, which OBML cannot join (a self-join is a cycle); preserved "
+                    f"for the OSI -> OBML -> OSI roundtrip but not queryable. To query it, "
+                    f"add a second data object over the same table and join to that."
+                )
+                continue
+            joinable.append(rel)
+        return joinable
 
     def _restore_unexported(self, unexported: object, obml: dict[str, Any]) -> None:
         """Restore measures and metrics the export left out for lack of a portable form."""
@@ -902,8 +943,9 @@ class OSItoOBML:
     def _extract_dimensions(self, datasets: list) -> dict:
         """Extract dimension definitions from OSI fields marked as dimensions.
 
-        Skips fields that are join keys (FK/PK columns used in relationships),
-        since those are structural and not analytical dimensions.
+        A field marked ``dimension`` becomes one, a join key too: grouping by a
+        department number is a question a model author can declare, and leaving
+        it out made a field the document offers unqueryable.
         """
         dimensions: dict[str, Any] = {}
         for ds in datasets:
@@ -913,9 +955,6 @@ class OSItoOBML:
                 if dim is None:
                     continue
                 field_name = field["name"]
-                # Skip join key columns — they are FK/PK, not analytical dims
-                if (ds_name, field_name) in self._join_key_columns:
-                    continue
                 abstract_type = self._field_abstract_type(field)
                 # OBML marks a time dimension by its temporal result type, so a
                 # time dimension over a non-temporal field (an Integer year)
@@ -1206,7 +1245,11 @@ class OSItoOBML:
             # for a reference. Anything with no aggregate, an unsupported or
             # nested aggregate, an unresolvable reference, or that sqlglot cannot
             # parse is preserved verbatim. The source dialect drives the grammar.
-            decomposed = self._decompose_metric(expr_text, _expr_dialect, index)
+            try:
+                decomposed = self._decompose_metric(expr_text, _expr_dialect, index)
+            except _NotRepresentableError as exc:
+                self.warnings.append(f"Metric '{name}': {exc}.")
+                decomposed = None
             if decomposed is None:
                 self._preserve_unconverted_metric(
                     m, f"expression not decomposable into OBML measures/metrics: {expr_text!r}"
@@ -1830,6 +1873,11 @@ class OSItoOBML:
         # as a single-column measure -> preserve.
         if node.args.get("expression") is not None:
             return None, is_distinct
+        # COUNT(*) names no dataset, so it has no grain to count: a measure of
+        # ``*`` stopped the whole model from loading. A dataset-scoped one was
+        # already given its dataset's primary key (``_ossie_v03``).
+        if isinstance(arg, exp.Star):
+            return None, is_distinct
         return arg, is_distinct
 
     @staticmethod
@@ -1858,11 +1906,27 @@ class OSItoOBML:
     def _render_obml(self, node: exp.Expr) -> str:
         """Render a sqlglot expression to OBML, rewriting qualified column refs
         ``ds.col`` to ``{[ds].[col]}``. Bare columns and literals are left as-is,
-        so a numeric literal (``1.23``) is never mistaken for a reference."""
+        so a numeric literal (``1.23``) is never mistaken for a reference.
+
+        A SQL ``CAST(x AS DOUBLE)`` becomes OBML's ``cast(x, 'double')``, the
+        only form OBML parses; a target OBML's cast has no type for raises
+        :class:`_NotRepresentableError`."""
 
         def _rewrite(n: exp.Expr) -> exp.Expr:
             if isinstance(n, exp.Column) and n.table:
                 return exp.var("{[" + n.table + "].[" + n.name + "]}")
+            if isinstance(n, exp.Cast):
+                target = None if isinstance(n, exp.TryCast) else _obml_cast_type(n.to)
+                if target is None:
+                    raise _NotRepresentableError(
+                        f"{n.sql()}: OBML's cast takes 'double' or 'decimal(p, s)'"
+                    )
+                # A replaced node's children are not visited, so the argument is
+                # rewritten here.
+                return exp.Anonymous(
+                    this="cast",
+                    expressions=[n.this.transform(_rewrite), exp.Literal.string(target)],
+                )
             return n
 
         return node.transform(_rewrite).sql()
@@ -1982,4 +2046,9 @@ class OSItoOBML:
             auto_measures[key] = measure_def
             a.replace(exp.var("{[" + key + "]}"))
 
-        return ("complex", tree.sql(), auto_measures)
+        # A field read outside every aggregate (``SUM(o.x) - o.x``) has no value
+        # at a metric's grain; written into the formula it failed every query.
+        stray = next(iter(tree.find_all(exp.Column)), None)
+        if stray is not None:
+            raise _NotRepresentableError(f"{stray.sql()} is read outside every aggregate")
+        return ("complex", self._render_obml(tree), auto_measures)
