@@ -73,6 +73,24 @@ A data object with `nestedIn` and no `code` has no table: its rows are the eleme
 
 An Apache Ossie document holds one semantic model, its properties (`name`, `datasets`, `relationships`, `metrics`, ...) at the document root ([apache/ossie#383](https://github.com/apache/ossie/pull/383)). The export writes that shape. The import also reads the earlier `semantic_model` array, which osi-orionbelt wrote before 0.5.0, converting its first model with a warning; the input schema check reports the wrapper as an error, but the conversion still runs.
 
+## Querying an Ossie model
+
+Apache Ossie drafts two ways to query a model: SQL with `AGG()` (the [relational interface](https://github.com/apache/ossie/blob/main/core-spec/relational_semantics.md), "Layer 2") and a request naming metrics, dimensions and a filter (the [wide-table interface](https://github.com/apache/ossie/blob/main/core-spec/wide_table_semantics.md), "Layer 3"). OBSL implements neither yet. An imported Ossie model is queried like any OBML model, with dimensions, measures and `where`.
+
+Most answers agree with the Ossie compliance cases. Where Ossie refuses a query, or returns other rows, OBSL answers as follows:
+
+| Query | Ossie | OBSL | If you want Ossie's answer |
+|---|---|---|---|
+| A filter reading two datasets: `orders.amount > 100 AND customers.region = 'EAST'` | Refused, `E_CROSS_DATASET_FILTER` | Applies both conditions | Nothing to do. An OBML filter may read any data object the query reaches |
+| A metric grouped by a field its dataset cannot reach: customer count by order ID | Refused, `E_NO_PATH` | Counts each customer once per order, plus a row with an empty order ID for customers without orders. Warns `FAN_TRAP_RISK` | Group the metric by a field of its own dataset |
+| Metrics whose datasets do not all reach a dimension: revenue and ticket count by region, where tickets join nothing | Refused, `E_PARTIAL_DIMENSION_REACHABILITY` | Every ticket is counted in the row where region is empty; the other regions show 0. Warns `DIMENSION_NOT_APPLIED` | Query ticket count without region, or join tickets to customers in the model |
+| A filter one metric's dataset cannot reach: revenue and returns by region, where order amount > 100 | Refused, `E_UNSUPPORTED_FILTER_PATH` | Filters revenue; returns are not filtered. Warns `FILTER_NOT_APPLIED` | Query the two metrics separately |
+| One aggregate over two datasets: `SUM(orders.amount - returns.amount)` | Refused, `E_AMBIGUOUS_MEASURE_GRAIN` | Sums each dataset per customer, the data object both join to, and evaluates per customer. A customer with orders and no returns counts their orders. Warns `CONFORMED_GRAIN_ASSUMED` | Set `anchor:` on the measure to choose the grain |
+| Rows on the one side that no fact reaches: departments counted by employee job, and one department has no employees | Left out, unless the query sets `includeUnmatched` | Kept, in a row where job is empty | Filter that row out: `where: [{field: job, op: set}]` |
+| `ROLLUP` (`grouping: rollup` in OBML) | The grouped rows and the total rows | The same rows, plus one 0/1 column per dimension that marks the total rows | Leave out the flag columns |
+
+See [Cross-fact measure expressions](compilation.md#cross-fact-measure-expressions) for how a measure over two facts is evaluated.
+
 ## Gradio UI
 
 The Gradio UI provides **Import OSI** / **Export to OSI** buttons that use these API endpoints, with validation feedback for both directions.
