@@ -8,7 +8,8 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Install dependencies first (cached layer — only reruns when pyproject.toml/uv.lock change).
-# OB_EXTRA selects which optional-dependency group to install:
+# OB_EXTRA selects the optional-dependency groups to install, one or several
+# (separated by spaces or commas):
 #   - flight-duckdb-only (default) — pyarrow + ob-flight-extension + ob-duckdb
 #     only. Smallest image; used by the Cloud Run demo which only needs
 #     the baked-in DuckDB seed.
@@ -16,6 +17,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 #     (BigQuery, ClickHouse, Databricks, Dremio, DuckDB, MySQL, Postgres,
 #     Snowflake). Required for integration tests that execute against a
 #     non-DuckDB backend (e.g. the Dremio Stage-2 suite).
+#   - hardcharger: the driver for DuckDB sources whose queries run on
+#     Hardcharger workers, beside one of the above:
+#     --build-arg OB_EXTRA="flight-duckdb-only hardcharger".
 #
 # Copy the workspace members (drivers/ and packages/) before the sync so uv
 # can resolve the workspace graph. The flight* extras pull the osi-orionbelt
@@ -24,13 +28,15 @@ ARG OB_EXTRA=flight-duckdb-only
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY drivers/ drivers/
 COPY packages/ packages/
-RUN uv sync --no-dev --no-install-project --frozen --extra ${OB_EXTRA}
+RUN uv sync --no-dev --no-install-project --frozen \
+    $(for extra in $(echo "${OB_EXTRA}" | tr ',' ' '); do printf -- '--extra %s ' "$extra"; done)
 
 # Copy source and install the project itself (osi-orionbelt vendors its own
 # schemas; schema/ here is for the main package's reference endpoints).
 COPY src/ src/
 COPY schema/ schema/
-RUN uv sync --no-dev --no-editable --frozen --extra ${OB_EXTRA}
+RUN uv sync --no-dev --no-editable --frozen \
+    $(for extra in $(echo "${OB_EXTRA}" | tr ',' ' '); do printf -- '--extra %s ' "$extra"; done)
 
 # The ADBC MySQL driver ob_mysql reads through (not on PyPI; pinned and
 # checksummed), when the extra installs ob_mysql. Without it ob_mysql falls

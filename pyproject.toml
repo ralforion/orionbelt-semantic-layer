@@ -158,6 +158,13 @@ flight = [
     "ob-snowflake>=3.0.0",
     "osi-orionbelt>=0.2",
 ]
+# DuckDB sources whose queries run on Hardcharger workers
+# (DB_<NAME>_DUCKDB_BACKEND=hardcharger); OBSL imports it for those alone.
+# Tested against 2.5.1.
+hardcharger = [
+    "adbc-driver-hardcharger>=2.5.1,<2.6",
+    "pyarrow>=16.0,<27.0",
+]
 # Minimal subset of `flight` for deployments that only need DuckDB
 # execution (e.g. the public Cloud Run demo with a baked-in DuckDB
 # seed file). Drops the seven non-DuckDB vendor wheels and pyarrow
@@ -269,6 +276,12 @@ ignore_missing_imports = true
 module = ["pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# Ships without a py.typed marker; OBSL imports it for sources on Hardcharger
+# workers only (service/duckdb_pool.py).
+module = ["adbc_driver_hardcharger", "adbc_driver_hardcharger.*"]
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     # Drives the UI in a real browser (pytest -m ui). The browser itself is
@@ -310,6 +323,7 @@ dev = [
     "ob-snowflake>=3.0.0",
     "osi-orionbelt>=0.2",
     "adbc-driver-flightsql>=1.0",
+    "adbc-driver-hardcharger>=2.5.1,<2.6",
 ]
 
 [tool.uv]

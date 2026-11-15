@@ -107,11 +107,26 @@ probe_refused() {  # prints the error code the worker answered with
 mkdir -p "$WORK/models" "$WORK/data" "$WORK/secrets"
 cp "$FIXTURE_MODELS"/*.yaml "$WORK/models/"
 
-# OBSL's settings: the example as shipped; with its lake block and a model
-# uncommented; and settings of one's own, a DuckDB source over the Parquet file.
+# Uncomment the settings of the example's blocks whose comments start so.
+uncomment() {  # uncomment FILE HEADING...
+    local file=$1
+    shift
+    local IFS='|'
+    awk -v headings="$*" '
+        BEGIN { n = split(headings, wanted, "|") }
+        /^$/ { inblock = 0 }
+        /^# / { for (i = 1; i <= n; i++) if (wanted[i] != "" && index($0, "# " wanted[i]) == 1) inblock = 1 }
+        inblock && /^# [A-Z][A-Z_]*=/ { sub(/^# /, "") }
+        { print }' "$file"
+}
+# OBSL's settings: the example as shipped; with a model and its lake block, or
+# its workers block, uncommented; and settings of one's own, a DuckDB source
+# over the Parquet file.
 cp "$COMPOSE_DIR/obsl.env.example" "$WORK/obsl-shipped.env"
-sed -E -e 's/^# (OBSL_DATABASES=|DB_LAKE_)/\1/' -e 's/^# (MODEL_DIR=.*)/\1/' \
-    -e 's/^# MODEL_FILES=.*/MODEL_FILES=lake.yaml/' "$COMPOSE_DIR/obsl.env.example" > "$WORK/obsl-lake.env"
+uncomment "$COMPOSE_DIR/obsl.env.example" "Your models" "With the local lake" |
+    sed 's/^MODEL_FILES=.*/MODEL_FILES=lake.yaml/' > "$WORK/obsl-lake.env"
+uncomment "$COMPOSE_DIR/obsl.env.example" "Your models" "With the workers" |
+    sed 's/^MODEL_FILES=.*/MODEL_FILES=lake.yaml/' > "$WORK/obsl-workers.env"
 cat > "$WORK/obsl-files.env" <<'EOF'
 MODEL_DIR=/models
 MODEL_FILES=files.yaml
@@ -126,13 +141,23 @@ cp "$COMPOSE_DIR/hardcharger-init.sql.example" "$WORK/secrets/init-shipped.sql"
 sed -E 's/^-- (INSTALL|LOAD|CREATE OR REPLACE SECRET|ATTACH|GRANT) /\1 /' \
     "$COMPOSE_DIR/hardcharger-init.sql.example" > "$WORK/secrets/init-lake.sql"
 chmod 644 "$WORK"/secrets/*.sql
-for f in obsl-lake.env secrets/init-lake.sql; do
-    if grep -q -E '^(# (OBSL_DATABASES|DB_LAKE_|MODEL_)|-- (INSTALL|LOAD|CREATE|ATTACH|GRANT) )' "$WORK/$f"; then
-        echo "a lake line of $f stayed commented: the example's layout changed" >&2
+expect_line() {  # expect_line FILE PATTERN: the example's layout is what the test uncomments
+    if ! grep -q -E "$2" "$WORK/$1"; then
+        echo "$1 lacks a line matching '$2': the example's layout changed" >&2
         exit 1
     fi
-done
+}
+expect_line obsl-lake.env '^MODEL_DIR=/models$'
+expect_line obsl-lake.env '^DB_LAKE_DUCKDB_INIT_SQL='
+expect_line obsl-workers.env '^DB_LAKE_DUCKDB_BACKEND=hardcharger$'
+expect_line obsl-workers.env '^# DB_LAKE_DUCKDB_INIT_SQL='   # the in-process block stays off
+if grep -q -E '^-- (INSTALL|LOAD|CREATE|ATTACH|GRANT) ' "$WORK/secrets/init-lake.sql"; then
+    echo "a lake line of the init SQL stayed commented: the example's layout changed" >&2
+    exit 1
+fi
 
+# One key for the whole run: a new one would recreate the workers.
+SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 compose_env() {  # compose_env OBSL_ENV_FILE [INIT_SQL]: with INIT_SQL, the workers' settings too
     {
         echo "OBSL_MODELS=$WORK/models"
@@ -142,7 +167,7 @@ compose_env() {  # compose_env OBSL_ENV_FILE [INIT_SQL]: with INIT_SQL, the work
         echo "OBSL_FLIGHT_PORT=18815"
         if [[ -n "${2:-}" ]]; then
             echo "HARDCHARGER_ADMIN_PASSWORD=compose-test-admin"
-            echo "HARDCHARGER_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+            echo "HARDCHARGER_SECRET_KEY=$SECRET_KEY"
             echo "HARDCHARGER_INIT_SQL=$2"
             # A short statement timeout, so a query on a stopped S3 ends within the test.
             echo "HC_QUERY_TIMEOUT=10"
@@ -155,8 +180,13 @@ compose_env() {  # compose_env OBSL_ENV_FILE [INIT_SQL]: with INIT_SQL, the work
 compose_env "$WORK/obsl-shipped.env"
 alone
 if [[ $BUILD -eq 1 ]]; then
-    log "Building the OBSL image from this checkout..."
+    log "Building the OBSL images from this checkout (alone, and with the workers' driver)..."
     dc build >/dev/null
+    compose_env "$WORK/obsl-shipped.env" "$WORK/secrets/init-shipped.sql"
+    with_workers
+    dc build obsl >/dev/null
+    compose_env "$WORK/obsl-shipped.env"
+    alone
 fi
 log "Building the probe image (Python and adbc-driver-hardcharger)..."
 printf 'FROM python:3.12-slim\nRUN pip install --no-cache-dir adbc-driver-hardcharger==2.5.1 pyarrow\n' |
@@ -283,9 +313,29 @@ for w in hardcharger-1 hardcharger-2; do
     check "$w: refuses a wrong password" "UNAUTHENTICATED" "$(probe_refused $w "SELECT 1" wrong-password)"
 done
 
-# ── 6. Failures ──────────────────────────────────────────────────────
+# ── 6. OBSL's queries on the workers ─────────────────────────────────
 
-log "6. The catalog or S3 down"
+log "6. OBSL's queries on the workers, with obsl.env.example's workers block"
+compose_env "$WORK/obsl-workers.env" "$WORK/secrets/init-lake.sql"
+dc up -d --wait >/dev/null 2>&1 || true
+check "OBSL is healthy with a source on the workers" "running healthy" "$(state obsl | cut -d' ' -f1-2)"
+check "the workers were not recreated" "running healthy 0 running healthy 0" \
+    "$(echo "$(state hardcharger-1) $(state hardcharger-2)")"
+# OBSL itself has no catalog attached now: an Iceberg answer came from a worker.
+check "OBSL reads the Iceberg table on the workers" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
+docker stop "${PROJECT}-hardcharger-1-1" >/dev/null
+answers=""
+for _ in 1 2 3 4 5 6; do answers="$answers $(query "$LAKE_QUERY")"; done
+check "with a worker stopped, every query is answered by the other" \
+    "$(for _ in 1 2 3 4 5 6; do printf ' %s' "$EXPECTED_ROWS"; done)" "$answers"
+docker start "${PROJECT}-hardcharger-1-1" >/dev/null
+took=$(wait_healthy hardcharger-1 60)
+if [[ "$took" != timeout ]]; then pass "the stopped worker is healthy again (${took}s)"; else fail "worker restart" "not healthy within 60s"; fi
+check "queries still answer with both workers back" "$EXPECTED_ROWS" "$(query "$LAKE_QUERY")"
+
+# ── 7. Failures ──────────────────────────────────────────────────────
+
+log "7. The catalog or S3 down"
 docker stop "${PROJECT}-lake-rest-1" >/dev/null
 check "catalog down while a worker runs: an Iceberg query fails at once" "INVALID_ARGUMENT" \
     "$(probe_refused hardcharger-2 "$ICEBERG")"

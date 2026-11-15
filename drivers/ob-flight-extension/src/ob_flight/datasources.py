@@ -55,9 +55,13 @@ class DataSourceNotFoundError(LookupError):
 #: Settings that shape a connection but are not ``connect()`` arguments, read
 #: where OBSL opens the connection (``orionbelt.service.duckdb_source``):
 #: DuckDB's per-connection statements (they decide how names resolve), memory,
-#: threads and spilling, and the paths its queries may read.
+#: threads and spilling, and the paths its queries may read. For a source on
+#: Hardcharger workers (``orionbelt.service.duckdb_pool``): where its queries
+#: run, the workers, and who signs in to them, whose grants decide what a
+#: query may read.
 #: Part of the fingerprint, so sources differing in them get pools of their
-#: own, and, as the paths decide what a query may return, cached results too.
+#: own, and, as the paths and grants decide what a query may return, cached
+#: results too.
 _FINGERPRINT_SETTINGS: dict[str, tuple[str, ...]] = {
     "duckdb": (
         "DUCKDB_CONNECTION_SQL",
@@ -66,6 +70,11 @@ _FINGERPRINT_SETTINGS: dict[str, tuple[str, ...]] = {
         "DUCKDB_SPILL_DIR",
         "DUCKDB_SPILL_MAX_MB",
         "DUCKDB_ALLOWED_PATHS",
+        "DUCKDB_BACKEND",
+        "HARDCHARGER_WORKERS",
+        "HARDCHARGER_USER",
+        "HARDCHARGER_PASSWORD",
+        "HARDCHARGER_TLS_ROOT_CERTS",
     ),
 }
 

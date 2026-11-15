@@ -43,6 +43,22 @@ wheels = [
 ]
 
 [[package]]
+name = "adbc-driver-hardcharger"
+version = "2.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "adbc-driver-manager" },
+    { name = "pyarrow" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/d7/9caa281153a12987a348e5846f43d56a1e6794d768f4544cddc76b2cdd9a/adbc_driver_hardcharger-2.5.1-py3-none-macosx_13_0_arm64.whl", hash = "sha256:101a9ddd61202f1d8ccbb0e01463a6a03a33080aa5b790afe499434ea2098a3c", size = 10126450, upload-time = "2026-11-13T22:57:31.875Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/8b/a6e15e6d8997cf0880526abced03d80cf57616ad05203ff3df07be10dd2f/adbc_driver_hardcharger-2.5.1-py3-none-macosx_13_0_x86_64.whl", hash = "sha256:80ac9a051a71bc8f0a3470009c57f02ef1222de351b5bd2fd2050e1419fd27bf", size = 11456323, upload-time = "2026-11-13T22:57:34.302Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/7d/f5e8ab014b7a4e9c8566d30d02e7d017bf2365894fdfe4907a5f5de04fd7/adbc_driver_hardcharger-2.5.1-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:9f1a91c95f0c9969cb5323d9b3e54f202be2b8782d56122f44cbf61208586175", size = 12504335, upload-time = "2026-11-13T22:57:36.759Z" },
+    { url = "https://files.pythonhosted.org/packages/17/e4/3ce362c97ec3e39ff7e313a64931bba825f1dc5ab52f9c305c5148a92d45/adbc_driver_hardcharger-2.5.1-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:5a07f70474efef4fca7bb028513b2e1b4f38894bd1ba8fab0d3b9b5a835d7384", size = 11104475, upload-time = "2026-11-13T22:57:39.132Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/a7/edb9c02893835e17a1060cb9612f9daae3bb3e1c1ea027ba5935688f9177/adbc_driver_hardcharger-2.5.1-py3-none-win_amd64.whl", hash = "sha256:6a27cdec6740a904884f92704c20cd088f4597f28e8f28bb6573976ee72b999f", size = 11642522, upload-time = "2026-11-13T22:57:41.899Z" },
+]
+
+[[package]]
 name = "adbc-driver-manager"
 version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2632,6 +2648,10 @@ flight-duckdb-only = [
     { name = "osi-orionbelt" },
     { name = "pyarrow" },
 ]
+hardcharger = [
+    { name = "adbc-driver-hardcharger" },
+    { name = "pyarrow" },
+]
 osi = [
     { name = "osi-orionbelt" },
 ]
@@ -2646,6 +2666,7 @@ ui = [
 [package.dev-dependencies]
 dev = [
     { name = "adbc-driver-flightsql" },
+    { name = "adbc-driver-hardcharger" },
     { name = "clickhouse-connect" },
     { name = "duckdb" },
     { name = "gradio" },
@@ -2685,6 +2706,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "adbc-driver-hardcharger", marker = "extra == 'hardcharger'", specifier = ">=2.5.1,<2.6" },
     { name = "clickhouse-connect", marker = "extra == 'dev'", specifier = ">=0.7" },
     { name = "cryptography", marker = "extra == 'dev'", specifier = ">=42.0" },
     { name = "duckdb", marker = "extra == 'dev'", specifier = ">=1.5.6" },
@@ -2723,6 +2745,7 @@ requires-dist = [
     { name = "psycopg2-binary", marker = "extra == 'dev'", specifier = ">=2.9" },
     { name = "pyarrow", marker = "extra == 'flight'", specifier = ">=16.0,<27.0" },
     { name = "pyarrow", marker = "extra == 'flight-duckdb-only'", specifier = ">=16.0,<27.0" },
+    { name = "pyarrow", marker = "extra == 'hardcharger'", specifier = ">=16.0,<27.0" },
     { name = "pyarrow", marker = "extra == 'ui'", specifier = ">=16.0,<27.0" },
     { name = "pydantic", specifier = ">=2.12,<3.0" },
     { name = "pydantic-settings", specifier = ">=2.12,<3.0" },
@@ -2744,11 +2767,12 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2025.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.40,<1.0" },
 ]
-provides-extras = ["dev", "spark", "docs", "ui", "osi", "flight", "flight-duckdb-only"]
+provides-extras = ["dev", "spark", "docs", "ui", "osi", "flight", "hardcharger", "flight-duckdb-only"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "adbc-driver-flightsql", specifier = ">=1.0" },
+    { name = "adbc-driver-hardcharger", specifier = ">=2.5.1,<2.6" },
     { name = "clickhouse-connect", specifier = ">=0.7" },
     { name = "duckdb", specifier = ">=1.5.6" },
     { name = "gradio", specifier = ">=6.15.1,<7.0" },

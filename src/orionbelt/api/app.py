@@ -179,6 +179,27 @@ def _warn_if_legacy_model_file_set() -> None:
         )
 
 
+def _check_duckdb_workers() -> None:
+    """Refuse to start when a DuckDB source on Hardcharger workers cannot run.
+
+    Its settings and the driver, by the source's name: found now rather than
+    at the source's first query. Data sources that are not usable as written
+    are reported where they are used, as before.
+    """
+    from orionbelt.service.datasource_selection import configured_datasource_list
+    from orionbelt.service.db_executor import ExecutionUnavailableError
+    from orionbelt.service.duckdb_pool import PoolConfigError, check_sources
+
+    try:
+        sources = configured_datasource_list()
+    except ExecutionUnavailableError:
+        return
+    try:
+        check_sources(sources)
+    except PoolConfigError as exc:
+        raise RuntimeError(str(exc)) from None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Start/stop the SessionManager alongside the application.
@@ -198,6 +219,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings: Settings = app.state.settings
 
     _warn_if_legacy_model_file_set()
+    _check_duckdb_workers()
 
     # Read + validate every YAML before constructing the SessionManager —
     # fail fast at startup rather than emitting half-broken state.
@@ -593,8 +615,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             close_all_pools()
         except ImportError:
             pass
+        from orionbelt.service.duckdb_pool import close_pools
         from orionbelt.service.duckdb_source import close_instances
 
+        close_pools()
         close_instances()
         try:
             await cache.shutdown()

@@ -306,7 +306,7 @@ POSTGRES_PASSWORD=secret
 
 | DB_VENDOR    | Driver        | Credential Environment Variables                                                                                             |
 | ------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `duckdb`     | ob-duckdb     | `DUCKDB_DATABASE` (a file, `:memory:`, or `md:<db>` for MotherDuck), `MOTHERDUCK_ACCESS_TOKEN` (required for `md:`), `DUCKDB_INIT_SQL`, `DUCKDB_CONNECTION_SQL`, `DUCKDB_ALLOWED_PATHS`; `DUCKDB_MEMORY_LIMIT`, `DUCKDB_THREADS`, `DUCKDB_SPILL_DIR`, `DUCKDB_SPILL_MAX_MB` ([Files and Lakehouse Tables](guide/files-and-lakehouse.md)) |
+| `duckdb`     | ob-duckdb     | `DUCKDB_DATABASE` (a file, `:memory:`, or `md:<db>` for MotherDuck), `MOTHERDUCK_ACCESS_TOKEN` (required for `md:`), `DUCKDB_INIT_SQL`, `DUCKDB_CONNECTION_SQL`, `DUCKDB_ALLOWED_PATHS`; `DUCKDB_MEMORY_LIMIT`, `DUCKDB_THREADS`, `DUCKDB_SPILL_DIR`, `DUCKDB_SPILL_MAX_MB` ([Files and Lakehouse Tables](guide/files-and-lakehouse.md)); `DUCKDB_BACKEND=hardcharger` and `HARDCHARGER_*` to run a named source's queries on Hardcharger workers ([DuckDB Workers](guide/duckdb-workers.md)) |
 | `postgres`   | ob-postgres   | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DBNAME`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_SCHEMA`                 |
 | `snowflake`  | ob-snowflake  | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PASSWORD`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
 | `clickhouse` | ob-clickhouse | `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                    |

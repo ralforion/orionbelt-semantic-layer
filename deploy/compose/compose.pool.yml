@@ -5,6 +5,9 @@ x-hardcharger: &hardcharger
   image: ${HARDCHARGER_IMAGE:-ghcr.io/gizmodata/hardcharger:2.12.1@sha256:bc189d35619f6dcf21f9bbd6b089e3039e5270a9a324184acdd5bcde8dfba086}
   restart: unless-stopped
   init: true
+  # Stopped, a worker refuses new statements and finishes the running ones
+  # (Hardcharger drains on SIGTERM); Docker's default 10 s would cut them short.
+  stop_grace_period: ${HC_STOP_GRACE_PERIOD:-2m}
   environment:
     HARDCHARGER_HOST: 0.0.0.0
     HARDCHARGER_PORT: '31337'
@@ -44,6 +47,11 @@ x-hardcharger: &hardcharger
 
 services:
   obsl:
+    # OBSL with the workers' driver (its hardcharger extra), under its own tag.
+    image: ${OBSL_IMAGE:-orionbelt-semantic-layer-api:compose-workers}
+    build:
+      args:
+        OB_EXTRA: ${OB_EXTRA:-flight-duckdb-only} hardcharger
     depends_on: [hardcharger-1, hardcharger-2]     # start order only
   hardcharger-1:
     <<: *hardcharger

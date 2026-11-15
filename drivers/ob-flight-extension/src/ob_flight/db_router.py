@@ -93,8 +93,12 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
     if dialect == "duckdb" and not overrides:
         # OBSL opens a DuckDB source alike on every surface: its setup
         # statements, memory and spill settings, and the instance a source
-        # without a database file keeps.
-        from orionbelt.service import duckdb_source
+        # without a database file keeps; or, for a source on Hardcharger
+        # workers, a connection whose cursors run there.
+        from orionbelt.service import duckdb_pool, duckdb_source
+
+        if duckdb_pool.uses_pool(datasource):
+            return duckdb_pool.connection(datasource)
 
         native = duckdb_source.connect(datasource)
         config = duckdb_source.settings(datasource)

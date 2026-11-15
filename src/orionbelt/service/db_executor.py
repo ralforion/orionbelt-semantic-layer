@@ -718,9 +718,12 @@ def warm_db_tz_cache(dialect: str, source: DataSource | None = None) -> ZoneInfo
             return _DB_SESSION_TZ.get(key)
 
         if dialect == "duckdb":
-            from orionbelt.service import duckdb_source
+            from orionbelt.service import duckdb_pool, duckdb_source
 
             with _connection_slot(datasource, wait=False):
+                if (on_workers := duckdb_pool.pooled(datasource)) is not None:
+                    with duckdb_pool.cursor(on_workers) as cursor:
+                        return _detect_db_timezone(cursor, "duckdb", key)
                 conn = duckdb_source.connect(datasource)
                 try:
                     return _detect_db_timezone(conn, "duckdb", key)
@@ -1057,6 +1060,12 @@ def _hint(exc: Exception) -> str:
     (:mod:`orionbelt.service.duckdb_source`).
     """
     message = str(exc)
+    if "Hardcharger blocked" in message and "privilege" in message:
+        return (
+            ". A DuckDB data source on Hardcharger workers reads what its user's grants "
+            "allow: GRANT READ FILESYSTEM | READ OBJECT STORAGE | READ HTTP ON LOCATION ... "
+            "in the workers' init SQL."
+        )
     if "join_use_nulls" in message and "readonly" in message.lower():
         return (
             ". The statement sets join_use_nulls = 1 so that a LEFT JOIN without a "
@@ -1173,10 +1182,15 @@ def _execute_duckdb(
     The connection comes from :mod:`orionbelt.service.duckdb_source`: a
     database file read-only, to avoid cross-process file lock conflicts with
     the notebook process; a source without one on the instance it keeps.
-    Result shaping lives in :func:`duckdb_execution_result`.
+    Result shaping lives in :func:`duckdb_execution_result`. A source on
+    Hardcharger workers runs there instead (:func:`_execute_on_workers`).
     """
-    from orionbelt.service import duckdb_source
+    from orionbelt.service import duckdb_pool, duckdb_source
 
+    if (on_workers := duckdb_pool.pooled(source)) is not None:
+        return _execute_on_workers(
+            sql, on_workers, t0, tz=tz, override_db_tz=override_db_tz, sink=sink
+        )
     with _connection_slot(source):
         conn = duckdb_source.connect(source)
         try:
@@ -1206,6 +1220,40 @@ def _execute_duckdb(
             return duckdb_execution_result(relation, t0, tz=effective_tz, sink=sink)
         finally:
             conn.close()
+
+
+def _execute_on_workers(
+    sql: str,
+    source: DataSource,
+    t0: float,
+    *,
+    tz: ZoneInfo | None,
+    override_db_tz: bool,
+    sink: Callable[[Any], Any] | None,
+) -> ExecutionResult:
+    """Execute SQL on a DuckDB source's Hardcharger workers.
+
+    :mod:`orionbelt.service.duckdb_pool` picks the worker and holds its
+    connection until the result is read. The workers answer in Arrow, so the
+    result is typed from its schema as in process.
+    """
+    from orionbelt.service import duckdb_pool
+
+    with _connection_slot(source), duckdb_pool.cursor(source) as cursor:
+        effective_tz: ZoneInfo | None
+        if override_db_tz and tz is not None:
+            effective_tz = tz
+        elif (declared := declared_timezone(source)) is not None:
+            effective_tz = declared
+        else:
+            effective_tz = _detect_db_timezone(cursor, "duckdb", _tz_key(source)) or tz
+        cursor.execute(sql)
+        if cursor.description is None:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            return ExecutionResult(
+                columns=[], raw_rows=[], row_count=0, execution_time_ms=round(elapsed_ms, 2)
+            )
+        return _fetch_result(cursor, t0, tz=effective_tz, sink=sink)
 
 
 def _arrow_result(arrow_table: Any, t0: float, *, tz: ZoneInfo | None) -> ExecutionResult:
@@ -1292,14 +1340,19 @@ def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> 
     explain_stmt = f"EXPLAIN {sql}"
     try:
         if dialect == "duckdb":
-            from orionbelt.service import duckdb_source
+            from orionbelt.service import duckdb_pool, duckdb_source
 
             with _connection_slot(datasource):
-                conn = duckdb_source.connect(datasource)
-                try:
-                    rows = conn.execute(explain_stmt).fetchall()
-                finally:
-                    conn.close()
+                if (on_workers := duckdb_pool.pooled(datasource)) is not None:
+                    with duckdb_pool.cursor(on_workers) as cursor:
+                        cursor.execute(explain_stmt)
+                        rows = cursor.fetchall()
+                else:
+                    conn = duckdb_source.connect(datasource)
+                    try:
+                        rows = conn.execute(explain_stmt).fetchall()
+                    finally:
+                        conn.close()
             return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
 
         from ob_flight.db_router import get_connection
