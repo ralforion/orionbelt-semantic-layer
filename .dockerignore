@@ -26,6 +26,8 @@ site/
 .github/
 tests/
 docs/
+# The Compose setup: its .env, obsl.env and secrets/ hold credentials.
+deploy/
 mkdocs.yml
 CLAUDE.md
 # LICENSE is NOT excluded: pyproject declares license-files = ["LICENSE"], so

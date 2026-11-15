@@ -34,6 +34,37 @@ them as [named data sources](../guide/data-sources.md) (`OBSL_DATABASES`); the
 same page shows how to pass them, and their secrets, on
 [Cloud Run](../guide/data-sources.md#deployment).
 
+## Docker Compose
+
+The repository's `deploy/compose/` directory holds a Compose setup: OBSL
+alone (`compose.yml`), and on request a local lake for development, an S3
+endpoint with an Apache Iceberg REST catalog (`COMPOSE_PROFILES=lake`).
+
+```bash
+cd deploy/compose
+cp .env.example .env            # which files and profile, images, ports
+cp obsl.env.example obsl.env    # OBSL's settings: models and data sources
+mkdir -p models data            # mounted at /models and /data
+docker compose up -d --wait
+```
+
+- **The image.** OBSL is built from the checkout; `OBSL_IMAGE` in `.env` runs a
+  published image instead.
+- **Models.** As shipped, OBSL starts with the example model built into its
+  image, which compiles queries but has no data to run them. Put your models in
+  `models/`, and name them in `obsl.env` (`MODEL_DIR=/models`, `MODEL_FILES`).
+- **The local lake.** The example `obsl.env` has a block, commented out, for a
+  DuckDB source that reads the lake's files and Iceberg tables in process
+  ([Files and Lakehouse Tables](../guide/files-and-lakehouse.md)). Uncomment it
+  with the profile: without the profile there is no catalog to attach.
+- **Federation's spill files** go to a volume at `/app/spill` (below).
+- **DuckDB workers.** `compose.pool.yml` adds DuckDB servers beside OBSL. OBSL
+  does not send queries to them yet.
+
+The directory's
+[README](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/deploy/compose)
+has every file and setting.
+
 ## Spilling federated queries to disk
 
 A [query across data sources](../guide/federation.md#running-a-federated-query)

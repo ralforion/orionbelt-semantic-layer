@@ -10,6 +10,11 @@ build/
 .venv/
 venv/
 .env
+# The Compose setup's own settings, credentials, models and data (deploy/compose/README.md).
+deploy/compose/obsl.env
+deploy/compose/secrets/
+deploy/compose/models/
+deploy/compose/data/
 *.db
 *.duckdb
 # Generated FOCUS export (20 MB); rebuilt by scripts/build_finops_duckdb.py.

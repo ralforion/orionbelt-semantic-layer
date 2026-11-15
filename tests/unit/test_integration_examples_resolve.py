@@ -17,6 +17,7 @@ which is the argument for extracting them mechanically.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import re
 from pathlib import Path
@@ -28,6 +29,7 @@ from ruamel.yaml import YAML
 from orionbelt.compiler.pipeline import CompilationPipeline
 from orionbelt.compiler.resolution import ResolutionError
 from orionbelt.models.query import QueryObject
+from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
 from orionbelt.parser.resolver import ReferenceResolver
 
@@ -35,6 +37,16 @@ _REPO = Path(__file__).resolve().parents[2]
 _INTEGRATIONS = _REPO / "integrations"
 _SHELL_SUITES = (_REPO / "tests" / "docker", _REPO / "tests" / "cloudrun")
 _MODEL = _REPO / "examples" / "orionbelt_1_commerce.yaml"
+_DEFAULT_TARGET: tuple[str, tuple[Path, ...]] = ("postgres", (_MODEL,))
+#: A shell suite that runs models of its own sends its payloads to those, so they
+#: are checked against them, in the dialect the models are written for. A
+#: payload must resolve against one of the suite's models.
+_SUITE_TARGETS: dict[str, tuple[str, tuple[Path, ...]]] = {
+    "test_compose.sh": (
+        "duckdb",
+        tuple(sorted((_REPO / "tests" / "docker" / "compose_models").glob("*.yaml"))),
+    ),
+}
 
 
 def _looks_like_a_query(obj: Any) -> bool:
@@ -94,9 +106,12 @@ def _json_objects_in_shell(text: str) -> list[dict]:
     return found
 
 
-def _collect() -> list[tuple[str, dict]]:
-    """(source label, query) for every example under integrations/."""
-    out: list[tuple[str, dict]] = []
+Example = tuple[str, dict, str, tuple[Path, ...]]
+
+
+def _collect() -> list[Example]:
+    """(source label, query, dialect, models) for every shipped example."""
+    out: list[Example] = []
     yaml = YAML(typ="safe")
     for path in sorted(_INTEGRATIONS.rglob("*")):
         if path.suffix in {".json", ".yaml", ".yml"}:
@@ -109,7 +124,7 @@ def _collect() -> list[tuple[str, dict]]:
             except Exception:  # noqa: BLE001 - a malformed doc is another test's problem
                 continue
             for i, q in enumerate(_walk(doc)):
-                out.append((f"{path.relative_to(_REPO)}#{i}", q))
+                out.append((f"{path.relative_to(_REPO)}#{i}", q, *_DEFAULT_TARGET))
         elif path.suffix == ".md":
             for i, block in enumerate(
                 re.findall(r"```(?:json)?\n(.*?)```", path.read_text(), re.S)
@@ -119,11 +134,12 @@ def _collect() -> list[tuple[str, dict]]:
                 except json.JSONDecodeError:
                     continue
                 for j, q in enumerate(_walk(doc)):
-                    out.append((f"{path.relative_to(_REPO)}#{i}.{j}", q))
+                    out.append((f"{path.relative_to(_REPO)}#{i}.{j}", q, *_DEFAULT_TARGET))
     for suite in _SHELL_SUITES:
         for path in sorted(suite.glob("*.sh")):
+            target = _SUITE_TARGETS.get(path.name, _DEFAULT_TARGET)
             for i, q in enumerate(_json_objects_in_shell(path.read_text())):
-                out.append((f"{path.relative_to(_REPO)}#{i}", q))
+                out.append((f"{path.relative_to(_REPO)}#{i}", q, *target))
     return out
 
 
@@ -138,39 +154,57 @@ def _is_deliberately_invalid(query: dict) -> bool:
     return any(s in json.dumps(query) for s in _SENTINELS)
 
 
-_POSITIVE = [(label, q) for label, q in _EXAMPLES if not _is_deliberately_invalid(q)]
-_NEGATIVE = [(label, q) for label, q in _EXAMPLES if _is_deliberately_invalid(q)]
+_POSITIVE = [e for e in _EXAMPLES if not _is_deliberately_invalid(e[1])]
+_NEGATIVE = [e for e in _EXAMPLES if _is_deliberately_invalid(e[1])]
+_ARGS = ("label", "query", "dialect", "models")
 
 
-@pytest.fixture(scope="module")
-def model():
-    raw, src = TrackedLoader().load(_MODEL)
+@functools.cache
+def _load(path: Path) -> SemanticModel:
+    raw, src = TrackedLoader().load(path)
     resolved, result = ReferenceResolver().resolve(raw, src)
     assert resolved is not None, result.errors
     return resolved
+
+
+def _resolution_error(query: dict, dialect: str, path: Path) -> ResolutionError | None:
+    """The error compiling ``query`` against the model at ``path`` raises, if any."""
+    try:
+        CompilationPipeline().compile(QueryObject(**query), _load(path), dialect)
+    except ResolutionError as exc:
+        return exc
+    return None
 
 
 def test_examples_were_actually_found() -> None:
     """Guard the guard: a broken extractor would make every case below vacuous."""
     assert len(_EXAMPLES) >= 3, f"expected to find query examples, got {len(_EXAMPLES)}"
     assert _NEGATIVE, "the deliberately-invalid payloads disappeared from the shell suites"
+    for suite, (_, models) in _SUITE_TARGETS.items():
+        assert models, f"the models {suite} runs were not found"
 
 
-@pytest.mark.parametrize(("label", "query"), _POSITIVE, ids=[label for label, _ in _POSITIVE])
-def test_a_shipped_example_resolves(model, label: str, query: dict) -> None:
-    """The names in it must exist in the model the quickstart tells you to load."""
-    CompilationPipeline().compile(QueryObject(**query), model, "postgres")
+@pytest.mark.parametrize(_ARGS, _POSITIVE, ids=[e[0] for e in _POSITIVE])
+def test_a_shipped_example_resolves(
+    label: str, query: dict, dialect: str, models: tuple[Path, ...]
+) -> None:
+    """The names in it must exist in the model the payload is sent to: the one the
+    quickstart tells you to load, or the suite's own."""
+    errors = {path.name: _resolution_error(query, dialect, path) for path in models}
+    assert None in errors.values(), errors
 
 
-@pytest.mark.parametrize(("label", "query"), _NEGATIVE, ids=[label for label, _ in _NEGATIVE])
-def test_a_deliberately_invalid_payload_still_fails(model, label: str, query: dict) -> None:
+@pytest.mark.parametrize(_ARGS, _NEGATIVE, ids=[e[0] for e in _NEGATIVE])
+def test_a_deliberately_invalid_payload_still_fails(
+    label: str, query: dict, dialect: str, models: tuple[Path, ...]
+) -> None:
     """The shell suites assert a 4xx for these, so they must stay unresolvable.
 
     Checked rather than merely excluded: if one of these names ever became real,
     the suite's error-handling case would pass for the wrong reason.
     """
-    with pytest.raises(ResolutionError):
-        CompilationPipeline().compile(QueryObject(**query), model, "postgres")
+    for path in models:
+        assert _resolution_error(query, dialect, path) is not None, path.name
 
 
 # Names the bundled model does not expose, which nonetheless kept turning up in

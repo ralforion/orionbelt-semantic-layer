@@ -1,0 +1,72 @@
+# OrionBelt Semantic Layer with Docker Compose.
+#
+#   compose.yml        OBSL alone: what every deployment runs
+#   compose.pool.yml   adds DuckDB workers (Hardcharger) for lake sources
+#
+# COMPOSE_FILE in .env picks the files, COMPOSE_PROFILES=lake adds a local lake
+# for development (below); see README.md.
+name: obsl
+
+services:
+  obsl:
+    # Built from this checkout unless OBSL_IMAGE names a published image.
+    image: ${OBSL_IMAGE:-orionbelt-semantic-layer-api:compose}
+    build:
+      context: ../..
+      args:
+        OB_EXTRA: ${OB_EXTRA:-flight-duckdb-only}
+    restart: unless-stopped
+    env_file:
+      - path: ${OBSL_ENV_FILE:-obsl.env}   # models and data sources, as for docker run --env-file
+        required: false
+    environment:
+      FEDERATION_SPILL_DIR: /app/spill
+    volumes:
+      - ${OBSL_MODELS:-./models}:/models:ro
+      - ${OBSL_DATA:-./data}:/data:ro
+      - obsl-spill:/app/spill
+    ports:
+      - '${OBSL_PORT:-8080}:8080'               # REST
+      - '${OBSL_FLIGHT_PORT:-8815}:8815'        # Arrow Flight SQL, when FLIGHT_ENABLED=true
+    networks: [obsl]
+
+  # A local lake for development and tests, with COMPOSE_PROFILES=lake: an S3 endpoint
+  # and an Apache Iceberg REST catalog. Works with OBSL alone and with the workers.
+  # Its data lives in the containers and goes with `docker compose down`.
+  lake-s3:
+    profiles: [lake]
+    # Versity S3 Gateway: serves the directories under /data as buckets.
+    image: versity/versitygw:v1.10.0@sha256:89cad13cc981986ee284cbafea4613f9533ce6fd5f37a2c96c4c4fb8adb3a316
+    environment:
+      ROOT_ACCESS_KEY: ${LAKE_S3_KEY:-lake-key}
+      ROOT_SECRET_KEY: ${LAKE_S3_SECRET:-lake-secret}
+    entrypoint: ["sh", "-c", "mkdir -p /data/warehouse && exec versitygw --port :9000 --health /health posix /data"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9000/health"]
+      interval: 5s
+      retries: 20
+    networks: [obsl]
+
+  lake-rest:
+    profiles: [lake]
+    # The Apache Iceberg project's REST catalog for tests; it keeps its catalog in the container.
+    image: apache/iceberg-rest-fixture:1.10.1@sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f
+    environment:
+      AWS_ACCESS_KEY_ID: ${LAKE_S3_KEY:-lake-key}
+      AWS_SECRET_ACCESS_KEY: ${LAKE_S3_SECRET:-lake-secret}
+      AWS_REGION: us-east-1
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://lake-s3:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: 'true'
+    depends_on:
+      lake-s3: {condition: service_healthy}
+    networks: [obsl]
+
+volumes:
+  obsl-spill:
+
+networks:
+  # An ordinary bridge network. Not internal: an internal network has no route off
+  # the host, so the workers could not reach object storage or a catalog.
+  obsl: {}
