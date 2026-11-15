@@ -643,6 +643,21 @@ fact alone is not (see below).
 Facts sharing *several* dimensions raise `ANCHOR_REQUIRED_AMBIGUOUS_KEY` rather
 than picking one, because conforming at each gives a different answer.
 
+### Several anchors in one query
+
+Each anchored measure runs on its anchor's own rows. Two measures with different
+anchors are two grains, so the query computes each in a union leg of its own,
+the same way it combines independent facts:
+
+| Measure | Anchor | Evaluated |
+|---|---|---|
+| `SUM({[Orders].[Amount]} - {[Returns].[Amount]})`, no `anchor:` | `Customers` | Once per customer |
+| The same expression with `anchor: Orders` | `Orders` | Once per order |
+
+Asked together, by region, each column is what that measure returns alone.
+Measures with the same anchor, and ordinary measures on the anchor's own fact,
+share one plan.
+
 ### Filters on a conformed fact
 
 A filter on a fact the anchor conforms chooses that fact's rows, so it is
