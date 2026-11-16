@@ -133,6 +133,55 @@ class TestImport:
         assert "amount_cents" in obml["dataObjects"]["orders"]["columns"]
         assert set(obml["dimensions"]) == {"amount"}
 
+    def test_a_field_named_like_a_qualified_dimension_keeps_it(self) -> None:
+        # returns.amount is qualified to "returns amount"; the field literally
+        # named so must not overwrite that dimension.
+        doc = _doc(
+            _dataset("orders", _field("amount", dimension={})),
+            _dataset(
+                "returns",
+                _field("amount", dimension={}),
+                _field("returns amount", "refund_total"),
+            ),
+        )
+        obml, warnings = _convert(doc)
+        dims = obml["dimensions"]
+        assert dims["amount"]["dataObject"] == "orders"
+        assert dims["returns amount"] == {
+            "dataObject": "returns",
+            "column": "amount",
+            "resultType": "float",
+        }
+        assert dims["returns returns amount"]["column"] == "returns amount"
+        assert any("returns returns amount" in w for w in warnings)
+
+    def test_renamed_dimensions_get_distinct_names(self) -> None:
+        doc = _doc(
+            _dataset(
+                "orders",
+                _field("amount"),
+                _field("revenue"),
+                _field("revenue 2", "revenue_2"),
+                _field("orders revenue", "orders_revenue"),
+            ),
+            metrics=[
+                {"name": "revenue", "expression": {"sql": "SUM(orders.amount)"}},
+                {"name": "revenue 2", "expression": {"sql": "MAX(orders.amount)"}},
+            ],
+        )
+        dims = _dimensions(doc)
+        assert {key: dim["column"] for key, dim in dims.items()} == {
+            "amount": "amount",
+            "orders revenue": "orders revenue",
+            "orders revenue 2": "revenue",
+            "orders revenue 2 2": "revenue 2",
+        }
+
+    def test_converting_twice_gives_the_same_model(self) -> None:
+        converter = conv.OSItoOBML(copy.deepcopy(_doc(_ORDERS)))
+        first = copy.deepcopy(converter.convert())
+        assert converter.convert() == first
+
 
 class TestRoundTrip:
     def test_an_unmarked_field_comes_back_unmarked(self) -> None:

@@ -358,6 +358,8 @@ class OSItoOBML:
         # Dataset-scoped metrics kept back, with the dataset that declared them.
         self._unconverted_dataset_metrics: list[dict] = []
         self._restored_names = set()
+        self._unreadable_fields = set()
+        self._unmarked_dimensions = []
 
         # Ossie 0.3.0.dev0 shapes (``expression.sql``, dataset-scoped metrics,
         # ``nonportable_extensions``) become the 0.2 shape the rest reads.
@@ -1296,14 +1298,16 @@ class OSItoOBML:
                 )
         others = set(obml.get("measures", {})) | set(obml.get("metrics", {}))
         others |= _count_names(obml)
+        taken = set(dimensions) | others
         renamed: dict[str, str] = {}
         for key, dim in dimensions.items():
             if key not in others:
                 continue
             new, number = f"{dim['dataObject']} {key}", 2
-            while new in dimensions or new in others:
+            while new in taken:
                 new = f"{dim['dataObject']} {key} {number}"
                 number += 1
+            taken.add(new)
             renamed[key] = new
             self.warnings.append(
                 f"Field '{dim['dataObject']}.{dim['column']}' has the name of a measure or "
@@ -1318,23 +1322,27 @@ class OSItoOBML:
         """Insert ``dim_def`` under a unique key.
 
         Dimension names must be unique across the model. When ``base_name``
-        already names a dimension on a *different* data object (foreign OSI where
-        two datasets share a bare field name and no OBML-origin name was
-        restored), qualify the later one with its data object and warn instead of
-        silently overwriting the earlier dimension. A restored OBML name is unique
-        by construction, so the qualification is foreign-OSI only.
+        already names a dimension (foreign OSI where two datasets share a bare
+        field name, or a field literally named like a dimension an earlier field
+        was qualified to), qualify the later one with its data object and warn
+        instead of silently overwriting the earlier dimension. A restored OBML
+        name is unique by construction, so the qualification is foreign-OSI only.
         """
         key = base_name
-        if key in dimensions and dimensions[key].get("dataObject") != ds_name:
+        if key in dimensions:
+            where = (
+                "multiple data objects"
+                if dimensions[key].get("dataObject") != ds_name
+                else f"data object '{ds_name}' twice"
+            )
             key = f"{ds_name} {base_name}"
             suffix = 2
             while key in dimensions:
                 key = f"{ds_name} {base_name} {suffix}"
                 suffix += 1
             self.warnings.append(
-                f"Dimension name '{base_name}' occurs in multiple data "
-                f"objects; emitted '{ds_name}.{base_name}' as dimension "
-                f"'{key}' to avoid a collision."
+                f"Dimension name '{base_name}' occurs in {where}; emitted "
+                f"'{ds_name}.{base_name}' as dimension '{key}' to avoid a collision."
             )
         dimensions[key] = dim_def
         return key
