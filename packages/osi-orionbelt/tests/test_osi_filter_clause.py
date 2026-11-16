@@ -198,6 +198,30 @@ class TestMeasureExpressions:
         assert "m" not in obml.get("measures", {})
         assert any("LOSSY" in w and "'m'" in w for w in warnings)
 
+    def test_the_formula_over_the_measures_is_checked_too(self) -> None:
+        # The ILIKE is outside every aggregate, in the metric's formula.
+        sql = "CASE WHEN MIN(orders.status) ILIKE 'a\\\\_b' THEN SUM(orders.amount) ELSE 0 END"
+        doc = _doc("SUM(orders.amount)")
+        doc["metrics"][0]["expression"] = {
+            "dialects": [{"dialect": "SNOWFLAKE", "expression": sql}]
+        }
+        obml, warnings = _convert(doc)
+        assert "m" not in obml.get("metrics", {})
+        assert any("LOSSY" in w and "'m'" in w for w in warnings)
+
+    @pytest.mark.parametrize(
+        ("sql", "kept"),
+        [
+            ("CASE WHEN MIN(orders.status) ILIKE 'a%' THEN SUM(orders.amount) ELSE 0 END", False),
+            ("SUM(orders.amount) % SUM(orders.id)", False),
+            ("SUM(orders.amount) | SUM(orders.id)", True),
+        ],
+    )
+    def test_a_formula_obml_parses_imports(self, sql: str, kept: bool) -> None:
+        obml, warnings = _convert(_doc(sql))
+        assert ("m" not in obml.get("metrics", {})) is kept
+        assert any("LOSSY" in w and "'m'" in w for w in warnings) is kept
+
     @pytest.mark.parametrize(
         ("sql", "expression"),
         [

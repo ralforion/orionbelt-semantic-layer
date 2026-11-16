@@ -350,6 +350,8 @@ def test_the_sql_operators_obml_parses_run() -> None:
         "not_open": "COUNT(*) FILTER (WHERE status IS DISTINCT FROM 'open')",
         "even_ids": "SUM(CASE WHEN order_id % 2 = 0 THEN amount END)",
         "labels": "COUNT(DISTINCT region || '-' || status)",
+        # In the formula over the measures: MIN(status) is 'Done'.
+        "d_first": "CASE WHEN MIN(status) ILIKE 'd%' THEN SUM(amount) ELSE 0 END",
     }
     doc = {
         "version": "0.3.0.dev0",
@@ -383,7 +385,7 @@ def test_the_sql_operators_obml_parses_run() -> None:
     )
     rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
     # A NULL status is distinct from 'open', and makes its label NULL.
-    assert rows == [(30, 3, 25, 3)]
+    assert rows == [(30, 3, 25, 3, 42)]
 
 
 def test_extract_and_current_date_run() -> None:

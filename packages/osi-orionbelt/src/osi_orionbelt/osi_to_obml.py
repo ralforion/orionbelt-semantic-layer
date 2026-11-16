@@ -2228,19 +2228,25 @@ class OSItoOBML:
         return render_obml(node, column)
 
     @classmethod
-    def _measure_expression(cls, arg: exp.Expr) -> str:
-        """*arg*, an aggregate's argument, as an OBML measure expression.
+    def _readable_obml(cls, node: exp.Expr, what: str) -> str:
+        """*node* as OBML text: an aggregate's argument, or the formula over the
+        measures.
 
         Raises :class:`NotRepresentableError` for one OBML cannot parse: it
         would stop the whole model loading, so the metric is preserved.
         """
-        expression = cls._render_obml(arg)
-        reason = unreadable_operator(arg) or obml_unreadable_text(expression)
+        expression = cls._render_obml(node)
+        reason = unreadable_operator(node) or obml_unreadable_text(expression)
         if reason:
             raise NotRepresentableError(
-                f"its aggregated expression {arg.sql()} is not one OBML can read ({reason})"
+                f"its {what} {node.sql()} is not one OBML can read ({reason})"
             )
         return expression
+
+    @classmethod
+    def _measure_expression(cls, arg: exp.Expr) -> str:
+        """*arg*, an aggregate's argument, as an OBML measure expression."""
+        return cls._readable_obml(arg, "aggregated expression")
 
     def _decompose_metric(
         self,
@@ -2363,4 +2369,4 @@ class OSItoOBML:
         stray = next(iter(tree.find_all(exp.Column)), None)
         if stray is not None:
             raise NotRepresentableError(f"{stray.sql()} is read outside every aggregate")
-        return ("complex", self._render_obml(tree), auto_measures)
+        return ("complex", self._readable_obml(tree, "formula"), auto_measures)

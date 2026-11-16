@@ -233,6 +233,8 @@ _EXPONENT = re.compile(r"[eE]")
 # character and holds no ``}``; a string literal holds no reference.
 SIBLING_REF = re.compile(r"\{(\w[^}]*)\}")
 QUALIFIED_REF = re.compile(r"\{\[[^\]]+\]\.\[[^\]]+\]\}")
+# ``{[Measure]}`` in a metric formula.
+MEASURE_REF = re.compile(r"\{\[[^\]]+\]\}")
 SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
 # A name OBML resolves as itself: it strips the name and writes it into
 # ``{[Data Object].[name]}``, which ends at the first ``]``; a bare number is
@@ -341,11 +343,13 @@ def substitute_outside_strings(
 def obml_unreadable_text(expression: str) -> str | None:
     """Why OBML's tokenizer would refuse *expression*, or ``None`` when it reads it.
 
-    The last check before a computed column replaces a field's code: a model
-    that loaded must not stop loading because of a field no query reads.
+    The last check before a computed column replaces a field's code, or a
+    measure expression or metric formula is written: a model that loaded must
+    not stop loading because of an expression no query reads.
     """
     text = SQL_STRING_LITERAL.sub("''", expression)
     text = QUALIFIED_REF.sub("0", text)
+    text = MEASURE_REF.sub("0", text)
     text = SIBLING_REF.sub("0", text)
     if _NUMBER_THEN_WORD.search(text):
         return "a number OBML reads as two tokens"
