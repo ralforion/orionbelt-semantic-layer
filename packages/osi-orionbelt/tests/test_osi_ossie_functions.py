@@ -219,7 +219,13 @@ class TestExport:
         imported, _warnings = _convert(_doc(sql))
         osi = conv.OBMLtoOSI(copy.deepcopy(imported)).convert()
         metric = next(m for m in osi["metrics"] if m["name"] == "m")
-        written = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}[dialect]
+        forms = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}
+        if dialect == "OSSIE_SQL_2026" and "DAYOFWEEKISO" in sql:
+            # The language has no ISO day of the week (its DAYOFWEEK does not
+            # say which day is 1), so no Ossie form is claimed.
+            assert dialect not in forms
+            return
+        written = forms[dialect]
         if dialect == "OSSIE_SQL_2026":
             assert subset_violations(written) == []
         # Another tool reads one form alone, without OBML's extensions.
@@ -284,6 +290,28 @@ class TestExport:
         assert forms["ANSI_SQL"] == written
         assert forms["OSSIE_SQL_2026"] == written
         again, _ = _convert(_doc(written))
+        assert again["measures"]["m"] == imported["measures"]["m"]
+
+    def test_sql_s_forms_do_not_depend_on_the_spacing(self) -> None:
+        imported, _ = _convert(_doc("SUM(orders.amount)"))
+        imported["measures"]["m"] = {
+            "expression": "extract('year',{[orders].[opened]}) + position('a',{[orders].[status]})",
+            "aggregation": "sum",
+        }
+        osi = conv.OBMLtoOSI(copy.deepcopy(imported)).convert()
+        metric = next(m for m in osi["metrics"] if m["name"] == "m")
+        forms = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}
+        assert forms["ANSI_SQL"] == (
+            "SUM(extract(YEAR FROM orders.opened) + position('a' IN orders.status))"
+        )
+
+    def test_the_iso_day_of_week_is_isodow_in_sql(self) -> None:
+        # OBML's day_of_week, Monday 1 to Sunday 7: DuckDB refused
+        # EXTRACT(DAY_OF_WEEK FROM d).
+        imported, forms = self._forms("SUM(EXTRACT(ISODOW FROM orders.opened))")
+        assert forms["ANSI_SQL"] == "SUM(EXTRACT(ISODOW FROM orders.opened))"
+        assert "OSSIE_SQL_2026" not in forms
+        again, _ = _convert(_doc(forms["ANSI_SQL"], "ANSI_SQL"))
         assert again["measures"]["m"] == imported["measures"]["m"]
 
 

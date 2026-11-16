@@ -468,6 +468,46 @@ def test_the_ossie_functions_run_as_duckdb_s_own() -> None:
             assert got == want, name
 
 
+def test_the_ansi_export_runs_on_duckdb() -> None:
+    # Exported, OBML's extract and position are SQL's EXTRACT(YEAR FROM d),
+    # EXTRACT(ISODOW FROM d) and POSITION(a IN s), which DuckDB runs.
+    metrics = {
+        "years": "SUM(YEAR(opened))",
+        "iso_days": "SUM(EXTRACT(DAYOFWEEKISO FROM opened))",
+        "at_n": "SUM(POSITION('n' IN status))",
+    }
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "exported",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}} for n in ("id", "status", "opened")
+                ],
+                "metrics": [{"name": k, "expression": {"sql": v}} for k, v in metrics.items()],
+            }
+        ],
+    }
+    osi = osi_orionbelt.OBMLtoOSI(osi_orionbelt.OSItoOBML(doc).convert()).convert()
+    ansi = {
+        m["name"]: next(
+            d["expression"] for d in m["expression"]["dialects"] if d["dialect"] == "ANSI_SQL"
+        )
+        for m in osi["metrics"]
+    }
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 'nine', DATE '2026-08-16'),"
+        " (2, 'one', DATE '2026-08-17')) t(id, status, opened)"
+    )
+    got = con.execute("SELECT " + ", ".join(ansi[k] for k in metrics) + " FROM orders").fetchone()
+    # 2026 twice; Sunday 7 and Monday 1; 'n' at 1 and 2.
+    assert got == (4052, 8, 3)
+
+
 def test_extract_and_current_date_run() -> None:
     # EXTRACT(YEAR FROM x) is OBML's extract('year', x), and CURRENT_DATE its
     # current_date(): a bare CURRENT_DATE is a string to OBML.

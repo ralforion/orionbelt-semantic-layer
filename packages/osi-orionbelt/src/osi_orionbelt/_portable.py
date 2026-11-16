@@ -369,6 +369,11 @@ def _closing_paren(tokens: list[Any], open_paren: int) -> tuple[int, list[int]] 
     return None
 
 
+# OBML's extract units SQL's EXTRACT spells otherwise: Monday 1 to Sunday 7 is
+# ISODOW (DuckDB, PostgreSQL), which the import reads back as day_of_week.
+_SQL_PARTS = {"DAY_OF_WEEK": "ISODOW"}
+
+
 def _ansi_calls(sql: str) -> str:
     """*sql* with OBML's ``EXTRACT('year', d)`` and ``POSITION(a, s)`` in SQL's
     own forms, ``EXTRACT(YEAR FROM d)`` and ``POSITION(a IN s)``.
@@ -395,12 +400,15 @@ def _ansi_calls(sql: str) -> str:
         call = _closing_paren(tokens, i + 1)
         if call is None or len(call[1]) != 1:
             continue
-        comma = tokens[call[1][0]]
+        # Up to the next argument, so ``a,b`` and ``a, b`` come out alike.
+        comma, following = tokens[call[1][0]], tokens[call[1][0] + 1]
         if name == "POSITION":
-            edits.append((comma.start, comma.end, " IN"))
+            edits.append((comma.start, following.start - 1, " IN "))
         elif tokens[i + 2].token_type is TokenType.STRING and call[1][0] == i + 3:
-            unit = tokens[i + 2]
-            edits.append((unit.start, comma.end, f"{unit.text.upper()} FROM"))
+            unit = tokens[i + 2].text.upper()
+            edits.append(
+                (tokens[i + 2].start, following.start - 1, f"{_SQL_PARTS.get(unit, unit)} FROM ")
+            )
     for start, end, text in sorted(edits, reverse=True):
         sql = sql[:start] + text + sql[end + 1 :]
     return sql
