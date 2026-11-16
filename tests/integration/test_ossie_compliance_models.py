@@ -257,3 +257,48 @@ def test_a_field_obml_writes_differently_still_runs(sql: str, expected: float) -
     )
     rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
     assert rows == [(pytest.approx(expected),)]
+
+
+def test_a_filtered_metric_keeps_every_group() -> None:
+    # FILTER (WHERE ...) gates the aggregate's input, never the groups: a region
+    # with no completed order still has its row, with no sum and a count of 0.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "filtered",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}}
+                    for n in ("order_id", "region", "status", "amount")
+                ],
+                "metrics": [
+                    {
+                        "name": "done_amount",
+                        "expression": {"sql": "SUM(amount) FILTER (WHERE status = 'done')"},
+                    },
+                    {
+                        "name": "done_orders",
+                        "expression": {"sql": "COUNT(*) FILTER (WHERE status = 'done')"},
+                    },
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(
+        select={"dimensions": ["region"], "measures": ["done_amount", "done_orders"]},
+        order_by=[{"field": "region"}],
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 'east', 'done', 10),"
+        " (2, 'east', 'open', 5), (3, 'west', 'open', 7), (4, 'east', 'done', 20))"
+        " t(order_id, region, status, amount)"
+    )
+    rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+    assert rows == [("east", 30, 2), ("west", None, 0)]

@@ -188,8 +188,11 @@ class OBMLtoOSI:
         model_desc = obml_description or self.model_description
         if model_desc:
             sem_model["description"] = model_desc
+        ai_context = self._saved_ai_context(self.obml)
         if self.ai_instructions:
-            sem_model["ai_context"] = {"instructions": self.ai_instructions}
+            ai_context["instructions"] = self.ai_instructions
+        if ai_context:
+            sem_model["ai_context"] = ai_context
 
         sem_model["datasets"] = datasets
         self._warn_case_collisions()
@@ -1083,9 +1086,26 @@ class OBMLtoOSI:
         }
         self._merge_obml_extension(osi_metric, "obml_definition", definition)
         self._merge_obml_extension(osi_metric, "obml_definition_kind", kind)
+        saved = self._saved_ai_context(obml_obj)
+        if saved:
+            # What the import kept, beside what the export writes: synonyms
+            # from OBML, and instructions of its own after the saved ones.
+            written = osi_metric.get("ai_context", {})
+            instructions = [saved.get("instructions"), written.get("instructions")]
+            osi_metric["ai_context"] = {**saved, **written}
+            joined = "\n\n".join(t for t in instructions if isinstance(t, str) and t)
+            if joined:
+                osi_metric["ai_context"]["instructions"] = joined
+            self._merge_obml_extension(osi_metric, "obml_ai_context", saved)
         self._carry_concept_links_to_osi_metric(obml_obj, osi_metric)
         self._carry_foreign_to_osi_metric(obml_obj, osi_metric)
         self._emit_osi_metric_datatype(obml_obj, osi_metric)
+
+    @classmethod
+    def _saved_ai_context(cls, obml_obj: dict) -> dict[str, Any]:
+        """The Ossie ``ai_context`` the import kept on an OBML model, measure or metric."""
+        saved = cls._import_saved(obml_obj).get("obml_ai_context")
+        return dict(saved) if isinstance(saved, dict) else {}
 
     @staticmethod
     def _merge_obml_extension(osi_metric: dict, key: str, value: Any) -> None:

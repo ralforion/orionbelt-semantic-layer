@@ -56,7 +56,8 @@ The converter handles this decomposition automatically:
 | Snowflake `APPROX_PERCENTILE(a.x, p)` / Databricks `approx_percentile(a.x, p[, accuracy])`, `percentile_approx(...)` | The exact percentile it estimates, with an `APPROXIMATE` warning: `percentile_cont` from Snowflake (an interpolating t-digest), `percentile_disc` from Databricks (a value of the column). A list of fractions or a weighted form is preserved verbatim |
 | Multi-aggregation expression | Auto-generated measures + metric formula |
 | Aggregate nested in a larger expression (`ROUND(SUM(a.x), 2)`, `CASE WHEN SUM(a.x) > 0 THEN SUM(a.y) END`) | Auto-generated measures + metric formula |
-| Aggregate with `FILTER (WHERE ...)` or `OVER (...)` | Preserved verbatim: neither is part of the measure the aggregate would become |
+| Aggregate with `FILTER (WHERE p)` (`SUM(a.x) FILTER (WHERE a.s = 'done')`) | The measure of `CASE WHEN p THEN x END`, the rewrite Apache Ossie's expression language gives (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); a FILTER over an aggregate with several arguments is preserved verbatim |
+| Aggregate with `OVER (...)` | Preserved verbatim: the window is not part of the measure the aggregate would become |
 | Expression containing a query (`(SELECT ...)`, `UNION`) | Preserved verbatim: a metric formula is over measures, and the query's own tables and aliases are not datasets |
 
 The decomposition is driven by **sqlglot**: the resolved SQL is parsed under its source dialect grammar, the aggregate nodes are located in the AST, and each is lifted into an auto-measure with the surrounding expression becoming the metric formula. This is why an aggregate nested inside `ROUND(...)`, a `CASE` expression, or any other function decomposes rather than falling back to preserve-verbatim, and why a numeric or string literal containing a dot (`1.23`, `'north.1'`) is never mistaken for a `dataset.column` reference.
@@ -111,7 +112,7 @@ customExtensions:
     data: '{"synonyms": ["sales transactions", "store purchases"]}'
 ```
 
-This applies at all levels: datasets → data objects, fields → columns, and model-level `ai_context`.
+This applies at all levels: datasets → data objects, fields → columns, metrics → measures and metrics, and the model. A metric's synonyms become the OBML synonyms, and the rest of its `ai_context` is kept under the `obml_ai_context` key; the model's whole `ai_context` is kept on the OBML model the same way. A plain-string `ai_context` is read as its `instructions`.
 
 During OBML → OSI conversion, the `customExtensions` with `vendor: "OSI"` are read back and restored as native `ai_context` on the OSI side.
 

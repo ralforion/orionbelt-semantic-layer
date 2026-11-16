@@ -117,6 +117,21 @@ _PERCENTILE_NAMES = frozenset(
 )
 
 
+def _ai_context(value: Any) -> dict[str, Any]:
+    """An Ossie ``ai_context`` as an object: a plain string is its instructions."""
+    if isinstance(value, str):
+        return {"instructions": value} if value else {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _keep_ai_context(target: dict[str, Any], ai_context: dict[str, Any]) -> None:
+    """Keep the ``ai_context`` OBML has no slot for on *target*, for the export."""
+    if ai_context:
+        target.setdefault("customExtensions", []).append(
+            {"vendor": _VENDOR_OSI, "data": json.dumps({"obml_ai_context": ai_context})}
+        )
+
+
 def _restore_concept_links(
     extras: dict, target: dict, key: str = "obml_external_concept_mappings"
 ) -> None:
@@ -391,6 +406,8 @@ class OSItoOBML:
         # ── Model description ─────────────────────────────────────
         if model.get("description"):
             obml["description"] = model["description"]
+        # OBML has no model-level ai_context; the export writes it back.
+        _keep_ai_context(obml, _ai_context(model.get("ai_context")))
 
         # ── DataObjects ─────────────────────────────────────────────
         datasets = model.get("datasets", [])
@@ -1565,6 +1582,16 @@ class OSItoOBML:
             target = metrics.get(m["name"]) or measures.get(m["name"])
             if target is not None:
                 self._carry_foreign_extensions(m.get("custom_extensions"), target)
+                # The ai_context besides synonyms, which OBML has no slot for. A
+                # definition an OBML export wrote keeps what that export kept,
+                # not the instructions it generated.
+                if m["name"] in self._restored_names:
+                    saved = self._extract_obml_extras(m).get("obml_ai_context")
+                    _keep_ai_context(target, saved if isinstance(saved, dict) else {})
+                else:
+                    ai_context = _ai_context(m.get("ai_context"))
+                    ai_context.pop("synonyms", None)
+                    _keep_ai_context(target, ai_context)
                 # External concept links, whichever OBML entity the metric became.
                 _restore_concept_links(self._extract_obml_extras(m), target)
                 # Apache Ossie v0.2+ metric `datatype` -> OBML exact `dataType`
@@ -2081,6 +2108,31 @@ class OSItoOBML:
         return False
 
     @staticmethod
+    def _filter_as_case(node: exp.Expr) -> exp.Expr:
+        """``AGG(x) FILTER (WHERE p)`` as ``AGG(CASE WHEN p THEN x END)``.
+
+        The rewrite Apache Ossie's expression language gives for an aggregate
+        that ignores NULL inputs, as every one OBML imports does: a row the
+        predicate rejects contributes NULL. ``COUNT(*)`` counts ``1`` for each
+        row it keeps. A FILTER over an aggregate this cannot rewrite (one OBML
+        has no aggregation for, or one with several arguments) stays, and the
+        metric is preserved.
+        """
+        if not isinstance(node, exp.Filter) or OSItoOBML._obml_agg_name(node.this) is None:
+            return node
+        agg = node.this.copy()
+        arg, _ = OSItoOBML._agg_arg(agg)
+        value: exp.Expr
+        if arg is not None:
+            value = arg.copy()
+        elif isinstance(agg, exp.Count) and isinstance(agg.this, exp.Star):
+            arg, value = agg.this, exp.Literal.number(1)
+        else:
+            return node
+        arg.replace(exp.Case(ifs=[exp.If(this=node.expression.this.copy(), true=value)]))
+        return agg
+
+    @staticmethod
     def _filtered_or_windowed(node: exp.Expr) -> bool:
         """Whether aggregate *node* carries a ``FILTER (WHERE ...)`` or an
         ``OVER (...)``, directly or around its ``WITHIN GROUP``.
@@ -2192,6 +2244,7 @@ class OSItoOBML:
         if tree.find(exp.Query) is not None:
             return None
         tree, self._approximated = self._exact_percentiles(tree, read)
+        tree = tree.transform(self._filter_as_case)
 
         # Resolve qualified column refs on the parsed AST, canonicalising each
         # dataset/column to its model name (see ``_NameIndex``). Working on the

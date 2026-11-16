@@ -144,9 +144,11 @@ _FUNCTIONS: dict[str, str] = {
 }
 
 # Syntax the spec lists that is not a function call: references, literals,
-# operators, CASE, IN, BETWEEN, IS [NOT] DISTINCT FROM, the window clauses.
+# operators, CASE, IN, BETWEEN, IS [NOT] DISTINCT FROM, the window clauses, an
+# aggregate's FILTER (WHERE ...).
 _CONSTRUCTS = (
     "SUM(CASE WHEN a = 1 AND NOT b <> 2 OR c IS NULL THEN -d * 2 / 3 % 4 - 5 + 6 END)"
+    " + COUNT(*) FILTER (WHERE a = 1)"
     " + COUNT(CASE WHEN a > 1 AND b >= 2 AND c < 3 AND d <= 4 THEN 1 ELSE NULL END)"
     " + (a BETWEEN 1 AND 2) + (a IN (1, 2)) + (a LIKE 'x') + (a ILIKE 'x')"
     " + (a IS NOT DISTINCT FROM b) + (a IS DISTINCT FROM b) + (a = TRUE)"
@@ -158,7 +160,7 @@ _CONSTRUCTS = (
 # Keywords that may stand before "(" without being a function call, or before
 # a string without making it a typed literal.
 _NOT_CALLS = {"OVER", "IN", "GROUP", "AND", "OR", "NOT", "WHEN", "THEN", "ELSE", "CASE", "BY"}
-_NOT_CALLS |= {"DISTINCT", "BETWEEN", "LIKE", "ILIKE", "IS", "FROM", "AS"}
+_NOT_CALLS |= {"DISTINCT", "BETWEEN", "LIKE", "ILIKE", "IS", "FROM", "AS", "FILTER", "WHERE"}
 
 # CAST target types and typed literals the spec lists, as written.
 _CAST_TYPES = {"VARCHAR", "STRING", "INTEGER", "INT", "BIGINT", "DECIMAL", "NUMERIC", "FLOAT"}
@@ -322,8 +324,21 @@ def _parsed_violations(tree: exp.Expr) -> list[str]:
             found.append(f"{type(node).__name__} is not in OSSIE_SQL_2026")
         elif isinstance(node, exp.Distinct) and not isinstance(node.parent, exp.Sum | exp.Count):
             found.append("DISTINCT is defined only for SUM and COUNT")
+        elif isinstance(node, exp.Distinct) and not node.expressions:
+            found.append("DISTINCT needs an argument")
+        elif isinstance(node, exp.In) and not (node.expressions or node.args.get("query")):
+            found.append("IN needs at least one value")
+        elif isinstance(node, exp.Filter) and not _is_aggregate(node.this):
+            found.append("FILTER (WHERE ...) is defined only for an aggregate")
         elif isinstance(node, exp.DateTrunc) and node.text("unit").lower() not in _DATE_TRUNC_PARTS:
             found.append(f"DATE_TRUNC part '{node.text('unit')}' is not in OSSIE_SQL_2026")
         elif isinstance(node, exp.Extract) and node.text("this").lower() not in _EXTRACT_PARTS:
             found.append(f"EXTRACT part '{node.text('this')}' is not in OSSIE_SQL_2026")
     return found
+
+
+def _is_aggregate(node: exp.Expr) -> bool:
+    """Whether *node* is an aggregate call FILTER may modify (never ``AGG``)."""
+    if isinstance(node, exp.WithinGroup):
+        return True
+    return isinstance(node, exp.AggFunc) and node.sql_name() != "AGG"

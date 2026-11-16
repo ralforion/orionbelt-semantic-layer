@@ -261,6 +261,11 @@ class TestSubsetChecker:
             "SUM(SUM(t.x)) OVER (PARTITION BY t.r ORDER BY t.d"
             " ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)",
             "SUM(CASE WHEN t.a IN ('x', 'y') AND NOT (t.b IS NULL) THEN t.c END)",
+            # The aggregate FILTER clause the spec requires (T612).
+            "SUM(t.x) FILTER (WHERE t.s = 'done')",
+            "count(*) filter (where t.s = 'done')",
+            "COUNT(DISTINCT t.c) FILTER (WHERE (t.a = 1 OR t.b = 2))",
+            "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.x) FILTER (WHERE t.a = 1)",
         ],
     )
     def test_allowed(self, sql: str) -> None:
@@ -339,6 +344,11 @@ class TestSubsetChecker:
             ("EXTRACT(DECADE FROM t.d)", "EXTRACT"),
             ("DATE_TRUNC('decade', t.d)", "DATE_TRUNC"),
             ("SUM(", "does not parse"),
+            # Malformed, though sqlglot parses them.
+            ("t.x IN ()", "IN needs at least one value"),
+            ("SUM(DISTINCT)", "DISTINCT needs an argument"),
+            ("COUNT(DISTINCT)", "DISTINCT needs an argument"),
+            ("COALESCE(t.a, t.b) FILTER (WHERE t.a = 1)", "only for an aggregate"),
         ],
     )
     def test_rejected(self, sql: str, reason: str) -> None:
