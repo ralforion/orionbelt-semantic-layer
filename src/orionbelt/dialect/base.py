@@ -1644,6 +1644,10 @@ class Dialect(ABC):
                 return self._render_last_day(args[0])
             case "current_date":
                 return self._render_today(self._render_current_date())
+            case "current_timestamp":
+                return self._render_current_timestamp()
+            case "current_time":
+                return self._render_current_time()
             case "cast":
                 return self._render_cast_call(args)
             case "to_number":
@@ -2252,6 +2256,30 @@ class Dialect(ABC):
     def _render_current_date(self) -> str:
         """Default: ``CURRENT_DATE()``. Postgres rejects the parentheses."""
         return "CURRENT_DATE()"
+
+    def _render_current_timestamp(self) -> str:
+        """The wall clock now, without a zone: in :attr:`today_zone`, the zone
+        today is counted in, else the database session's."""
+        if self.today_zone is None:
+            return self._render_session_timestamp()
+        return self._render_now_in_zone(self.today_zone)
+
+    def _render_session_timestamp(self) -> str:
+        """Default: ``LOCALTIMESTAMP``, the session's wall clock (Postgres)."""
+        return "LOCALTIMESTAMP"
+
+    def _render_now_in_zone(self, zone: str) -> str:
+        """Default: the current instant read in *zone*, a ``timestamp``.
+
+        As :meth:`_render_today_in_zone`, without the cast to a date:
+        ``CURRENT_TIMESTAMP`` is a ``timestamptz`` on DuckDB and Postgres, and
+        ``AT TIME ZONE`` reads it as the wall clock there.
+        """
+        return f"(CURRENT_TIMESTAMP AT TIME ZONE {self._quote_zone(zone)})"
+
+    def _render_current_time(self) -> str:
+        """Default: the time part of :meth:`_render_current_timestamp`."""
+        return f"CAST({self._render_current_timestamp()} AS TIME)"
 
     def _render_extremum(self, name: str, args: list[Expr]) -> str:
         """Default: native ``GREATEST`` / ``LEAST``, which propagate NULL on

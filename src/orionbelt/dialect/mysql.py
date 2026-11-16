@@ -624,6 +624,18 @@ class MySQLDialect(Dialect):
         """
         return f"CAST(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', {self._quote_zone(zone)}) AS DATE)"
 
+    def _render_session_timestamp(self) -> str:
+        """MySQL: ``NOW(6)``, the session's wall clock, to the microsecond."""
+        return "NOW(6)"
+
+    def _render_now_in_zone(self, zone: str) -> str:
+        """MySQL: the UTC clock read in *zone*, as :meth:`_render_today_in_zone`."""
+        return f"CONVERT_TZ(UTC_TIMESTAMP(6), '+00:00', {self._quote_zone(zone)})"
+
+    def _render_current_time(self) -> str:
+        """MySQL: ``TIME(6)``; a plain ``TIME`` drops the fraction of a second."""
+        return f"CAST({self._render_current_timestamp()} AS TIME(6))"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """MySQL: ``CONVERT_TZ``, which needs both ends named.
 

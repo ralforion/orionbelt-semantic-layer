@@ -58,6 +58,11 @@ _NONDETERMINISTIC_FNS: frozenset[str] = frozenset(
         "UTC_DATE",
         "UTC_TIME",
         "UTC_TIMESTAMP",
+        # The clock reads current_timestamp() renders as: ClickHouse, BigQuery,
+        # DuckDB.
+        "NOW64",
+        "CURRENT_DATETIME",
+        "CURRENT_LOCALTIMESTAMP",
     }
 )
 
