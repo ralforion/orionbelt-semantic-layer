@@ -99,7 +99,12 @@ class Cache(Protocol):
         """
 
     async def stats(self) -> CacheStats:
-        """Return summary statistics."""
+        """Return summary statistics.
+
+        Called on any thread, on an event loop of the caller's (the metrics
+        read it from their scrape thread), so it must not depend on the
+        server's loop or wait on locks the cache's other operations hold.
+        """
 
     async def sweep_once(self) -> tuple[int, int]:
         """Run one TTL + capacity eviction pass.

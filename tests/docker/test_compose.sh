@@ -407,6 +407,17 @@ done
 counted=$(echo "$scrape" | grep '^obsl_duckdb_worker_statements_total{source="lake"' |
     awk '$2 >= 1 { n++ } END { print n + 0 }')
 check "the metrics count statements on both workers" "2" "$counted"
+# (The exposition orders a series' labels as it likes: each is matched on its own.)
+rest_queries=$(echo "$scrape" | grep '^obsl_queries_total{' | grep 'surface="rest"' | grep 'source="lake"' |
+    grep 'dialect="duckdb"' | grep 'outcome="ok"' || true)
+if [[ -n "$rest_queries" ]] && awk -v v="${rest_queries##* }" 'BEGIN { exit !(v >= 1) }'; then
+    pass "the metrics count OBSL's REST queries by surface, source and outcome (${rest_queries##* })"
+else
+    fail "REST query metrics" "${rest_queries:-no series}"
+fi
+requests=$(echo "$scrape" | grep '^obsl_http_requests_total{' | grep 'method="POST"' |
+    grep 'route="/v1/query/execute"' | grep -c 'status="200"' || true)
+check "the metrics count REST requests by route template" "1" "$requests"
 
 # ── 7. Failures ──────────────────────────────────────────────────────
 

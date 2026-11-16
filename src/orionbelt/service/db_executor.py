@@ -985,6 +985,39 @@ def execute_sql(
             is not installed, or credentials are missing.
         ExecutionError: if the database connection or query fails.
     """
+    from orionbelt.service import metrics
+
+    started = time.monotonic()
+    outcome = "error"
+    try:
+        result = _execute_sql(
+            sql, dialect=dialect, source=source, tz=tz, override_db_tz=override_db_tz, sink=sink
+        )
+    except ExecutionUnavailableError:
+        outcome = "unavailable"
+        raise
+    else:
+        outcome = "ok"
+        return result
+    finally:
+        metrics.observe_query(
+            dialect=dialect,
+            source=source.name if source is not None else dialect,
+            outcome=outcome,
+            seconds=time.monotonic() - started,
+        )
+
+
+def _execute_sql(
+    sql: str,
+    *,
+    dialect: str,
+    source: DataSource | None,
+    tz: ZoneInfo | None,
+    override_db_tz: bool,
+    sink: Callable[[Any], Any] | None,
+) -> ExecutionResult:
+    """:func:`execute_sql`, without counting the query for the metrics."""
     try:
         datasource = _target(dialect, source)
     except ImportError:

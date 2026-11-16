@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -988,6 +989,24 @@ def execute_sql(
     matches what the client was promised, even for an empty result whose
     cached blob decoded to ``null``-typed columns.
     """
+    from orionbelt.service import metrics
+
+    surface = metrics.SURFACE.set("flight")
+    try:
+        return _execute_sql(server, sql, dialect, cache_meta, result_schema, source)
+    finally:
+        metrics.SURFACE.reset(surface)
+
+
+def _execute_sql(
+    server: OBFlightServer,
+    sql: str,
+    dialect: str,
+    cache_meta: dict[str, Any] | None,
+    result_schema: pa.Schema | None,
+    source: DataSource | None,
+) -> flight.RecordBatchStream:
+    """:func:`execute_sql`, its queries counted as the ``flight`` surface."""
     if cache_meta is not None and "federated" in cache_meta:
         return execute_federated(server, cache_meta["federated"], result_schema)
 
@@ -1016,6 +1035,43 @@ def execute_sql(
 
     planned = cache_meta.get("source") if cache_meta is not None else None
     target = planned or source or dialect
+    from orionbelt.service import metrics
+    from orionbelt.service.db_executor import ExecutionUnavailableError
+
+    from ob_flight.db_router import DataSourceBusyError
+
+    started = time.monotonic()
+    outcome = "error"
+    try:
+        stream = _run_on_database(
+            server, sql, target, cached, cache_meta, result_schema, connection_slot, db_connect
+        )
+    except (ExecutionUnavailableError, DataSourceBusyError):
+        outcome = "unavailable"
+        raise
+    else:
+        outcome = "ok"
+        return stream
+    finally:
+        metrics.observe_query(
+            dialect=dialect,
+            source=target if isinstance(target, str) else target.name,
+            outcome=outcome,
+            seconds=time.monotonic() - started,
+        )
+
+
+def _run_on_database(
+    server: OBFlightServer,
+    sql: str,
+    target: DataSource | str,
+    cached: bool,
+    cache_meta: dict[str, Any] | None,
+    result_schema: pa.Schema | None,
+    connection_slot: Any,
+    db_connect: Any,
+) -> flight.RecordBatchStream:
+    """Run ``sql`` on ``target`` and stream its result, writing it to the cache when keyed."""
     # The connection counts against the source's MAX_CONNECTIONS while open.
     with connection_slot(target):
         conn = db_connect(target)

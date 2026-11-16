@@ -31,6 +31,7 @@ from orionbelt.api.deps import (
 )
 from orionbelt.api.logging_config import configure_logging
 from orionbelt.api.middleware import (
+    MetricsMiddleware,
     RequestBodyLimitMiddleware,
     RequestIdMiddleware,
     RequestTimingMiddleware,
@@ -223,9 +224,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     _warn_if_legacy_model_file_set()
     _start_duckdb_workers()
-    metrics.start(
-        enabled=settings.metrics_enabled, host=settings.metrics_host, port=settings.metrics_port
-    )
 
     # Read + validate every YAML before constructing the SessionManager —
     # fail fast at startup rather than emitting half-broken state.
@@ -605,6 +603,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             cache_config=cache_config,
         )
 
+    metrics.start(
+        enabled=settings.metrics_enabled,
+        host=settings.metrics_host,
+        port=settings.metrics_port,
+        sessions=mgr,
+        cache=cache,
+    )
     try:
         yield
     finally:
@@ -711,6 +716,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         trusted_proxy_count=settings.trusted_proxy_count,
     )
     app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(MetricsMiddleware)
 
     @app.middleware("http")
     async def _bind_runtime(request: Request, call_next: Any) -> Any:

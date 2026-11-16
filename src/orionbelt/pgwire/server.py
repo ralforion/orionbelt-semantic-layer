@@ -383,6 +383,10 @@ class PgWireServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        from orionbelt.service import metrics
+
+        # This connection's task: its queries count as the pgwire surface.
+        metrics.SURFACE.set("pgwire")
         peer = writer.get_extra_info("peername")
         if self._semaphore.locked():
             logger.warning("pgwire rejecting connection from %s — at capacity", peer)
