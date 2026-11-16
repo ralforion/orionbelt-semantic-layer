@@ -120,6 +120,11 @@ class TestDuckDB:
         main = inspect_schema(shop, "main")
         assert main is not None and main.tables == []
 
+    def test_a_filter_matching_nothing_still_tells_the_two_apart(self, shop: DataSource) -> None:
+        assert inspect_schema(shop, "nowhere", tables=["missing"]) is None
+        sales = inspect_schema(shop, "sales", tables=["missing"])
+        assert sales is not None and sales.tables == []
+
     def test_a_schema_name_cannot_break_out_of_its_literal(self, shop: DataSource) -> None:
         assert inspect_schema(shop, "sales' OR '1'='1") is None
 
@@ -261,12 +266,11 @@ class TestCatalogs:
     def test_clickhouse_engines_and_nullable_flags(self) -> None:
         run = _Catalog(
             {
+                # First: the key statement reads system.tables too.
+                "is_in_primary_key": [{"table_name": "events", "column_name": "ts", "ordinal": 1}],
                 "system.tables": [
                     {"table_name": "events", "table_type": "MergeTree", "comment": ""},
                     {"table_name": "daily", "table_type": "MaterializedView", "comment": ""},
-                ],
-                "system.columns WHERE database = 'analytics' AND is_in_primary_key": [
-                    {"table_name": "events", "column_name": "ts", "ordinal": 1}
                 ],
                 "system.columns": [
                     {
@@ -412,6 +416,15 @@ class TestRest:
         response = await client.get("/v1/datasources/shop/schemas/nowhere/tables")
 
         assert response.status_code == 404
+
+    async def test_an_unknown_schema_is_a_404_with_a_table_filter_too(
+        self, client: AsyncClient
+    ) -> None:
+        unknown = await client.get("/v1/datasources/shop/schemas/nowhere/tables?table=missing")
+        known = await client.get("/v1/datasources/shop/schemas/sales/tables?table=missing")
+
+        assert unknown.status_code == 404
+        assert known.status_code == 200 and known.json()["tables"] == []
 
     async def test_without_query_execute_it_is_a_503(self, client: AsyncClient) -> None:
         mgr = SessionManager(ttl_seconds=3600, cleanup_interval=9999)

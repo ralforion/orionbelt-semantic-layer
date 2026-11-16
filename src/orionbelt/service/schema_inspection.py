@@ -578,18 +578,29 @@ class ClickHouseCatalog(Catalog):
         )
 
     def columns(self, schema: str, tables: Collection[str] | None) -> CatalogQuery:
+        # A nullable string is usually LowCardinality(Nullable(String)): Nullable
+        # cannot wrap LowCardinality, so it sits one level in.
         return CatalogQuery(
             "SELECT table AS table_name, name AS column_name, type AS data_type, "
-            "startsWith(type, 'Nullable(') AS is_nullable, position AS ordinal, comment "
+            "startsWith(type, 'Nullable(') OR startsWith(type, 'LowCardinality(Nullable(') "
+            "AS is_nullable, position AS ordinal, comment "
             f"FROM system.columns WHERE database = {self.lit(schema)}"
             f"{self.only('table', tables)} ORDER BY table, position"
         )
 
     def primary_keys(self, schema: str, tables: Collection[str] | None) -> CatalogQuery:
+        # system.columns flags a key's columns, but its position is the column's
+        # place in the table. The declared order is system.tables.primary_key, as
+        # SQL ("b, a", "toDate(ts), id"): a column ranks by where its name first
+        # appears there, backquoted or not.
         return CatalogQuery(
-            "SELECT table AS table_name, name AS column_name, position AS ordinal "
-            f"FROM system.columns WHERE database = {self.lit(schema)} AND is_in_primary_key"
-            f"{self.only('table', tables)}"
+            "SELECT c.table AS table_name, c.name AS column_name, "
+            "indexOf(arrayMap(x -> replaceAll(x, '`', ''), "
+            "extractAll(t.primary_key, '`[^`]+`|[A-Za-z_][A-Za-z0-9_]*')), c.name) AS ordinal "
+            "FROM system.columns AS c INNER JOIN system.tables AS t "
+            "ON t.database = c.database AND t.name = c.table "
+            f"WHERE c.database = {self.lit(schema)} AND c.is_in_primary_key"
+            f"{self.only('c.table', tables)}"
         )
 
     def views(self, schema: str, tables: Collection[str] | None) -> CatalogQuery:
@@ -803,8 +814,8 @@ def inspect_schema(
         run: Runs a statement; the source's own connection when ``None``.
 
     Returns:
-        The schema, or ``None`` when it has no tables and is not one of the
-        source's schemas.
+        The schema, or ``None`` when none of its tables is found (``tables``
+        or not) and it is not one of the source's schemas.
 
     Raises:
         InspectionNotSupportedError: The source's dialect has no catalog reader.
@@ -831,7 +842,8 @@ def inspect_schema(
         by_name[name] = TableInfo(schema=schema, name=name, kind=kind, comment=comment)
 
     if not by_name:
-        if wanted is None and schema not in list_schemas(source, run=run):
+        # An empty answer, filtered or not, is an unknown schema or an empty one.
+        if schema not in list_schemas(source, run=run):
             return None
         return info
 
