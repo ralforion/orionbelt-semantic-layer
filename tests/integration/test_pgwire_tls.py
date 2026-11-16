@@ -29,6 +29,19 @@ from orionbelt.pgwire.server import PgWireServer
 from orionbelt.service.tls import load_listener_tls
 
 
+@pytest.fixture(autouse=True)
+def no_home_root_certificate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep libpq off the developer's ``~/.postgresql/root.crt``.
+
+    Given no ``sslrootcert``, libpq reads that file, and when it exists treats
+    ``sslmode=require`` as ``verify-ca``: a root certificate kept there for some
+    other server (a Let's Encrypt one, say) failed the test server's, which the
+    test CA signed, with "certificate verify failed". A file that does not exist
+    turns the fallback off; a test that passes ``sslrootcert`` still overrides it.
+    """
+    monkeypatch.setenv("PGSSLROOTCERT", str(tmp_path / "no-root.crt"))
+
+
 def _pki(out: Path) -> dict[str, str]:
     """A CA, and a server certificate for localhost signed by it.
 

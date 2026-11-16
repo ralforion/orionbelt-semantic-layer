@@ -36,7 +36,10 @@ from orionbelt.service.session_manager import SessionManager
 from orionbelt.service.tls import load_listener_tls
 from tests.conftest import SAMPLE_MODEL_YAML
 from tests.integration.test_adbc_flightsql import _SETUP_SQL
-from tests.integration.test_pgwire_tls import _pki
+from tests.integration.test_pgwire_tls import (
+    _pki,
+    no_home_root_certificate,  # noqa: F401  -- autouse: libpq off ~/.postgresql/root.crt
+)
 
 duckdb = pytest.importorskip("duckdb", reason="duckdb required to drive the client side")
 
