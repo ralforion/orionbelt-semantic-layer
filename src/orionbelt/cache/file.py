@@ -10,8 +10,11 @@ See ``design/PLAN_freshness_driven_cache.md`` §7, §12, §13 and
 Payloads are gzip'd Arrow IPC streams (``orionbelt.cache.result_codec``); the
 backend treats them as opaque bytes. The ``.arrow`` extension marks them as
 OBSL-internal — do not read them as Parquet. The metadata DB is opened once and
-protected by a lock; DuckDB is not async-safe. Filesystem writes happen via
-temp+rename for atomicity.
+protected by a lock; DuckDB is not async-safe. The threads using the cache (the
+API's event loop, Flight's handlers) share that connection, so each statement
+runs with its result read, and each transaction with its ``ROLLBACK``, under the
+lock. ``stats()`` reads on a cursor of its own, under a lock of its own.
+Filesystem writes happen via temp+rename for atomicity.
 """
 
 from __future__ import annotations
@@ -23,7 +26,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import duckdb
 
@@ -169,11 +174,43 @@ class FileCache(Cache):
             with contextlib.suppress(Exception):
                 self._meta.execute("ALTER TABLE cache_entries ADD COLUMN columns_json VARCHAR")
 
-    def _exec(
-        self, sql: str, params: list[object] | tuple[object, ...] | None = None
-    ) -> duckdb.DuckDBPyConnection:
+    # The metadata connection is shared by every thread using the cache.
+    # DuckDB refuses a call on a connection while another thread's call on it
+    # runs, and a result left unread when the lock is let go is the next
+    # statement's to replace: so a statement's rows are read, and a
+    # transaction ends, before the lock is let go.
+
+    def _exec(self, sql: str, params: list[object] | tuple[object, ...] | None = None) -> None:
+        """Run a statement whose result is not read."""
         with self._lock:
-            return self._meta.execute(sql, params or [])
+            self._meta.execute(sql, params or [])
+
+    def _fetchone(
+        self, sql: str, params: list[object] | tuple[object, ...] | None = None
+    ) -> tuple[Any, ...] | None:
+        """The first row of a query, read under the lock."""
+        with self._lock:
+            return self._meta.execute(sql, params or []).fetchone()
+
+    def _fetchall(
+        self, sql: str, params: list[object] | tuple[object, ...] | None = None
+    ) -> list[Any]:
+        """The rows of a query, read under the lock."""
+        with self._lock:
+            return self._meta.execute(sql, params or []).fetchall()
+
+    @contextlib.contextmanager
+    def _transaction(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        """``BEGIN`` ... ``COMMIT`` under the lock; on a failure ``ROLLBACK``, still under it."""
+        with self._lock:
+            self._meta.execute("BEGIN")
+            try:
+                yield self._meta
+                self._meta.execute("COMMIT")
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    self._meta.execute("ROLLBACK")
+                raise
 
     def _bump(self, name: str, by: int = 1) -> None:
         try:
@@ -213,17 +250,17 @@ class FileCache(Cache):
     # -- Cache Protocol -----------------------------------------------------
 
     async def get(self, key: str) -> CachedResult | None:
-        # The DuckDB metadata connection is single-threaded (touched only on the
-        # event loop, serialized by ``self._lock``), so its lookups stay here.
-        # Only the potentially-large payload file read is offloaded, and the
-        # per-hit counter is now an in-memory increment (no DuckDB write) — the
-        # two things that previously blocked the loop on a hit.
+        # The metadata lookups are short and serialized by ``self._lock``, so
+        # they stay on the caller's thread. Only the potentially-large payload
+        # file read is offloaded, and the per-hit counter is an in-memory
+        # increment (no DuckDB write): the two things that blocked the loop on
+        # a hit.
         try:
-            row = self._exec(
+            row = self._fetchone(
                 "SELECT file_path, expires_at, created_at, row_count, columns_json "
                 "FROM cache_entries WHERE cache_key = ?",
                 [key],
-            ).fetchone()
+            )
         except Exception as exc:
             logger.warning("cache.get metadata error: %s", exc)
             return None
@@ -251,9 +288,9 @@ class FileCache(Cache):
             return None
 
         try:
-            tables_rows = self._exec(
+            tables_rows = self._fetchall(
                 "SELECT table_ref FROM cache_entry_tables WHERE cache_key = ?", [key]
-            ).fetchall()
+            )
             physical_tables = [r[0] for r in tables_rows]
         except Exception:
             physical_tables = []
@@ -317,9 +354,8 @@ class FileCache(Cache):
         size_bytes = len(payload)
 
         try:
-            with self._lock:
-                self._meta.execute("BEGIN")
-                self._meta.execute(
+            with self._transaction() as meta:
+                meta.execute(
                     """
                     INSERT OR REPLACE INTO cache_entries
                         (cache_key, datasource, model_id, query_hash, dialect,
@@ -341,25 +377,20 @@ class FileCache(Cache):
                         expires_at,
                     ],
                 )
-                self._meta.execute("DELETE FROM cache_entry_tables WHERE cache_key = ?", [key])
+                meta.execute("DELETE FROM cache_entry_tables WHERE cache_key = ?", [key])
                 deduped = sorted(set(physical_tables))
                 for table_ref in deduped:
-                    self._meta.execute(
+                    meta.execute(
                         "INSERT INTO cache_entry_tables (cache_key, table_ref) VALUES (?, ?)",
                         [key, table_ref],
                     )
-                self._meta.execute("COMMIT")
         except Exception as exc:
             logger.warning("cache.set metadata error for %s: %s", key, exc)
-            with contextlib.suppress(Exception):
-                self._meta.execute("ROLLBACK")
             self._unlink(file_path)
 
     async def delete(self, key: str) -> None:
         try:
-            row = self._exec(
-                "SELECT file_path FROM cache_entries WHERE cache_key = ?", [key]
-            ).fetchone()
+            row = self._fetchone("SELECT file_path FROM cache_entries WHERE cache_key = ?", [key])
         except Exception:
             return
         if row is None:
@@ -368,17 +399,11 @@ class FileCache(Cache):
 
     async def clear(self) -> int:
         try:
-            with self._lock:
-                self._meta.execute("BEGIN")
-                rows = self._meta.execute(
-                    "DELETE FROM cache_entries RETURNING file_path"
-                ).fetchall()
-                self._meta.execute("DELETE FROM cache_entry_tables")
-                self._meta.execute("COMMIT")
+            with self._transaction() as meta:
+                rows = meta.execute("DELETE FROM cache_entries RETURNING file_path").fetchall()
+                meta.execute("DELETE FROM cache_entry_tables")
         except Exception as exc:
             logger.warning("cache.clear error: %s", exc)
-            with contextlib.suppress(Exception):
-                self._meta.execute("ROLLBACK")
             return 0
         for (file_path,) in rows:
             self._unlink(file_path)
@@ -386,24 +411,20 @@ class FileCache(Cache):
 
     async def delete_datasource(self, datasource: str) -> int:
         try:
-            with self._lock:
-                self._meta.execute("BEGIN")
-                rows = self._meta.execute(
+            with self._transaction() as meta:
+                rows = meta.execute(
                     "DELETE FROM cache_entries WHERE datasource = ? RETURNING cache_key, file_path",
                     [datasource],
                 ).fetchall()
                 keys = [r[0] for r in rows]
                 if keys:
                     placeholders = ",".join("?" * len(keys))
-                    self._meta.execute(
+                    meta.execute(
                         f"DELETE FROM cache_entry_tables WHERE cache_key IN ({placeholders})",
                         keys,
                     )
-                self._meta.execute("COMMIT")
         except Exception as exc:
             logger.warning("cache.delete_datasource error: %s", exc)
-            with contextlib.suppress(Exception):
-                self._meta.execute("ROLLBACK")
             return 0
         for _, file_path in rows:
             self._unlink(file_path)
@@ -411,9 +432,8 @@ class FileCache(Cache):
 
     async def invalidate_table(self, table_ref: str) -> int:
         try:
-            with self._lock:
-                self._meta.execute("BEGIN")
-                rows = self._meta.execute(
+            with self._transaction() as meta:
+                rows = meta.execute(
                     """
                     DELETE FROM cache_entries
                     WHERE cache_key IN (
@@ -426,15 +446,12 @@ class FileCache(Cache):
                 keys = [r[0] for r in rows]
                 if keys:
                     placeholders = ",".join("?" * len(keys))
-                    self._meta.execute(
+                    meta.execute(
                         f"DELETE FROM cache_entry_tables WHERE cache_key IN ({placeholders})",
                         keys,
                     )
-                self._meta.execute("COMMIT")
         except Exception as exc:
             logger.warning("cache.invalidate_table error: %s", exc)
-            with contextlib.suppress(Exception):
-                self._meta.execute("ROLLBACK")
             return 0
         for _, file_path in rows:
             self._unlink(file_path)
@@ -544,15 +561,13 @@ class FileCache(Cache):
                 row_count=0,
             )
             # Re-run the exact reads ``get`` does on a hit, minus the counters.
-            row = self._exec(
-                "SELECT file_path FROM cache_entries WHERE cache_key = ?", [key]
-            ).fetchone()
+            row = self._fetchone("SELECT file_path FROM cache_entries WHERE cache_key = ?", [key])
             if row is not None:
                 file_path = row[0]
                 await asyncio.to_thread(_read_bytes, file_path)
-                self._exec(
+                self._fetchall(
                     "SELECT table_ref FROM cache_entry_tables WHERE cache_key = ?", [key]
-                ).fetchall()
+                )
         except Exception:
             logger.debug("cache warmup failed", exc_info=True)
         finally:
@@ -563,10 +578,10 @@ class FileCache(Cache):
         """Record a heartbeat for a physical table (idempotent on regression)."""
         now = datetime.now(UTC)
         try:
-            row = self._exec(
+            row = self._fetchone(
                 "SELECT last_heartbeat FROM table_heartbeats WHERE table_ref = ?",
                 [table_ref],
-            ).fetchone()
+            )
             if row is not None and isinstance(row[0], datetime) and row[0] >= observed_at:
                 return  # idempotency: ignore older or equal observations
             self._exec(
@@ -585,7 +600,7 @@ class FileCache(Cache):
     def heartbeats_snapshot(self) -> dict[str, datetime]:
         """Return ``{table_ref: last_heartbeat}`` for TTL derivation."""
         try:
-            rows = self._exec("SELECT table_ref, last_heartbeat FROM table_heartbeats").fetchall()
+            rows = self._fetchall("SELECT table_ref, last_heartbeat FROM table_heartbeats")
         except Exception:
             return {}
         out: dict[str, datetime] = {}
@@ -614,14 +629,10 @@ class FileCache(Cache):
 
     async def _evict(self, key: str, file_path: str | None) -> None:
         try:
-            with self._lock:
-                self._meta.execute("BEGIN")
-                self._meta.execute("DELETE FROM cache_entries WHERE cache_key = ?", [key])
-                self._meta.execute("DELETE FROM cache_entry_tables WHERE cache_key = ?", [key])
-                self._meta.execute("COMMIT")
+            with self._transaction() as meta:
+                meta.execute("DELETE FROM cache_entries WHERE cache_key = ?", [key])
+                meta.execute("DELETE FROM cache_entry_tables WHERE cache_key = ?", [key])
         except Exception:
-            with contextlib.suppress(Exception):
-                self._meta.execute("ROLLBACK")
             return
         if file_path:
             self._unlink(file_path)
@@ -636,9 +647,8 @@ class FileCache(Cache):
     async def _sweep_ttl(self) -> int:
         now = datetime.now(UTC)
         try:
-            with self._lock:
-                self._meta.execute("BEGIN")
-                rows = self._meta.execute(
+            with self._transaction() as meta:
+                rows = meta.execute(
                     "DELETE FROM cache_entries WHERE expires_at <= ? "
                     "RETURNING cache_key, file_path",
                     [now],
@@ -646,15 +656,12 @@ class FileCache(Cache):
                 keys = [r[0] for r in rows]
                 if keys:
                     placeholders = ",".join("?" * len(keys))
-                    self._meta.execute(
+                    meta.execute(
                         f"DELETE FROM cache_entry_tables WHERE cache_key IN ({placeholders})",
                         keys,
                     )
-                self._meta.execute("COMMIT")
         except Exception as exc:
             logger.warning("cache sweep TTL error: %s", exc)
-            with contextlib.suppress(Exception):
-                self._meta.execute("ROLLBACK")
             return 0
         for _, file_path in rows:
             self._unlink(file_path)
@@ -662,7 +669,7 @@ class FileCache(Cache):
 
     async def _sweep_capacity(self) -> int:
         try:
-            row = self._exec("SELECT coalesce(sum(size_bytes), 0) FROM cache_entries").fetchone()
+            row = self._fetchone("SELECT coalesce(sum(size_bytes), 0) FROM cache_entries")
             total = int(row[0]) if row else 0
         except Exception:
             return 0
@@ -671,9 +678,8 @@ class FileCache(Cache):
         evicted = 0
         while total > self._max_disk_bytes:
             try:
-                with self._lock:
-                    self._meta.execute("BEGIN")
-                    rows = self._meta.execute(
+                with self._transaction() as meta:
+                    rows = meta.execute(
                         """
                         DELETE FROM cache_entries WHERE cache_key IN (
                             SELECT cache_key FROM cache_entries
@@ -686,15 +692,12 @@ class FileCache(Cache):
                     keys = [r[0] for r in rows]
                     if keys:
                         placeholders = ",".join("?" * len(keys))
-                        self._meta.execute(
+                        meta.execute(
                             f"DELETE FROM cache_entry_tables WHERE cache_key IN ({placeholders})",
                             keys,
                         )
-                    self._meta.execute("COMMIT")
             except Exception as exc:
                 logger.warning("cache sweep capacity error: %s", exc)
-                with contextlib.suppress(Exception):
-                    self._meta.execute("ROLLBACK")
                 return evicted
             if not rows:
                 break

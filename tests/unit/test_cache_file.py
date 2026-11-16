@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import collections
+import logging
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+import duckdb
 import pytest
 
 from orionbelt.cache.file import FileCache
@@ -347,3 +351,97 @@ class TestWarmup:
         await cache.warmup()
         stats = await cache.stats()
         assert stats.entry_count == 0
+
+
+def _store(cache: FileCache, key: str) -> Any:
+    return cache.set(
+        key,
+        b"payload",
+        ttl_seconds=600,
+        physical_tables=["WH.PUB.T"],
+        datasource="s",
+        model_id="m",
+        query_hash="h",
+        dialect="duckdb",
+        row_count=1,
+    )
+
+
+class TestSharedByThreads:
+    """The threads using the cache share its metadata connection.
+
+    The API's event loop and Flight's handlers, each on a loop of its own,
+    call the same cache. DuckDB refuses a call on a connection while another
+    thread's runs on it, so a statement's rows are read before the lock is
+    let go, and a transaction's ROLLBACK runs before it too.
+    """
+
+    def test_no_lookup_or_write_is_lost(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cache = FileCache(
+            cache_dir=str(tmp_path),
+            max_value_bytes=1024 * 1024,
+            max_disk_bytes=64 * 1024 * 1024,
+            max_ttl_seconds=3600,
+            sweep_interval_seconds=3600,
+        )
+        asyncio.run(_store(cache, "hot"))
+        outcomes: collections.Counter[str] = collections.Counter()
+
+        def reader() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                for _ in range(300):
+                    hit = loop.run_until_complete(cache.get("hot"))
+                    outcomes["hit" if hit is not None else "miss"] += 1
+            finally:
+                loop.close()
+
+        def writer() -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                for n in range(150):
+                    loop.run_until_complete(_store(cache, f"k{n}"))
+            finally:
+                loop.close()
+
+        threads = [threading.Thread(target=reader) for _ in range(3)]
+        threads.append(threading.Thread(target=writer))
+        with caplog.at_level(logging.WARNING, logger="orionbelt.cache.file"):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=60)
+        try:
+            assert outcomes == {"hit": 900}, outcomes  # the key is stored and fresh
+            assert asyncio.run(cache.stats()).entry_count == 151  # every write kept
+            assert not caplog.records, [r.getMessage() for r in caplog.records[:3]]
+        finally:
+            asyncio.run(cache.shutdown())
+
+    async def test_a_failed_transaction_rolls_back_under_the_lock(self, cache: FileCache) -> None:
+        connection = cache._meta
+        seen: list[tuple[str, bool]] = []
+
+        class Recording:
+            """The connection, noting whether the lock is held at each statement."""
+
+            def execute(self, sql: str, params: Any = None) -> Any:
+                seen.append((sql.split()[0], cache._lock.locked()))
+                if "INTO cache_entry_tables" in sql:
+                    raise duckdb.Error("injected failure")
+                return connection.execute(sql, params or [])
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(connection, name)
+
+        cache._meta = Recording()  # type: ignore[assignment]
+        try:
+            await _store(cache, "k1")
+        finally:
+            cache._meta = connection
+        assert seen[0] == ("BEGIN", True) and seen[-1] == ("ROLLBACK", True), seen
+        assert all(held for _, held in seen), seen
+        assert await cache.get("k1") is None  # nothing of it stayed
+        assert (await cache.stats()).entry_count == 0
