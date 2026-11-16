@@ -52,6 +52,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 - **An Ossie field computed by an expression is queryable.** The import wrote the field's SQL into the column's `code`, which OBML quotes as one column name: `amount_cents / 100.0` compiled to `"orders"."amount_cents / 100.0"`, a column no table has, on every engine. Such a field is now an OBML computed column, `{amount_cents} / 100.0`, over a sibling whose `code` is the source column: a field computing exactly that column, or a column the import adds for it (the export leaves it out unless the model uses it). `CASE`, comparisons, `IN`, `BETWEEN`, `LIKE`, `IS NULL`, function calls and `CAST(x AS DOUBLE)` (as `cast(x, 'double')`) are converted; an expression OBML cannot parse (`||`, `EXTRACT(... FROM ...)`) is kept with a `LOSSY` warning. The export writes the field's SQL back, or, after an edit, the computed column with each sibling written as its column. osi-orionbelt 0.7.0.
 
+### Docs
+
+- **DuckDB Workers: when they pay off, and how to size them.** Measured on one host with 10 CPUs and 5 GB for OrionBelt and its workers: one OrionBelt process answers 250 to 290 small queries a second over REST whether DuckDB runs inside it or on 1, 2 or 4 workers, so on one host workers add no throughput, and two OrionBelt processes answered the most (478 lookups a second against 291). The guide now says what workers are for (keeping DuckDB's memory apart from OrionBelt's, sharing one DuckDB between OrionBelt processes, more CPU than one host has), and how to size them: 2 or more, 2 CPUs or more each, about 150 MB of DuckDB memory per statement a worker runs at once, a worker's statement limit that covers the connections of every source and OrionBelt process using it, and `DB_<NAME>_MAX_CONNECTIONS`, whose default of 10 also limits a source on workers.
+
 ## [3.0.0] - 2026-11-11
 
 ### Upgrading from 2.36
