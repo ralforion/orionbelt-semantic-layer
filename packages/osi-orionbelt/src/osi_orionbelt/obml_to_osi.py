@@ -640,7 +640,9 @@ class OBMLtoOSI:
         if abstract_type in ("date", "timestamp", "timestamp_tz"):
             is_time = True
 
-        if is_dimension or is_time:
+        # A field that had no marker gets none back: every field is a dimension,
+        # and the export keeps the document as it was.
+        if (is_dimension or is_time) and not self._import_saved(col_obj).get("obml_field_unmarked"):
             field["dimension"] = {"is_time": is_time}
 
         if col_obj.get("description"):

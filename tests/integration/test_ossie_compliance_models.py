@@ -4,8 +4,8 @@ The two models of Ossie's query compliance suites (``compliance/wide_table``
 retail and ``compliance/query`` SCOTT) are written in spec 0.3.0.dev0. Before the
 converter read that shape they converted to a model with no measures, and the
 SCOTT model did not load at all (a self-relationship). Values are the suites'
-own expected results, for the requests an OBML query states directly: these
-models mark no field as a dimension, so the grouped cases are not reachable.
+own expected results, for the requests an OBML query states directly. These
+models mark no field as a dimension; every field is one, so they group by any.
 """
 
 from __future__ import annotations
@@ -86,6 +86,48 @@ def test_retail_dataset_metrics_count_their_own_rows(retail: SemanticModel) -> N
 def test_retail_rejected_metrics_are_not_queryable(retail: SemanticModel) -> None:
     names = set(retail.effective_measures) | set(retail.metrics)
     assert not {"amount_less_order", "running_revenue", "row_count"} & names
+
+
+def test_retail_groups_come_from_the_metric_dataset(retail: SemanticModel) -> None:
+    # wide_table a05: NORTH has no orders, so it is not a group.
+    query = {"select": {"dimensions": ["region"], "measures": ["total_revenue"]}}
+    assert sorted(_run(retail, "retail.sql", query)) == [("EAST", 350), ("WEST", 300)]
+
+
+def test_retail_dimension_only(retail: SemanticModel) -> None:
+    # wide_table a07: the distinct regions of customers.
+    query = {"select": {"dimensions": ["region"]}}
+    assert sorted(_run(retail, "retail.sql", query)) == [("EAST",), ("NORTH",), ("WEST",)]
+
+
+def test_retail_two_metrics_share_a_dimension(retail: SemanticModel) -> None:
+    # wide_table a01: a region missing from a branch takes SUM's empty value, NULL.
+    query = {"select": {"dimensions": ["region"], "measures": ["total_revenue", "total_returns"]}}
+    assert sorted(_run(retail, "retail.sql", query)) == [
+        ("EAST", 350, 25),
+        ("NORTH", None, 10),
+        ("WEST", 300, None),
+    ]
+
+
+def test_scott_measure_per_group(scott: SemanticModel) -> None:
+    # query a02: SELECT deptno, AGG(sum_sal), AGG(emp_count) ... GROUP BY deptno
+    query = {
+        "select": {"dimensions": ["deptno"], "measures": ["sum_sal", "emp_count"]},
+        "orderBy": [{"field": "deptno"}],
+    }
+    assert _run(scott, "scott.sql", query) == [(10, 8750, 3), (20, 10875, 5), (30, 9400, 6)]
+
+
+def test_a_field_named_like_a_metric_loads() -> None:
+    # OBML refuses a model whose dimension and measure share a name.
+    doc = copy.deepcopy(_COMPUTED_DOC)
+    doc["datasets"][0]["fields"].append({"name": "paid", "expression": {"sql": "status"}})
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    assert model.dimensions["orders paid"].column == "paid"
+    assert "paid" in model.effective_measures
 
 
 def test_scott_grand_total(scott: SemanticModel) -> None:

@@ -184,6 +184,18 @@ def _source_key(identifier: exp.Expr) -> str:
     return identifier.name.upper()
 
 
+def _count_names(obml: dict[str, Any]) -> set[str]:
+    """The names of the count measures OBML synthesizes for *obml*'s data objects."""
+    if obml.get("exposeCounts") is False:
+        return set()
+    pattern = obml.get("countLabelPattern") or "{object} Count"
+    return {
+        (obj.get("countLabel") or pattern).replace("{object}", str(obj.get("name") or key))
+        for key, obj in (obml.get("dataObjects") or {}).items()
+        if isinstance(obj, dict) and obj.get("countable", True) is not False
+    }
+
+
 def _name_key(name: str) -> str:
     """A field or column name as a bare reference to it resolves: regardless of case."""
     return name.upper()
@@ -276,6 +288,10 @@ class OSItoOBML:
         # Measures/metrics restored whole from an OBML definition stash; their
         # column references already use OBML column names.
         self._restored_names: set[str] = set()
+        # Fields whose SQL stays as written, which OBML cannot read.
+        self._unreadable_fields: set[tuple[str, str]] = set()
+        # Dimensions over fields that carry no ``dimension`` marker.
+        self._unmarked_dimensions: list[str] = []
 
     def _models(self) -> list[dict]:
         """The document's semantic models, in either document shape.
@@ -342,6 +358,8 @@ class OSItoOBML:
         # Dataset-scoped metrics kept back, with the dataset that declared them.
         self._unconverted_dataset_metrics: list[dict] = []
         self._restored_names = set()
+        self._unreadable_fields = set()
+        self._unmarked_dimensions = []
 
         # Ossie 0.3.0.dev0 shapes (``expression.sql``, dataset-scoped metrics,
         # ``nonportable_extensions``) become the 0.2 shape the rest reads.
@@ -395,7 +413,7 @@ class OSItoOBML:
 
         obml["dataObjects"] = data_objects
 
-        # ── Dimensions (extracted from OSI fields with dimension metadata) ──
+        # ── Dimensions (every OSI field, those marked as dimensions first) ──
         dimensions = self._extract_dimensions(datasets)
         if dimensions:
             obml["dimensions"] = dimensions
@@ -457,6 +475,8 @@ class OSItoOBML:
         # Preserve third-party vendor extensions verbatim
         self._carry_foreign_extensions(model.get("custom_extensions"), obml)
 
+        # Once the measures and the model's count settings are known.
+        self._settle_dimensions(obml)
         self._restore_column_names(obml, datasets)
         return obml
 
@@ -758,6 +778,7 @@ class OSItoOBML:
             try:
                 tree = sqlglot.parse_one(entry[1], read=_OSI_DIALECT_TO_SQLGLOT.get(entry[0]))
             except Exception:  # noqa: BLE001 - unparseable SQL keeps its code, as before
+                self._unreadable_fields.add((ds_name, name))
                 continue
             if isinstance(tree, exp.Column):
                 physical.setdefault(_source_key(tree.this), name)
@@ -780,6 +801,7 @@ class OSItoOBML:
                     f"express as a computed column ({reason}); its code is kept as written, "
                     f"and a query reading the column fails."
                 )
+                self._unreadable_fields.add((ds_name, name))
                 continue
             for added, code in plan.commit():
                 self.warnings.append(
@@ -1092,174 +1114,238 @@ class OSItoOBML:
         return join
 
     def _extract_dimensions(self, datasets: list) -> dict:
-        """Extract dimension definitions from OSI fields marked as dimensions.
+        """One dimension per OSI field, a join key too.
 
-        A field marked ``dimension`` becomes one, a join key too: grouping by a
-        department number is a question a model author can declare, and leaving
-        it out made a field the document offers unqueryable.
+        Ossie lets a query group by any field, so each one is a dimension; the
+        ``dimension`` marker only adds ``is_time``. Marked fields come first, so
+        one keeps its name when a field of another dataset has the same name.
+        Two kinds of field stay out unless marked: one OBML cannot read (a query
+        grouping by it fails), and one an OBML export wrote without a dimension
+        (an OBML model's round trip gains no dimensions).
         """
         dimensions: dict[str, Any] = {}
+        marked: list[tuple[str, dict]] = []
+        unmarked: list[tuple[str, dict]] = []
         for ds in datasets:
-            ds_name = ds["name"]
             for field in ds.get("fields", []):
-                dim = field.get("dimension")
-                if dim is None:
+                if field.get("dimension") is not None:
+                    marked.append((ds["name"], field))
+                elif self._is_unmarked_dimension(ds["name"], field):
+                    unmarked.append((ds["name"], field))
+        for ds_name, field in marked + unmarked:
+            dim = field.get("dimension")
+            field_name = field["name"]
+            abstract_type = self._field_abstract_type(field)
+            # OBML marks a time dimension by its temporal result type, so a
+            # time dimension over a non-temporal field (an Integer year)
+            # stays a date dimension.
+            if (
+                isinstance(dim, dict)
+                and dim.get("is_time")
+                and abstract_type not in ("date", "time", "timestamp", "timestamp_tz")
+            ):
+                abstract_type = "date"
+            dim_def: dict[str, Any] = {
+                "dataObject": ds_name,
+                "column": field_name,
+                "resultType": abstract_type,
+            }
+            # Extract synonyms from field-level ai_context
+            ai_ctx = field.get("ai_context")
+            if isinstance(ai_ctx, dict) and ai_ctx.get("synonyms"):
+                dim_def["synonyms"] = list(ai_ctx["synonyms"])
+            # Restore OBML-only dimension properties from custom_extensions
+            restored_name: str | None = None
+            extra_descriptors: list[Any] = []
+            for ext in field.get("custom_extensions", []):
+                if ext.get("vendor_name") in _OBML_VENDOR_READ:
+                    try:
+                        ext_data = json.loads(ext.get("data", "{}"))
+                        # Extension data is opaque to ``validate_osi``, so a
+                        # foreign payload may put any JSON here. Only accept a
+                        # non-empty string as the dimension name (it becomes a
+                        # dict key); otherwise ignore it and fall back to the
+                        # field name.
+                        _name = ext_data.get("obml_dimension_name")
+                        if isinstance(_name, str) and _name:
+                            restored_name = _name
+                        if ext_data.get("obml_time_grain"):
+                            dim_def["timeGrain"] = ext_data["obml_time_grain"]
+                        if ext_data.get("obml_dimension_format"):
+                            dim_def["format"] = ext_data["obml_dimension_format"]
+                        if ext_data.get("obml_dimension_result_type"):
+                            dim_def["resultType"] = ext_data["obml_dimension_result_type"]
+                        if ext_data.get("obml_dimension_description"):
+                            dim_def["description"] = ext_data["obml_dimension_description"]
+                        if ext_data.get("obml_dimension_owner"):
+                            dim_def["owner"] = ext_data["obml_dimension_owner"]
+                        if ext_data.get("obml_dimension_via"):
+                            dim_def["via"] = ext_data["obml_dimension_via"]
+                        if ext_data.get("obml_dimension_path_name"):
+                            dim_def["pathName"] = ext_data["obml_dimension_path_name"]
+                        if ext_data.get("obml_dimension_value_search") is False:
+                            dim_def["valueSearch"] = False
+                        # The dimension's own synonyms / vendor extensions,
+                        # restored authoritatively to the dimension. Opaque
+                        # foreign data, so keep only well-shaped entries.
+                        _syns = ext_data.get("obml_dimension_synonyms")
+                        if isinstance(_syns, list):
+                            clean_syns = [s for s in _syns if isinstance(s, str) and s]
+                            if clean_syns:
+                                dim_def["synonyms"] = clean_syns
+                        _exts = ext_data.get("obml_dimension_custom_extensions")
+                        if isinstance(_exts, list):
+                            clean_exts = [e for e in _exts if isinstance(e, dict)]
+                            if clean_exts:
+                                dim_def["customExtensions"] = clean_exts
+                        _restore_concept_links(
+                            ext_data, dim_def, "obml_dimension_external_concept_mappings"
+                        )
+                        # Additional dimensions over the same column, preserved
+                        # by the export because OSI has no slot for them.
+                        _extras = ext_data.get("obml_extra_dimensions")
+                        if isinstance(_extras, list):
+                            extra_descriptors = _extras
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    break
+            # Prefer the dimension's restored OBML name (export stashes it on
+            # the field). The OSI field name is the column name, so this is
+            # what keeps an OBML-origin round-trip from renaming dimensions to
+            # their column. Drop it from synonyms to avoid a self-referential
+            # alias.
+            if restored_name and dim_def.get("synonyms"):
+                dim_def["synonyms"] = [s for s in dim_def["synonyms"] if s != restored_name]
+                if not dim_def["synonyms"]:
+                    del dim_def["synonyms"]
+            base_name = restored_name or field_name
+            key = self._insert_dimension(dimensions, ds_name, base_name, dim_def)
+            if dim is None:
+                self._unmarked_dimensions.append(key)
+            # Rebuild any additional OBML dimensions the export preserved for
+            # this column (OSI is one-dimension-per-field). Each descriptor is
+            # opaque foreign-modifiable data, so guard its shape.
+            for desc in extra_descriptors:
+                if not isinstance(desc, dict):
                     continue
-                field_name = field["name"]
-                abstract_type = self._field_abstract_type(field)
-                # OBML marks a time dimension by its temporal result type, so a
-                # time dimension over a non-temporal field (an Integer year)
-                # stays a date dimension.
-                if (
-                    isinstance(dim, dict)
-                    and dim.get("is_time")
-                    and abstract_type not in ("date", "time", "timestamp", "timestamp_tz")
-                ):
-                    abstract_type = "date"
-                dim_def: dict[str, Any] = {
+                dname = desc.get("name")
+                if not (isinstance(dname, str) and dname):
+                    continue
+                extra_def: dict[str, Any] = {
                     "dataObject": ds_name,
                     "column": field_name,
-                    "resultType": abstract_type,
+                    "resultType": desc.get("resultType") or abstract_type,
                 }
-                # Extract synonyms from field-level ai_context
-                ai_ctx = field.get("ai_context")
-                if isinstance(ai_ctx, dict) and ai_ctx.get("synonyms"):
-                    dim_def["synonyms"] = list(ai_ctx["synonyms"])
-                # Restore OBML-only dimension properties from custom_extensions
-                restored_name: str | None = None
-                extra_descriptors: list[Any] = []
-                for ext in field.get("custom_extensions", []):
-                    if ext.get("vendor_name") in _OBML_VENDOR_READ:
-                        try:
-                            ext_data = json.loads(ext.get("data", "{}"))
-                            # Extension data is opaque to ``validate_osi``, so a
-                            # foreign payload may put any JSON here. Only accept a
-                            # non-empty string as the dimension name (it becomes a
-                            # dict key); otherwise ignore it and fall back to the
-                            # field name.
-                            _name = ext_data.get("obml_dimension_name")
-                            if isinstance(_name, str) and _name:
-                                restored_name = _name
-                            if ext_data.get("obml_time_grain"):
-                                dim_def["timeGrain"] = ext_data["obml_time_grain"]
-                            if ext_data.get("obml_dimension_format"):
-                                dim_def["format"] = ext_data["obml_dimension_format"]
-                            if ext_data.get("obml_dimension_result_type"):
-                                dim_def["resultType"] = ext_data["obml_dimension_result_type"]
-                            if ext_data.get("obml_dimension_description"):
-                                dim_def["description"] = ext_data["obml_dimension_description"]
-                            if ext_data.get("obml_dimension_owner"):
-                                dim_def["owner"] = ext_data["obml_dimension_owner"]
-                            if ext_data.get("obml_dimension_via"):
-                                dim_def["via"] = ext_data["obml_dimension_via"]
-                            if ext_data.get("obml_dimension_path_name"):
-                                dim_def["pathName"] = ext_data["obml_dimension_path_name"]
-                            if ext_data.get("obml_dimension_value_search") is False:
-                                dim_def["valueSearch"] = False
-                            # The dimension's own synonyms / vendor extensions,
-                            # restored authoritatively to the dimension. Opaque
-                            # foreign data, so keep only well-shaped entries.
-                            _syns = ext_data.get("obml_dimension_synonyms")
-                            if isinstance(_syns, list):
-                                clean_syns = [s for s in _syns if isinstance(s, str) and s]
-                                if clean_syns:
-                                    dim_def["synonyms"] = clean_syns
-                            _exts = ext_data.get("obml_dimension_custom_extensions")
-                            if isinstance(_exts, list):
-                                clean_exts = [e for e in _exts if isinstance(e, dict)]
-                                if clean_exts:
-                                    dim_def["customExtensions"] = clean_exts
-                            _restore_concept_links(
-                                ext_data, dim_def, "obml_dimension_external_concept_mappings"
-                            )
-                            # Additional dimensions over the same column, preserved
-                            # by the export because OSI has no slot for them.
-                            _extras = ext_data.get("obml_extra_dimensions")
-                            if isinstance(_extras, list):
-                                extra_descriptors = _extras
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                        break
-                # Prefer the dimension's restored OBML name (export stashes it on
-                # the field). The OSI field name is the column name, so this is
-                # what keeps an OBML-origin round-trip from renaming dimensions to
-                # their column. Drop it from synonyms to avoid a self-referential
-                # alias.
-                if restored_name and dim_def.get("synonyms"):
-                    dim_def["synonyms"] = [s for s in dim_def["synonyms"] if s != restored_name]
-                    if not dim_def["synonyms"]:
-                        del dim_def["synonyms"]
-                base_name = restored_name or field_name
-                self._insert_dimension(dimensions, ds_name, base_name, dim_def)
-                # Rebuild any additional OBML dimensions the export preserved for
-                # this column (OSI is one-dimension-per-field). Each descriptor is
-                # opaque foreign-modifiable data, so guard its shape.
-                for desc in extra_descriptors:
-                    if not isinstance(desc, dict):
-                        continue
-                    dname = desc.get("name")
-                    if not (isinstance(dname, str) and dname):
-                        continue
-                    extra_def: dict[str, Any] = {
-                        "dataObject": ds_name,
-                        "column": field_name,
-                        "resultType": desc.get("resultType") or abstract_type,
-                    }
-                    for prop in (
-                        "timeGrain",
-                        "format",
-                        "description",
-                        "owner",
-                        "via",
-                        "pathName",
-                    ):
-                        value = desc.get(prop)
-                        if isinstance(value, str) and value:
-                            extra_def[prop] = value
-                    if desc.get("valueSearch") is False:
-                        extra_def["valueSearch"] = False
-                    # Restore the extra dimension's own synonyms / vendor
-                    # extensions. Opaque foreign data, so keep only well-shaped
-                    # entries (string synonyms; dict extensions).
-                    syns = desc.get("synonyms")
-                    if isinstance(syns, list):
-                        clean_syns = [s for s in syns if isinstance(s, str) and s]
-                        if clean_syns:
-                            extra_def["synonyms"] = clean_syns
-                    exts = desc.get("customExtensions")
-                    if isinstance(exts, list):
-                        clean_exts = [e for e in exts if isinstance(e, dict)]
-                        if clean_exts:
-                            extra_def["customExtensions"] = clean_exts
-                    _restore_concept_links(desc, extra_def, "externalConceptMappings")
-                    self._insert_dimension(dimensions, ds_name, dname, extra_def)
+                for prop in (
+                    "timeGrain",
+                    "format",
+                    "description",
+                    "owner",
+                    "via",
+                    "pathName",
+                ):
+                    value = desc.get(prop)
+                    if isinstance(value, str) and value:
+                        extra_def[prop] = value
+                if desc.get("valueSearch") is False:
+                    extra_def["valueSearch"] = False
+                # Restore the extra dimension's own synonyms / vendor
+                # extensions. Opaque foreign data, so keep only well-shaped
+                # entries (string synonyms; dict extensions).
+                syns = desc.get("synonyms")
+                if isinstance(syns, list):
+                    clean_syns = [s for s in syns if isinstance(s, str) and s]
+                    if clean_syns:
+                        extra_def["synonyms"] = clean_syns
+                exts = desc.get("customExtensions")
+                if isinstance(exts, list):
+                    clean_exts = [e for e in exts if isinstance(e, dict)]
+                    if clean_exts:
+                        extra_def["customExtensions"] = clean_exts
+                _restore_concept_links(desc, extra_def, "externalConceptMappings")
+                self._insert_dimension(dimensions, ds_name, dname, extra_def)
         return dimensions
+
+    def _is_unmarked_dimension(self, ds_name: str, field: dict) -> bool:
+        """Whether a field without a ``dimension`` marker is a dimension.
+
+        A field an OBML export wrote is one where the export stashed a
+        dimension name; any other is one when OBML can read it.
+        """
+        extras = self._extract_obml_extras(field)
+        if "obml_abstract_type" in extras:
+            name = extras.get("obml_dimension_name")
+            return isinstance(name, str) and bool(name)
+        return (ds_name, field.get("name")) not in self._unreadable_fields
+
+    def _settle_dimensions(self, obml: dict[str, Any]) -> None:
+        """Rename a dimension a measure or metric has the name of; note unmarked fields.
+
+        OBML names dimensions, measures and metrics in one namespace, synthesized
+        counts included, and refuses the whole model on a clash, so such a
+        dimension is named with its data object. A dimension an OBML export wrote
+        never clashes: its model loaded. Each unmarked field's column records
+        that it carries no marker, so the export writes none.
+        """
+        dimensions: dict[str, Any] = obml.get("dimensions", {})
+        for key in self._unmarked_dimensions:
+            dim = dimensions[key]
+            obj = obml["dataObjects"].get(dim["dataObject"], {})
+            column = obj.get("columns", {}).get(dim["column"])
+            if isinstance(column, dict):
+                column.setdefault("customExtensions", []).append(
+                    {"vendor": _VENDOR_OSI, "data": json.dumps({"obml_field_unmarked": True})}
+                )
+        others = set(obml.get("measures", {})) | set(obml.get("metrics", {}))
+        others |= _count_names(obml)
+        taken = set(dimensions) | others
+        renamed: dict[str, str] = {}
+        for key, dim in dimensions.items():
+            if key not in others:
+                continue
+            new, number = f"{dim['dataObject']} {key}", 2
+            while new in taken:
+                new = f"{dim['dataObject']} {key} {number}"
+                number += 1
+            taken.add(new)
+            renamed[key] = new
+            self.warnings.append(
+                f"Field '{dim['dataObject']}.{dim['column']}' has the name of a measure or "
+                f"metric; emitted its dimension as '{new}'."
+            )
+        if renamed:
+            obml["dimensions"] = {renamed.get(k, k): v for k, v in dimensions.items()}
 
     def _insert_dimension(
         self, dimensions: dict[str, Any], ds_name: str, base_name: str, dim_def: dict[str, Any]
-    ) -> None:
+    ) -> str:
         """Insert ``dim_def`` under a unique key.
 
         Dimension names must be unique across the model. When ``base_name``
-        already names a dimension on a *different* data object (foreign OSI where
-        two datasets share a bare field name and no OBML-origin name was
-        restored), qualify the later one with its data object and warn instead of
-        silently overwriting the earlier dimension. A restored OBML name is unique
-        by construction, so the qualification is foreign-OSI only.
+        already names a dimension (foreign OSI where two datasets share a bare
+        field name, or a field literally named like a dimension an earlier field
+        was qualified to), qualify the later one with its data object and warn
+        instead of silently overwriting the earlier dimension. A restored OBML
+        name is unique by construction, so the qualification is foreign-OSI only.
         """
         key = base_name
-        if key in dimensions and dimensions[key].get("dataObject") != ds_name:
+        if key in dimensions:
+            where = (
+                "multiple data objects"
+                if dimensions[key].get("dataObject") != ds_name
+                else f"data object '{ds_name}' twice"
+            )
             key = f"{ds_name} {base_name}"
             suffix = 2
             while key in dimensions:
                 key = f"{ds_name} {base_name} {suffix}"
                 suffix += 1
             self.warnings.append(
-                f"Dimension name '{base_name}' occurs in multiple data "
-                f"objects; emitted '{ds_name}.{base_name}' as dimension "
-                f"'{key}' to avoid a collision."
+                f"Dimension name '{base_name}' occurs in {where}; emitted "
+                f"'{ds_name}.{base_name}' as dimension '{key}' to avoid a collision."
             )
         dimensions[key] = dim_def
+        return key
 
     def _convert_metrics(self, osi_metrics: list, ds_map: dict) -> tuple[dict, dict]:
         """
