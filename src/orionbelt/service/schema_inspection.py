@@ -20,6 +20,7 @@ the whole schema -- the rule OBA's discovery follows for an unreadable table.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -175,6 +176,9 @@ class Catalog:
 
 
 _CATALOGS: dict[str, type[Catalog]] = {}
+
+#: A Snowflake name that can go into a statement as written: plain or quoted.
+_SNOWFLAKE_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+"')
 
 
 def _register(cls: type[Catalog]) -> type[Catalog]:
@@ -429,10 +433,17 @@ class SnowflakeCatalog(_InformationSchemaCatalog):
     _SYSTEM = ("INFORMATION_SCHEMA",)
 
     def _schema_ref(self, schema: str) -> str:
-        # Unqualified, as information_schema is: the connection's current
-        # database. SNOWFLAKE_DATABASE is written as a person spells it, and
-        # quoting it would make it case-sensitive.
-        return self.ident(schema)
+        # SHOW ... KEYS IN SCHEMA wants the database named too ("Must specify
+        # the full search path"), where information_schema is the connection's
+        # current one. SNOWFLAKE_DATABASE goes in as written, as the connection
+        # reads it: a plain name case-insensitive, a quoted one exact. Quoting a
+        # plain name here would make it case-sensitive.
+        database = (self.source.getenv("SNOWFLAKE_DATABASE") or "").strip() if self.source else ""
+        if not database:
+            return self.ident(schema)
+        if not _SNOWFLAKE_NAME.fullmatch(database):
+            database = self.ident(database)
+        return f"{database}.{self.ident(schema)}"
 
     def primary_keys(self, schema: str, tables: Collection[str] | None) -> CatalogQuery:
         return CatalogQuery(
@@ -641,10 +652,15 @@ class BigQueryCatalog(_InformationSchemaCatalog):
         )
 
     def tables(self, schema: str, tables: Collection[str] | None) -> CatalogQuery:
+        # A table's description is one of its options, kept as a string
+        # literal ('"Sales \"EU\""'); JSON_VALUE reads it back.
         return CatalogQuery(
-            "SELECT table_name, table_type, CAST(NULL AS STRING) AS comment "
-            f"FROM {self._view(schema, 'TABLES')} WHERE TRUE"
-            f"{self.only('table_name', tables)} ORDER BY table_name"
+            "SELECT t.table_name AS table_name, t.table_type AS table_type, "
+            "JSON_VALUE(o.option_value) AS comment "
+            f"FROM {self._view(schema, 'TABLES')} t "
+            f"LEFT JOIN {self._view(schema, 'TABLE_OPTIONS')} o "
+            "ON o.table_name = t.table_name AND o.option_name = 'description' WHERE TRUE"
+            f"{self.only('t.table_name', tables)} ORDER BY t.table_name"
         )
 
     def columns(self, schema: str, tables: Collection[str] | None) -> CatalogQuery:
@@ -828,8 +844,17 @@ def inspect_schema(
     wanted = set(tables) if tables else None
     info = SchemaInfo(schema=schema)
 
+    try:
+        listed = _rows(run, catalog.tables(schema, wanted))
+    except ExecutionError:
+        # BigQuery names the dataset in FROM, so an unknown one fails the
+        # statement rather than returning no rows.
+        if schema not in list_schemas(source, run=run):
+            return None
+        raise
+
     by_name: dict[str, TableInfo] = {}
-    for row in _rows(run, catalog.tables(schema, wanted)):
+    for row in listed:
         name = _text(row.get("table_name"))
         if name is None:
             continue

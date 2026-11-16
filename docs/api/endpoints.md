@@ -1966,9 +1966,14 @@ PostgreSQL, MySQL, DuckDB, Snowflake (`SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS`
 and BigQuery have primary and foreign keys; ClickHouse has its primary key only (the sorting
 key's index prefix, not a uniqueness constraint), in the order the table declares it, where a
 key expression such as `toDate(ts)` stands for the columns it reads; Dremio has neither, nor
-comments. A key or
-view query the catalog refuses this user leaves those facts out and adds a `warnings` entry
-instead of failing the request.
+comments. Dremio lists a table of a file source (such as `$scratch`) once it has been queried
+or the source's metadata refreshed, as its own catalog does. A key or view query the catalog
+refuses this user leaves those facts out and adds a `warnings` entry instead of failing the
+request.
+
+Each engine's catalog SQL is checked against a schema built for it by
+`scripts/probe_schema_inspection.py`: composite keys declared in another order than their
+columns, a composite foreign key, comments and a view, then the filters and an unknown schema.
 
 Both endpoints connect to the database, so they require `QUERY_EXECUTE=true` (**503**
 otherwise). **404** for an unknown data source or schema, with or without `table`; a `table`

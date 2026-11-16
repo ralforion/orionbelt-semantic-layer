@@ -226,6 +226,56 @@ class TestCatalogs:
         )
         assert 'SHOW PRIMARY KEYS IN SCHEMA "SALES"' in run.statements
 
+    @pytest.mark.parametrize(
+        ("database", "reference"),
+        [
+            ("orionbelt", 'orionbelt."SALES"'),
+            ('"Mixed Case"', '"Mixed Case"."SALES"'),
+            ("odd-name", '"odd-name"."SALES"'),
+        ],
+    )
+    def test_snowflake_names_the_database_for_show(self, database: str, reference: str) -> None:
+        # Snowflake refuses SHOW ... KEYS IN SCHEMA without the database.
+        source = DataSource(
+            name="snowflake", dialect="snowflake", environ={"SNOWFLAKE_DATABASE": database}
+        )
+        catalog = catalog_for("snowflake", source)
+
+        assert catalog.primary_keys("SALES", None).sql == f"SHOW PRIMARY KEYS IN SCHEMA {reference}"
+        foreign = catalog.foreign_keys("SALES", None).sql
+        assert foreign == f"SHOW IMPORTED KEYS IN SCHEMA {reference}"
+
+    def test_bigquery_reads_a_table_description_from_its_options(self) -> None:
+        run = _Catalog(
+            {
+                "TABLE_OPTIONS": [
+                    {"table_name": "orders", "table_type": "BASE TABLE", "comment": 'Say "hi"'}
+                ],
+            }
+        )
+
+        info = inspect_schema(_source("bigquery"), "sales", run=run)
+
+        assert info is not None
+        assert [(t.name, t.comment) for t in info.tables] == [("orders", 'Say "hi"')]
+        assert "JSON_VALUE(o.option_value)" in run.statements[0]
+
+    def test_bigquery_unknown_dataset_is_none_not_a_failure(self) -> None:
+        not_found = ExecutionError("404 Not found: Dataset p:nowhere was not found")
+        run = _Catalog(
+            {
+                "`nowhere`.INFORMATION_SCHEMA": not_found,
+                "`broken`.INFORMATION_SCHEMA": ExecutionError("403 Access Denied"),
+                "INFORMATION_SCHEMA.SCHEMATA": [{"schema_name": "broken"}],
+            }
+        )
+        source = _source("bigquery")
+
+        assert inspect_schema(source, "nowhere", run=run) is None
+        assert inspect_schema(source, "nowhere", tables=["orders"], run=run) is None
+        with pytest.raises(ExecutionError, match="Access Denied"):
+            inspect_schema(source, "broken", run=run)
+
     def test_databricks_ordinals_count_from_one(self) -> None:
         run = _Catalog(
             {
