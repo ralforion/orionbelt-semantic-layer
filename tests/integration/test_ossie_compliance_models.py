@@ -311,10 +311,10 @@ def test_a_filtered_metric_keeps_every_group() -> None:
         "SUM(amount) FILTER (WHERE status IS DISTINCT FROM region)",
         "SUM(CASE WHEN order_id % 2 = 0 THEN amount END)",
         "SUM(amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM order_id) = 1)",
-        "SUM(amount) FILTER (WHERE region > CURRENT_TIMESTAMP)",
+        "SUM(amount) FILTER (WHERE region > CURRENT_TIMESTAMP(3))",
         "SUM(amount) FILTER (WHERE TRIM(BOTH ' ' FROM status) = 'done')",
     ],
-    ids=["ilike", "is distinct from", "modulo", "extract dayofweek", "current_timestamp", "trim"],
+    ids=["ilike", "is distinct from", "modulo", "extract dayofweek", "clock precision", "trim"],
 )
 def test_a_metric_obml_cannot_parse_leaves_the_model_loading(sql: str) -> None:
     # Imported as a measure, the expression stopped the whole model loading
@@ -425,3 +425,49 @@ def test_every_ossie_function_leaves_the_model_loading(call: str) -> None:
     }
     obml = osi_orionbelt.OSItoOBML(doc).convert()
     ModelStore().load_model(yaml.safe_dump(obml), dedup=False)
+
+
+def test_the_clock_functions_run() -> None:
+    # CURRENT_TIMESTAMP and CURRENT_TIME are OBML's current_timestamp() and
+    # current_time(): the session's clock, as the source's, with no queryTimezone.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "clocked",
+        "datasets": [
+            {
+                "name": "events",
+                "source": "main.events",
+                "primary_key": ["event_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}} for n in ("event_id", "happened", "opens")
+                ],
+                "metrics": [
+                    {
+                        "name": "past",
+                        "expression": {
+                            "sql": "COUNT(*) FILTER (WHERE happened <= CURRENT_TIMESTAMP)"
+                        },
+                    },
+                    {
+                        "name": "open_now",
+                        "expression": {"sql": "COUNT(*) FILTER (WHERE opens <= CURRENT_TIME)"},
+                    },
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(select={"measures": ["past", "open_now"]})
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE events AS SELECT * FROM (VALUES"
+        " (1, TIMESTAMP '2001-01-01 00:00:00', TIME '00:00:00'),"
+        " (2, TIMESTAMP '2999-01-01 00:00:00', TIME '23:59:59.999999'))"
+        " t(event_id, happened, opens)"
+    )
+    past, open_now = con.execute(sql).fetchone()  # type: ignore[misc]
+    assert past == 1
+    assert open_now in (1, 2)  # 2 only in the last microsecond of the day

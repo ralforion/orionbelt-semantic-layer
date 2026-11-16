@@ -69,6 +69,12 @@ def obml_cast_type(to: exp.DataType) -> str | None:
 # unit of OBML's ``extract(unit, x)``. WEEK, DAYOFWEEK and DAYOFYEAR number
 # differently from engine to engine, and the Ossie spec does not say which it
 # means; OBML's ``extract`` has no MILLISECOND.
+# The clock reads, as OBML's catalog functions.
+_CLOCKS: dict[type[exp.Expr], str] = {
+    exp.CurrentDate: "current_date",
+    exp.CurrentTimestamp: "current_timestamp",
+    exp.CurrentTime: "current_time",
+}
 _EXTRACT_UNITS = {
     part: part.lower() for part in ("YEAR", "QUARTER", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND")
 }
@@ -81,10 +87,12 @@ def render_obml(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> str
     cast form OBML parses; a target it has no type for raises
     :class:`NotRepresentableError`. ``EXTRACT(YEAR FROM x)`` becomes OBML's
     ``extract('year', x)`` for a part in ``_EXTRACT_UNITS``; any other part is
-    left as written, which :func:`obml_unreadable_text` refuses. ``CURRENT_DATE``
-    becomes OBML's ``current_date()``: bare, OBML reads the word as a string.
-    ``CURRENT_TIMESTAMP`` and ``CURRENT_TIME`` have no OBML function, and
-    sqlglot writes them with parentheses, which most engines refuse: they raise.
+    left as written, which :func:`obml_unreadable_text` refuses.
+    ``CURRENT_DATE``, ``CURRENT_TIMESTAMP`` and ``CURRENT_TIME`` become OBML's
+    ``current_date()``, ``current_timestamp()`` and ``current_time()``, the
+    session's clock as the source's is, unless the model sets a
+    ``queryTimezone``; bare, OBML reads each word as a string. One with an
+    argument (a precision, a zone) raises: OBML's take none.
     """
 
     def rewrite(n: exp.Expr) -> exp.Expr:
@@ -104,10 +112,11 @@ def render_obml(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> str
             return exp.Anonymous(
                 this="cast", expressions=[n.this.transform(rewrite), exp.Literal.string(target)]
             )
-        if isinstance(n, exp.CurrentDate) and not n.args.get("this"):
-            return exp.Anonymous(this="current_date", expressions=[])
-        if isinstance(n, (exp.CurrentDate, exp.CurrentTimestamp, exp.CurrentTime)):
-            raise NotRepresentableError(f"{n.sql()}: OBML has no such function")
+        clock = _CLOCKS.get(type(n))
+        if clock is not None:
+            if any(n.args.values()):
+                raise NotRepresentableError(f"{n.sql()}: OBML's {clock}() takes no argument")
+            return exp.Anonymous(this=clock, expressions=[])
         if isinstance(n, exp.Extract) and n.name.upper() in _EXTRACT_UNITS:
             unit = exp.Literal.string(_EXTRACT_UNITS[n.name.upper()])
             return exp.Anonymous(

@@ -5,6 +5,8 @@
   "coalesce": {"args": [2, null]},
   "concat": {"args": [2, null]},
   "current_date": {"args": [0, 0]},
+  "current_time": {"args": [0, 0]},
+  "current_timestamp": {"args": [0, 0]},
   "date_add": {"args": [3, 3], "unit": 0, "units": ["year", "quarter", "month", "week", "day", "hour", "minute", "second"]},
   "date_diff": {"args": [3, 3], "unit": 0, "units": ["year", "quarter", "month", "week", "day", "hour", "minute", "second"]},
   "date_trunc": {"args": [2, 2], "unit": 0, "units": ["year", "quarter", "month", "week", "day", "hour", "minute", "second"]},

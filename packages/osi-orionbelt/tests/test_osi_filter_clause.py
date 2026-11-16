@@ -162,8 +162,8 @@ class TestMeasureExpressions:
             "SUM(orders.amount) FILTER (WHERE TRIM(BOTH ' ' FROM orders.status) = 'x')",
             "SUM(CASE WHEN ROUND(orders.amount, 1, 2) > 0 THEN 1 END)",
             "SUM(CASE WHEN DATE_TRUNC('decade', orders.cust) > 0 THEN 1 END)",
-            # No OBML function, and written with parentheses most engines refuse.
-            "SUM(orders.amount) FILTER (WHERE orders.cust > CURRENT_TIMESTAMP)",
+            # A clock read with a precision: OBML's current_timestamp() takes none.
+            "SUM(orders.amount) FILTER (WHERE orders.cust > CURRENT_TIMESTAMP(3))",
         ],
     )
     def test_one_obml_cannot_parse_is_preserved(self, sql: str) -> None:
@@ -191,11 +191,13 @@ class TestMeasureExpressions:
             ("EXTRACT(YEAR FROM orders.cust) = 2026", "EXTRACT('year', {[orders].[cust]}) = 2026"),
             ("EXTRACT(QUARTER FROM orders.cust) = 1", "EXTRACT('quarter', {[orders].[cust]}) = 1"),
             ("orders.cust <= CURRENT_DATE", "{[orders].[cust]} <= CURRENT_DATE()"),
+            ("orders.cust <= CURRENT_TIMESTAMP", "{[orders].[cust]} <= CURRENT_TIMESTAMP()"),
+            ("orders.cust < CURRENT_TIME()", "{[orders].[cust]} < CURRENT_TIME()"),
         ],
     )
     def test_sql_forms_become_obml_functions(self, predicate: str, obml: str) -> None:
-        # OBML's extract(unit, x) and current_date(); a bare CURRENT_DATE is a
-        # string to OBML.
+        # OBML's extract(unit, x) and its clock functions; a bare CURRENT_DATE
+        # is a string to OBML.
         sql = f"SUM(orders.amount) FILTER (WHERE {predicate})"
         measure = _convert(_doc(sql))[0]["measures"]["m"]
         assert measure["expression"] == f"CASE WHEN {obml} THEN {{[orders].[amount]}} END"
