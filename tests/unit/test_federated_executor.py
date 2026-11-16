@@ -137,6 +137,19 @@ def single_model(**model: Any) -> str:
 MEDIAN = "  Median Order: {columns: [{dataObject: Orders, column: Amount}], aggregation: median}\n"
 
 
+def _decode_frame(content: bytes) -> tuple[dict[str, Any], Any]:
+    """Split the ``[u32 len][json meta][gzip'd arrow]`` frame into (meta, table)."""
+    import gzip
+    import json
+
+    import pyarrow as pa
+
+    meta_len = int.from_bytes(content[:4], "big")
+    meta = json.loads(content[4 : 4 + meta_len].decode("utf-8"))
+    table = pa.ipc.open_stream(gzip.decompress(content[4 + meta_len :])).read_all()
+    return meta, table
+
+
 async def execute(client: AsyncClient, yaml: str, query: dict[str, Any]) -> Any:
     session = (await client.post("/v1/sessions")).json()["session_id"]
     loaded = await client.post(f"/v1/sessions/{session}/models", json={"model_yaml": yaml})
@@ -198,6 +211,33 @@ class TestRestExecution:
         federation_info = response.json()["federation"]
         assert [leg["data_source"] for leg in federation_info["legs"]] == ["shop", "crm"]
         assert response.json()["dialect"] == "duckdb"
+
+    async def test_the_arrow_envelope_carries_what_the_json_body_does(
+        self, client: AsyncClient
+    ) -> None:
+        # The Arrow frame's JSON envelope left out federation and the ttl_*
+        # fields, so a client reading Arrow lost where each leg ran.
+        session = (await client.post("/v1/sessions")).json()["session_id"]
+        loaded = await client.post(
+            f"/v1/sessions/{session}/models", json={"model_yaml": model_yaml(federated=True)}
+        )
+        body = {"model_id": loaded.json()["model_id"], "query": REVENUE_BY_REGION}
+        url = f"/v1/sessions/{session}/query/execute"
+        fresh = await client.post(url + "?format=arrow", json=body)  # a miss
+        from_cache = await client.post(url + "?format=arrow", json=body)  # the raw-arrow hit
+        as_json = await client.post(url, json=body)  # a hit, rendered as JSON
+
+        fresh_meta, _ = _decode_frame(fresh.content)
+        hit_meta, _ = _decode_frame(from_cache.content)
+        json_body = as_json.json()
+        assert fresh_meta["cached"] is False and hit_meta["cached"] is True
+        legs = [leg["data_source"] for leg in fresh_meta["federation"]["legs"]]
+        assert legs == ["shop", "crm"]
+        for field in ("federation", "ttl_seconds", "ttl_source", "ttl_limiting_table"):
+            assert hit_meta[field] == json_body[field], field
+            assert fresh_meta[field] == json_body[field], field
+        # Every JSON field but the rows, in both Arrow envelopes.
+        assert set(fresh_meta) == set(hit_meta) == set(json_body) - {"rows"}
 
     async def test_a_repeated_query_is_served_whole_from_the_cache(
         self, client: AsyncClient

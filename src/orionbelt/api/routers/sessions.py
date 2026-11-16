@@ -70,8 +70,6 @@ from orionbelt.api.services.query_compilation import (
     compile_query_or_raise,
 )
 from orionbelt.api.services.query_execution import (
-    _apply_no_cache_metadata,
-    _apply_ttl_metadata,
     _build_execute_response,
     _physical_tables_for,
     _run_with_cache,
@@ -132,8 +130,6 @@ __all__ = [
     "_obsql_translation_errors",
     "_join_path_steps",
     "_physical_tables_for",
-    "_apply_ttl_metadata",
-    "_apply_no_cache_metadata",
 ]
 
 # Prefix lives on the constructor (not the include_router call) so the root
