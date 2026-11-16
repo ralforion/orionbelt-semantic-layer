@@ -289,6 +289,20 @@ def _written_violations(tokens: list[Token]) -> list[str]:
                 found.append(f"function {token.text} is not in OSSIE_SQL_2026")
             elif name in ("TO_DATE", "TO_TIMESTAMP") and _argument_count(tokens, i + 1) != 1:
                 found.append(f"{name} with a format is EXPERIMENTAL, not in OSSIE_SQL_2026")
+            elif (
+                name == "EXTRACT"
+                and i + 2 < len(tokens)
+                and tokens[i + 2].token_type is TokenType.STRING
+            ):
+                # sqlglot reads EXTRACT('year', d); the language has
+                # EXTRACT(YEAR FROM d) and its comma form DATE_PART('year', d).
+                found.append(
+                    "EXTRACT takes part FROM date; DATE_PART('part', date) is its comma form"
+                )
+            elif name == "POSITION" and _argument_count(tokens, i + 1) != 1:
+                found.append(
+                    "POSITION takes substr IN str; CHARINDEX(substr, str) is its comma form"
+                )
         elif (
             bare
             and nxt is not None
@@ -334,7 +348,19 @@ def _parsed_violations(tree: exp.Expr) -> list[str]:
             found.append(f"DATE_TRUNC part '{node.text('unit')}' is not in OSSIE_SQL_2026")
         elif isinstance(node, exp.Extract) and node.text("this").lower() not in _EXTRACT_PARTS:
             found.append(f"EXTRACT part '{node.text('this')}' is not in OSSIE_SQL_2026")
+        elif _date_part_unit(node) not in (None, *_EXTRACT_PARTS):
+            # OBML's day_of_week (ISO) has no part here: the spec's DAYOFWEEK
+            # does not say which day is 1.
+            found.append(f"DATE_PART part '{_date_part_unit(node)}' is not in OSSIE_SQL_2026")
     return found
+
+
+def _date_part_unit(node: exp.Expr) -> str | None:
+    """The part a ``DATE_PART('part', d)`` call names, lower case, else ``None``."""
+    if not (isinstance(node, exp.Anonymous) and str(node.this).upper() == "DATE_PART"):
+        return None
+    first = node.expressions[0] if node.expressions else None
+    return first.name.lower() if isinstance(first, exp.Literal) and first.is_string else None
 
 
 def _is_aggregate(node: exp.Expr) -> bool:

@@ -160,8 +160,9 @@ class TestMeasureExpressions:
             # SQL syntax inside a call, which OBML reads as NAME(arg, ...) only.
             "SUM(orders.amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM orders.cust) = 1)",
             # A catalog function with an argument count or unit OBML refuses:
-            # sqlglot writes TRIM(BOTH ' ' FROM s) as TRIM(s, ' ').
-            "SUM(orders.amount) FILTER (WHERE TRIM(BOTH ' ' FROM orders.status) = 'x')",
+            # OBML's trim strips spaces only, so TRIM(BOTH 'x' FROM s) is
+            # written TRIM(s, 'x').
+            "SUM(orders.amount) FILTER (WHERE TRIM(BOTH 'x' FROM orders.status) = 'x')",
             "SUM(CASE WHEN ROUND(orders.amount, 1, 2) > 0 THEN 1 END)",
             "SUM(CASE WHEN DATE_TRUNC('decade', orders.cust) > 0 THEN 1 END)",
             # A clock read with a precision: OBML's current_timestamp() takes none.

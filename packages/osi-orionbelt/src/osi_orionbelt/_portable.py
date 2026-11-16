@@ -29,11 +29,22 @@ from typing import Any
 
 import sqlglot
 from sqlglot import expressions as exp
+from sqlglot.tokens import TokenType
 
 from osi_orionbelt._sql_reserved import DUCKDB_REJECTED_WORDS, SQL_RESERVED_WORDS
 
 _MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 _COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
+# OBML catalog calls Ossie's language spells otherwise, with the same arguments
+# in the same order: DATEADD(part, n, d), DATEDIFF(part, start, end),
+# DATE_PART('part', d) for OBML's extract('part', d), and CHARINDEX(substr, str),
+# its comma form of POSITION(substr IN str).
+_OSSIE_CALLS = {
+    "DATE_ADD": "DATEADD",
+    "DATE_DIFF": "DATEDIFF",
+    "EXTRACT": "DATE_PART",
+    "POSITION": "CHARINDEX",
+}
 
 _DEFAULT_COUNT_PATTERN = "{object} Count"
 
@@ -303,6 +314,123 @@ def synthesized_counts(obml: dict[str, Any]) -> dict[str, str]:
     return counts
 
 
+def _sql_casts(sql: str) -> str:
+    """*sql* with OBML's ``CAST(x, 'double')`` written as SQL's ``CAST(x AS DOUBLE)``.
+
+    OBML's cast takes its type as a quoted string (``'double'``,
+    ``'decimal(p, s)'``), which no SQL dialect reads; written as the SQL cast,
+    the import reads it back as the same OBML cast.
+    """
+    try:
+        tokens = sqlglot.tokenize(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql
+    edits: list[tuple[int, int, str]] = []
+    for i, token in enumerate(tokens[:-1]):
+        if token.text.upper() != "CAST" or tokens[i + 1].token_type is not TokenType.L_PAREN:
+            continue
+        depth, last_comma = 0, None
+        for j in range(i + 1, len(tokens)):
+            kind = tokens[j].token_type
+            if kind is TokenType.L_PAREN:
+                depth += 1
+            elif kind is TokenType.R_PAREN:
+                depth -= 1
+                if depth == 0:
+                    break
+            elif kind is TokenType.COMMA and depth == 1:
+                last_comma = j
+        else:
+            continue
+        if last_comma is None or last_comma + 2 != j:
+            continue
+        type_token = tokens[last_comma + 1]
+        if type_token.token_type is TokenType.STRING:
+            edits.append((tokens[last_comma].start, type_token.end, type_token.text.upper()))
+    for start, end, sql_type in sorted(edits, reverse=True):
+        # The string token ends at its closing quote.
+        sql = f"{sql[:start]} AS {sql_type}{sql[end + 1 :]}"
+    return sql
+
+
+def _closing_paren(tokens: list[Any], open_paren: int) -> tuple[int, list[int]] | None:
+    """The ``)`` closing the ``(`` at *open_paren*, and the commas at its depth."""
+    depth, commas = 0, list[int]()
+    for j in range(open_paren, len(tokens)):
+        kind = tokens[j].token_type
+        if kind is TokenType.L_PAREN:
+            depth += 1
+        elif kind is TokenType.R_PAREN:
+            depth -= 1
+            if depth == 0:
+                return j, commas
+        elif kind is TokenType.COMMA and depth == 1:
+            commas.append(j)
+    return None
+
+
+# OBML's extract units SQL's EXTRACT spells otherwise: Monday 1 to Sunday 7 is
+# ISODOW (DuckDB, PostgreSQL), which the import reads back as day_of_week.
+_SQL_PARTS = {"DAY_OF_WEEK": "ISODOW"}
+
+
+def _ansi_calls(sql: str) -> str:
+    """*sql* with OBML's ``EXTRACT('year', d)`` and ``POSITION(a, s)`` in SQL's
+    own forms, ``EXTRACT(YEAR FROM d)`` and ``POSITION(a IN s)``.
+
+    ANSI SQL has no date difference, and adds a date only an interval constant;
+    ``date_add`` and ``date_diff`` are written ``DATEADD`` and ``DATEDIFF``, the
+    part first, as Ossie's language and most engines spell them, and as the
+    import reads them.
+    """
+    try:
+        tokens = sqlglot.tokenize(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql
+    edits: list[tuple[int, int, str]] = []
+    for i, token in enumerate(tokens[:-1]):
+        name = token.text.upper()
+        if tokens[i + 1].token_type is not TokenType.L_PAREN:
+            continue
+        if name in ("DATE_ADD", "DATE_DIFF"):
+            edits.append((token.start, token.end, _OSSIE_CALLS[name]))
+            continue
+        if name not in ("EXTRACT", "POSITION"):
+            continue
+        call = _closing_paren(tokens, i + 1)
+        if call is None or len(call[1]) != 1:
+            continue
+        # Up to the next argument, so ``a,b`` and ``a, b`` come out alike.
+        comma, following = tokens[call[1][0]], tokens[call[1][0] + 1]
+        if name == "POSITION":
+            edits.append((comma.start, following.start - 1, " IN "))
+        elif tokens[i + 2].token_type is TokenType.STRING and call[1][0] == i + 3:
+            unit = tokens[i + 2].text.upper()
+            edits.append(
+                (tokens[i + 2].start, following.start - 1, f"{_SQL_PARTS.get(unit, unit)} FROM ")
+            )
+    for start, end, text in sorted(edits, reverse=True):
+        sql = sql[:start] + text + sql[end + 1 :]
+    return sql
+
+
+def _ossie_calls(sql: str) -> str:
+    """*sql* with each call in ``_OSSIE_CALLS`` under Ossie's name."""
+    try:
+        tokens = sqlglot.tokenize(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql
+    for token, following in reversed(list(zip(tokens, tokens[1:], strict=False))):
+        name = _OSSIE_CALLS.get(token.text.upper())
+        if (
+            name
+            and following.token_type is TokenType.L_PAREN
+            and token.token_type is not TokenType.STRING
+        ):
+            sql = sql[: token.start] + name + sql[token.end + 1 :]
+    return sql
+
+
 class PortableRenderer:
     """Render OBML measures and metrics as portable Ossie SQL expressions.
 
@@ -362,7 +490,8 @@ class PortableRenderer:
         return f"CAST({truncated} AS {cast})" if cast else truncated
 
     def _expression(self, template: str) -> str:
-        return _COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template)
+        sql = _sql_casts(_COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template))
+        return _ossie_calls(sql) if self.ossie else _ansi_calls(sql)
 
     # ── measures ──────────────────────────────────────────────────────
 
@@ -603,7 +732,10 @@ class PortableRenderer:
         template = met.get("expression")
         if not template:
             raise NotPortableError(f"metric '{name}' has no expression")
-        return _MEASURE_REF.sub(lambda m: self._reference(m.group(1)), template)
+        formula = _sql_casts(_MEASURE_REF.sub(lambda m: self._reference(m.group(1)), template))
+        # A formula calls catalog functions too: YEAR(MAX(d)) imports as
+        # extract('year', {[_max]}).
+        return _ossie_calls(formula) if self.ossie else _ansi_calls(formula)
 
     def _partitions(self, met: dict[str, Any]) -> list[str]:
         return [self._dimension(d) for d in met.get("partitionBy") or []]

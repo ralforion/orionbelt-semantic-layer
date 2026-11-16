@@ -21,6 +21,10 @@ date_add(MONTH, 1, CAST('2026-01-31' AS Nullable(Date)));
 date_add(YEAR, 1, CAST('2026-08-01' AS Nullable(Date)));
 --   date_add('quarter', 1 + 1, DATE '2026-01-01') = '2026-07-01'
 date_add(QUARTER, 1 + 1, CAST('2026-01-01' AS Nullable(Date)));
+--   date_add('week', 2, DATE '2026-08-01') = '2026-08-15'
+date_add(WEEK, 2, CAST('2026-08-01' AS Nullable(Date)));
+--   date_add('day', div(7, 2), DATE '2026-08-01') = '2026-08-04'
+date_add(DAY, intDiv(7, NULLIF(2, 0)), CAST('2026-08-01' AS Nullable(Date)));
 
 -- date_diff(unit, start, end)
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14
@@ -35,6 +39,12 @@ date_diff('month', CAST('2026-01-31' AS Nullable(Date)), CAST('2026-03-01' AS Nu
 date_diff('year', CAST('2026-12-31' AS Nullable(Date)), CAST('2027-01-01' AS Nullable(Date)));
 --   date_diff('quarter', DATE '2026-03-31', DATE '2026-04-01') = 1
 date_diff('quarter', CAST('2026-03-31' AS Nullable(Date)), CAST('2026-04-01' AS Nullable(Date)));
+--   date_diff('day', TIMESTAMP '2026-01-31 23:00:00', TIMESTAMP '2026-02-01 01:00:00') = 1
+date_diff('day', CAST('2026-01-31 23:00:00' AS Nullable(DateTime)), CAST('2026-02-01 01:00:00' AS Nullable(DateTime)));
+--   date_diff('hour', TIMESTAMP '2026-01-31 12:30:00', TIMESTAMP '2026-01-31 13:10:00') = 1
+date_diff('hour', CAST('2026-01-31 12:30:00' AS Nullable(DateTime)), CAST('2026-01-31 13:10:00' AS Nullable(DateTime)));
+--   date_diff('second', TIMESTAMP '2026-01-01 00:00:00.9', TIMESTAMP '2026-01-01 00:00:01.1') = 1
+date_diff('second', CAST('2026-01-01 00:00:00.9' AS Nullable(DateTime64(6))), CAST('2026-01-01 00:00:01.1' AS Nullable(DateTime64(6))));
 
 -- extract(unit, x)
 --   extract('year', DATE '2026-08-15') = 2026

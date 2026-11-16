@@ -114,6 +114,8 @@ def _cast_target_of(arg: Expr) -> OBMLType | None:
 
 
 _JSON_SEGMENT_RE = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)|\[([0-9]+)\]")
+# A time of day with a fraction of a second: ``00:00:00.9``.
+_FRACTIONAL_SECONDS_RE = re.compile(r"\d:\d\d\.\d")
 
 
 def _is_json_path_literal(arg: Expr) -> bool:
@@ -1297,6 +1299,17 @@ class Dialect(ABC):
             # Dremio, including a newline: a quoted string may span lines.
             escaped = value.replace("'", "''")
         return f"'{escaped}'"
+
+    @staticmethod
+    def _is_fractional_timestamp_literal(inner: Expr, type_name: str) -> bool:
+        """Whether the cast is a ``TIMESTAMP '...'`` literal with a fraction of a
+        second, which a whole-second timestamp type would round away."""
+        return (
+            type_name.lower() == "timestamp"
+            and isinstance(inner, Literal)
+            and isinstance(inner.value, str)
+            and _FRACTIONAL_SECONDS_RE.search(inner.value) is not None
+        )
 
     def _resolve_type_name(self, type_name: str) -> str:
         """Map an abstract type name to a dialect-specific SQL type.

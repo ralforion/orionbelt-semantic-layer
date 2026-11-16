@@ -33,10 +33,12 @@ from osi_orionbelt._common import (
 from osi_orionbelt._field_expressions import (
     NotRepresentableError,
     is_sibling_name,
+    obml_tree,
     obml_unreadable_text,
     render_obml,
     unreadable,
     unreadable_operator,
+    whole_unit_counts,
 )
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
@@ -45,6 +47,7 @@ from osi_orionbelt._field_names import (
     rename_keys,
     rename_metric,
 )
+from osi_orionbelt._ossie_parse import parse_sql
 from osi_orionbelt._ossie_v03 import SCOPE_KEY, to_internal
 from osi_orionbelt._portable import matching_names
 
@@ -201,6 +204,18 @@ class _NameIndex:
         return (ds, col_hits[0]) if col_hits else ""
 
 
+def _recounted(what: str, units: list[str]) -> str:
+    """The warning for a whole-unit count imported as OBML's ``date_diff``."""
+    return (
+        f"RECOUNTED: {what} counts the whole {'s, '.join(units)}s elapsed "
+        f"(Databricks' DATEDIFF with a unit, or TIMESTAMPDIFF), imported as OBML's "
+        f"date_diff, which counts the boundaries crossed, the same on every engine. "
+        f"The two differ where a unit is under way at either end: 23:00 to 01:00 the "
+        f"next day is 0 days there and 1 day here, January 31 to February 28 is "
+        f"0 months there and 1 month here."
+    )
+
+
 def _source_key(identifier: exp.Expr) -> str:
     """A source column as SQL compares it: a quoted name exactly, a bare one by case."""
     if isinstance(identifier, exp.Identifier) and identifier.quoted:
@@ -305,6 +320,8 @@ class OSItoOBML:
         # The exact aggregations the last decomposed metric's approximate
         # percentiles became (see ``_exact_percentiles``).
         self._approximated: list[str] = []
+        # Whole-unit counts in the metric last decomposed (see whole_unit_counts).
+        self._recounted: list[str] = []
         # OSI metrics that have no OBML representation (non-SQL dialect only,
         # or an expression our parser cannot decompose). Preserved verbatim
         # rather than dropped — see ``_preserve_unconverted_metric``.
@@ -802,7 +819,7 @@ class OSItoOBML:
             if name not in columns or entry is None:
                 continue
             try:
-                tree = sqlglot.parse_one(entry[1], read=_OSI_DIALECT_TO_SQLGLOT.get(entry[0]))
+                tree = parse_sql(entry[1], _OSI_DIALECT_TO_SQLGLOT.get(entry[0]))
             except Exception:  # noqa: BLE001 - unparseable SQL keeps its code, as before
                 self._unreadable_fields.add((ds_name, name))
                 continue
@@ -814,13 +831,13 @@ class OSItoOBML:
         for name, tree in parsed.items():
             sql = columns[name]["code"]
             plan = _SiblingPlan(columns, physical, taken, self._infer_obml_type)
-            reason = unreadable(tree)
-            if reason is None:
-                try:
+            try:
+                reason = unreadable(obml_tree(tree, lambda column: column))
+                if reason is None:
                     expression = render_obml(tree, plan.placeholder)
                     reason = obml_unreadable_text(expression)
-                except NotRepresentableError as exc:
-                    reason = str(exc)
+            except NotRepresentableError as exc:
+                reason = str(exc)
             if reason is not None:
                 self.warnings.append(
                     f"LOSSY: field '{ds_name}.{name}' is computed as {sql!r}, which OBML cannot "
@@ -829,6 +846,9 @@ class OSItoOBML:
                 )
                 self._unreadable_fields.add((ds_name, name))
                 continue
+            units = whole_unit_counts(tree)
+            if units:
+                self.warnings.append(_recounted(f"field '{ds_name}.{name}'", units))
             for added, code in plan.commit():
                 self.warnings.append(
                     f"Field '{ds_name}.{name}' is computed from source column '{code}', which no "
@@ -1525,6 +1545,8 @@ class OSItoOBML:
                     f"from the source's in the last digits, and the exact aggregate can "
                     f"be slower on large tables."
                 )
+            if self._recounted:
+                self.warnings.append(_recounted(f"OSI metric '{name}'", self._recounted))
 
             if decomposed[0] == "simple":
                 _, agg, dataset, column, is_distinct, extra = decomposed
@@ -2200,7 +2222,7 @@ class OSItoOBML:
         Because the rewrite is only reached on a parse failure, a valid
         expression containing brackets inside a string literal is never touched."""
         try:
-            return sqlglot.parse_one(expr_text, read=read)
+            return parse_sql(expr_text, read)
         except Exception:
             pass
         normalized = re.sub(
@@ -2211,7 +2233,7 @@ class OSItoOBML:
         if normalized == expr_text:
             return None
         try:
-            return sqlglot.parse_one(normalized, read=read)
+            return parse_sql(normalized, read)
         except Exception:
             return None
 
@@ -2275,6 +2297,7 @@ class OSItoOBML:
         if tree.find(exp.Query) is not None:
             return None
         tree, self._approximated = self._exact_percentiles(tree, read)
+        self._recounted = whole_unit_counts(tree)
         tree = tree.transform(self._filter_as_case)
 
         # Resolve qualified column refs on the parsed AST, canonicalising each
