@@ -343,6 +343,18 @@ class TestCanHoldWithout:
         coalesced = FunctionCall(name="COALESCE", args=[self.STATUS, Literal.string("ok")])
         assert can_hold_without(BinaryOp(coalesced, "=", Literal.string("ok")), {"Orders"})
 
+    def test_a_null_safe_comparison_is_never_null(self) -> None:
+        is_null = BinaryOp(self.STATUS, "IS NOT DISTINCT FROM", Literal.null())
+        assert can_hold_without(is_null, {"Orders"})
+        assert not can_hold_without(UnaryOp("NOT", is_null), {"Orders"})
+        assert not can_hold_without(
+            BinaryOp(self.STATUS, "IS DISTINCT FROM", Literal.null()), {"Orders"}
+        )
+        # A value, not NULL, though one operand is NULL.
+        distinct = BinaryOp(self.STATUS, "IS DISTINCT FROM", Literal.string("ok"))
+        assert can_hold_without(distinct, {"Orders"})
+        assert can_hold_without(IsNull(expr=distinct, negated=True), {"Orders"})
+
     def test_null_propagating_function_cannot_hold(self) -> None:
         upper = FunctionCall(name="UPPER", args=[self.STATUS])
         assert not can_hold_without(BinaryOp(upper, "=", Literal.string("OK")), {"Orders"})

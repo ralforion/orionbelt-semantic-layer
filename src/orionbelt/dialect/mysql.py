@@ -958,6 +958,24 @@ class MySQLDialect(Dialect):
             f") AS spine"
         )
 
+    @classmethod
+    def _binary_op_precedence(cls, op: str) -> int:
+        """``IS DISTINCT FROM`` is written ``NOT (a <=> b)`` here, which binds
+        as ``NOT`` does."""
+        if op.upper() == "IS DISTINCT FROM":
+            return cls._PREC_NOT
+        return super()._binary_op_precedence(op)
+
+    def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
+        """MySQL has no ``IS [NOT] DISTINCT FROM``: ``<=>`` is its NULL-safe
+        equality, and ``IS DISTINCT FROM`` that negated."""
+        if op.upper() not in ("IS DISTINCT FROM", "IS NOT DISTINCT FROM"):
+            return super()._compile_binary_op(left, op, right)
+        left_sql = self.compile_expr(left, _parent_prec=self._PREC_CMP + 1)
+        right_sql = self.compile_expr(right, _parent_prec=self._PREC_CMP + 1)
+        same = f"{left_sql} <=> {right_sql}"
+        return f"NOT ({same})" if op.upper() == "IS DISTINCT FROM" else same
+
     def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
         """MySQL has no ILIKE: compare ``LOWER`` of both sides."""
         return self._compile_lower_like(column, pattern, negated=negated)

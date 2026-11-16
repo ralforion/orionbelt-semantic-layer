@@ -82,6 +82,8 @@ _NULL_PROPAGATING = frozenset(
 )
 
 _COMPARISONS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">=", "LIKE", "ILIKE"})
+# NULL-safe comparisons: never NULL, whatever their operands.
+_DISTINCT_FROM = frozenset({"IS DISTINCT FROM", "IS NOT DISTINCT FROM"})
 
 
 def can_hold_without(expr: Expr, tables: set[str]) -> bool:
@@ -106,7 +108,11 @@ def _is_null(expr: Expr, tables: set[str]) -> bool:
             return value is None
         case Cast(expr=inner):
             return _is_null(inner, tables)
-        case BinaryOp(left=left, op=op, right=right) if op.upper() not in ("AND", "OR"):
+        case BinaryOp(left=left, op=op, right=right) if op.upper() not in (
+            "AND",
+            "OR",
+            *_DISTINCT_FROM,
+        ):
             return _is_null(left, tables) or _is_null(right, tables)
         case FunctionCall(name=name, args=args) if name.upper() in _NULL_PROPAGATING:
             return any(_is_null(arg, tables) for arg in args)
@@ -127,6 +133,11 @@ def _truth(expr: Expr, tables: set[str]) -> frozenset[str]:
             return frozenset(_not(v) for v in _truth(operand, tables))
         case BinaryOp(left=left, op=op, right=right) if op.upper() in _COMPARISONS:
             return _null_or_any(_is_null(left, tables) or _is_null(right, tables))
+        case BinaryOp(left=left, op=op, right=right) if op.upper() in _DISTINCT_FROM:
+            if _is_null(left, tables) and _is_null(right, tables):
+                # Two NULLs are not distinct from each other.
+                return frozenset({_F if op.upper() == "IS DISTINCT FROM" else _T})
+            return frozenset({_T, _F})
         case IsNull(expr=inner, negated=negated):
             if _is_null(inner, tables):
                 return frozenset({_F if negated else _T})

@@ -104,7 +104,9 @@ _COMPARISON_OPS: tuple[str, ...] = ("<=", ">=", "<>", "!=", "=", "<", ">")
 #: simple ``CASE`` compares its subject to a value, so one of these in that
 #: position is a searched CASE written with a subject by mistake. ``NOT`` is
 #: absent because it is unary; :func:`_when_value` checks it on its own.
-_PREDICATE_OPS: frozenset[str] = frozenset({*_COMPARISON_OPS, "AND", "OR", "LIKE", "NOT LIKE"})
+_PREDICATE_OPS: frozenset[str] = frozenset(
+    {*_COMPARISON_OPS, "AND", "OR", "LIKE", "NOT LIKE", "IS DISTINCT FROM", "IS NOT DISTINCT FROM"}
+)
 
 # Bare-identifier literals — emitted as their typed ``Literal`` node by
 # the parser. Keep uppercase so case-insensitive matching is one lookup.
@@ -633,34 +635,21 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         return left
 
     def _parse_distinct_from(left: Expr, *, negated: bool) -> Expr:
-        """``left IS [NOT] DISTINCT FROM right``, in operators every dialect has.
+        """``left IS [NOT] DISTINCT FROM right``: equality that holds two NULLs
+        equal and is never NULL.
 
-        ``IS NOT DISTINCT FROM`` is ``(l = r AND l IS NOT NULL AND r IS NOT
-        NULL) OR (l IS NULL AND r IS NULL)``, which is never NULL, so ``IS
-        DISTINCT FROM`` is its negation. MySQL has neither form, and
-        ClickHouse reads them only in a join condition. Against a ``NULL``
-        literal it is ``IS [NOT] NULL``: BigQuery refuses ``=`` on one.
+        Kept as one comparison, so each operand is evaluated once: spelled out
+        with ``=`` and ``IS NULL`` it repeats both, and an operand such as
+        ``CASE WHEN random() < 0.5 THEN 1 END`` then takes different values
+        within one row. Each dialect renders it with its own NULL-safe
+        comparison (MySQL's ``<=>``).
         """
         _advance()  # DISTINCT
         if not _is_op("FROM"):
             raise ValueError("IS DISTINCT must be followed by FROM")
         _advance()
-        right = _parse_concat()
-        for value, other in ((right, left), (left, right)):
-            if isinstance(value, Literal) and value.value is None:
-                return IsNull(expr=other, negated=not negated)
-        both = BinaryOp(
-            left=BinaryOp(
-                left=BinaryOp(left=left, op="=", right=right),
-                op="AND",
-                right=IsNull(expr=left, negated=True),
-            ),
-            op="AND",
-            right=IsNull(expr=right, negated=True),
-        )
-        neither = BinaryOp(left=IsNull(expr=left), op="AND", right=IsNull(expr=right))
-        same: Expr = BinaryOp(left=both, op="OR", right=neither)
-        return same if negated else UnaryOp(op="NOT", operand=same)
+        op = "IS NOT DISTINCT FROM" if negated else "IS DISTINCT FROM"
+        return BinaryOp(left=left, op=op, right=_parse_concat())
 
     def _parse_postfix_predicate(left: Expr, *, negated: bool) -> Expr:
         op_tok = _advance()  # IN / BETWEEN / LIKE / ILIKE

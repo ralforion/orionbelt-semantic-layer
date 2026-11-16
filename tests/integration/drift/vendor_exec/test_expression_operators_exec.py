@@ -4,9 +4,11 @@
 Each is parsed by OBML's own expression parser, rendered for the vendor's
 dialect and executed there: ``%`` as the catalog's ``mod`` (BigQuery has no
 ``%``), ``||`` as its ``concat`` (MySQL reads ``||`` as OR), ``ILIKE`` as the
-case-insensitive match query filters use, and ``IS [NOT] DISTINCT FROM`` in
-comparisons every engine has (MySQL has no such operator, ClickHouse only in a
-join). A wrong rendering returns a wrong value here, not an error.
+case-insensitive match query filters use, and ``IS [NOT] DISTINCT FROM``
+natively (MySQL as ``<=>``). A wrong rendering returns a wrong value here, not an
+error; the cases wrapped in ``IS NULL`` check that a rendering binding looser
+than a comparison (Dremio's ``NOT ILIKE()``, MySQL's ``NOT (a <=> b)``) keeps
+its parentheses.
 
 Gated by the ``docker`` pytest marker::
 
@@ -43,6 +45,9 @@ CASES: list[tuple[str, Any]] = [
     ("CASE WHEN NULL IS DISTINCT FROM NULL THEN 1 ELSE 0 END", 0),
     ("CASE WHEN 1 IS NOT DISTINCT FROM NULL THEN 1 ELSE 0 END", 0),
     ("CASE WHEN NULL IS NOT DISTINCT FROM NULL THEN 1 ELSE 0 END", 1),
+    ("CASE WHEN (1 > 0) IS DISTINCT FROM (2 > 3) THEN 1 ELSE 0 END", 1),
+    ("CASE WHEN ('foo' NOT ILIKE 'FOO') IS NULL THEN 1 ELSE 0 END", 0),
+    ("CASE WHEN (1 IS DISTINCT FROM 2) IS NULL THEN 1 ELSE 0 END", 0),
 ]
 
 

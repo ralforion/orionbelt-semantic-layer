@@ -427,13 +427,21 @@ class DremioDialect(Dialect):
         """Dremio has the ``ILIKE(value, pattern, escape)`` function, not the operator.
 
         The escape argument is the operator's ``ESCAPE`` clause: without it the
-        backslash is a literal character here too (measured).
+        backslash is a literal character here too (measured). The negated call
+        binds as ``NOT`` does; see :meth:`like_match_precedence`.
         """
         col_sql = self.compile_expr(column)
         pat_sql = self.compile_expr(Literal.string(pattern))
         esc_sql = self.quote_string_literal("\\")
         call = f"ILIKE({col_sql}, {pat_sql}, {esc_sql})"
         return f"NOT {call}" if negated else call
+
+    def like_match_precedence(self, *, case_insensitive: bool, negated: bool) -> int:
+        """``NOT ILIKE(..)`` binds as ``NOT`` does, so it is parenthesized under
+        a comparison: ``(NOT ILIKE(..)) IS NULL``, not ``NOT (ILIKE(..) IS NULL)``."""
+        if case_insensitive and negated:
+            return self._PREC_NOT
+        return super().like_match_precedence(case_insensitive=case_insensitive, negated=negated)
 
     def _render_concat(self, args: list[Expr]) -> str:
         """Dremio's ``CONCAT`` ignores NULL arguments, where the catalog says
