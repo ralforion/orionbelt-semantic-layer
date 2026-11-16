@@ -509,6 +509,10 @@ class MySQLDialect(Dialect):
         ``SIGNED`` is MySQL's own reading of a boolean, which has no distinct
         type there and already renders as 1/0 through every other path.
         """
+        if self._is_fractional_timestamp_literal(inner, type_name):
+            # DATETIME holds whole seconds and rounds '00:00:00.9' up to the
+            # next one; DATETIME(6) keeps the microseconds.
+            return f"CAST({self.compile_expr(inner)} AS DATETIME(6))"
         resolved = self._resolve_type_name(type_name)
         match = _VARCHAR_RE.match(resolved)
         if match is not None:

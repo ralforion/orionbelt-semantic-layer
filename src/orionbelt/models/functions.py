@@ -845,6 +845,11 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             # example quietly avoided: Databricks multiplies it by three for a
             # quarter, and rendered ``1 + 1 * 3`` until this example existed.
             FunctionExample("date_add('quarter', 1 + 1, DATE '2026-01-01')", "2026-07-01"),
+            # BigQuery wrote a week as ISOWEEK, which is no interval part there.
+            FunctionExample("date_add('week', 2, DATE '2026-08-01')", "2026-08-15"),
+            # A computed count: Dremio's div was a DECIMAL, which its
+            # TIMESTAMPADD refuses as an amount.
+            FunctionExample("date_add('day', div(7, 2), DATE '2026-08-01')", "2026-08-04"),
         ),
         unit_argument=0,
     ),
@@ -879,6 +884,26 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             # Quarter had no example while three engines disagreed about the
             # calendar grains, so nothing pinned it (#328).
             FunctionExample("date_diff('quarter', DATE '2026-03-31', DATE '2026-04-01')", 1),
+            # On a timestamp: one midnight and one hour mark crossed, though
+            # neither a whole day nor a whole hour has passed (Databricks
+            # answered 0 for both until its ends were truncated too).
+            FunctionExample(
+                "date_diff('day', TIMESTAMP '2026-01-31 23:00:00',"
+                " TIMESTAMP '2026-02-01 01:00:00')",
+                1,
+            ),
+            FunctionExample(
+                "date_diff('hour', TIMESTAMP '2026-01-31 12:30:00',"
+                " TIMESTAMP '2026-01-31 13:10:00')",
+                1,
+            ),
+            # Fractions of a second: MySQL and ClickHouse rounded or dropped
+            # them in a literal, and answered 0.
+            FunctionExample(
+                "date_diff('second', TIMESTAMP '2026-01-01 00:00:00.9',"
+                " TIMESTAMP '2026-01-01 00:00:01.1')",
+                1,
+            ),
         ),
         unit_argument=0,
     ),

@@ -42,10 +42,10 @@ import re
 from collections.abc import Callable, Iterator
 from typing import Any
 
-import sqlglot
 from sqlglot import expressions as exp
 
 from osi_orionbelt._common import _OSI_DIALECT_TO_SQLGLOT
+from osi_orionbelt._ossie_parse import parse_sql
 
 _OSSIE_SQL = "OSSIE_SQL_2026"
 # A dataset-scoped metric may read a column of the dataset's source that no
@@ -315,7 +315,7 @@ def _agg_inlined(
         return dialect
     read = _OSI_DIALECT_TO_SQLGLOT[tag]
     try:
-        tree = sqlglot.parse_one(text, read=read)
+        tree = parse_sql(text, read)
     except Exception:  # noqa: BLE001 - unparseable text is kept; the import preserves it
         return dialect
     changed = False
@@ -328,7 +328,7 @@ def _agg_inlined(
         if not body:
             continue
         try:
-            inlined = sqlglot.parse_one(body, read=read)
+            inlined = parse_sql(body, read)
         except Exception:  # noqa: BLE001 - leave the call; the import preserves the metric
             continue
         replacement = inlined if isinstance(inlined, exp.Func) else exp.Paren(this=inlined)
@@ -373,7 +373,7 @@ def _qualified(
         return dialect
     read = _OSI_DIALECT_TO_SQLGLOT[tag]
     try:
-        tree = sqlglot.parse_one(text, read=read)
+        tree = parse_sql(text, read)
     except Exception:  # noqa: BLE001 - unparseable text is kept; the import preserves it
         return dialect
     table = exp.to_identifier(ds_name)

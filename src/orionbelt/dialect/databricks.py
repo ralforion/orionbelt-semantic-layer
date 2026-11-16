@@ -277,9 +277,9 @@ class DatabricksDialect(Dialect):
             f"+ make_interval({slots[unit]})"
         )
 
-    # Calendar units where Databricks counts whole elapsed units rather than
-    # boundaries crossed, which is what the catalog pins.
-    _BOUNDARY_UNITS = frozenset({"month", "quarter", "year"})
+    # Units where Databricks counts whole elapsed units rather than boundaries
+    # crossed, which is what the catalog pins: all of them, on a timestamp.
+    _BOUNDARY_UNITS = frozenset({"month", "quarter", "year", "day", "hour", "minute", "second"})
 
     def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
         """``date_diff(unit, start, end)``, with the calendar units corrected.
@@ -291,12 +291,13 @@ class DatabricksDialect(Dialect):
             date_diff(MONTH,   2026-01-31, 2026-03-01)  ->  1, catalog says 2
             date_diff(YEAR,    2026-12-31, 2027-01-01)  ->  0, catalog says 1
             date_diff(QUARTER, 2026-03-31, 2026-04-01)  ->  0, catalog says 1
+            date_diff(DAY,     2026-01-31 23:00, 2026-02-01 01:00)  ->  0, catalog says 1
 
         Truncating both ends to the unit first makes the two definitions
         coincide, which is the same correction Postgres applies for the same
-        reason. Day and smaller grains already agree and are left alone, as is
-        the week grain, which the catalog routes through
-        ``_render_week_diff`` rather than here.
+        reason. Day and smaller grains agree on dates, not on timestamps, so
+        they are truncated too. The week grain is not here: the catalog
+        routes it through ``_render_week_diff``.
         """
         left, right = start, end
         if unit.lower() in self._BOUNDARY_UNITS:

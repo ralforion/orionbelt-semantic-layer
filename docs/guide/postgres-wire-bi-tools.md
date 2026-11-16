@@ -50,7 +50,7 @@ Measured against libpq (psycopg 3):
 |---|---|
 | `disable` | connects in the clear |
 | `prefer` | encrypted when a certificate is configured, plaintext when not |
-| `require` | encrypted, certificate not checked |
+| `require` | encrypted, certificate not checked (but see [*certificate verify failed* with `require`](#certificate-verify-failed-with-require)) |
 | `verify-ca` with `sslrootcert` | encrypted, certificate chain checked |
 | `verify-full` | as above, plus the hostname |
 | `verify-ca` with the wrong CA | **refused** |
@@ -60,6 +60,62 @@ as for Flight — see [Connecting via ADBC](adbc.md#from-docker). A
 misconfiguration stops startup rather than silently answering `N` to every
 `SSLRequest`, which would leave clients in the clear against a configuration
 that reads as encrypted.
+
+### Which certificate to deploy
+
+The server holds one certificate; every client that checks it (`verify-ca`,
+`verify-full`) must trust the authority that signed it. Which certificate the
+server gets therefore decides what each BI user has to install:
+
+| Server certificate (`PGWIRE_TLS_CERT`) | What a client needs to check it |
+|---|---|
+| From a public CA (Let's Encrypt, say) for the name clients connect to, `obsl.example.com` | Nothing to install: the CA is in every trust store. libpq 16 and later read the system's with `sslrootcert=system`; otherwise point `sslrootcert` at the CA's root certificate (ISRG Root X1 for Let's Encrypt) |
+| From your organization's CA | That CA's certificate, given as `sslrootcert` |
+| Self-signed | The certificate itself, given as `sslrootcert`, again at every renewal |
+
+A certificate from a public CA is the one that asks nothing of the users, and
+the server does not have to be reachable from the internet to get one: Let's
+Encrypt's DNS challenge proves the name through a DNS record. Whatever its
+source:
+
+- `PGWIRE_TLS_CERT` holds the server's certificate followed by any
+  intermediate ones, and `PGWIRE_TLS_KEY` its private key.
+- The certificate names the host clients type (its Subject Alternative Name),
+  or `verify-full`, which checks the name, refuses it.
+- Clients connect with `sslmode=verify-full`, which checks both the authority
+  and the name. `require` encrypts but would talk to any server that answers.
+
+In a connection string, for libpq clients (`psql`, psycopg, psqlODBC, the
+DuckDB postgres extension):
+
+```text
+host=obsl.example.com port=5432 dbname=<model> user=obsl sslmode=verify-full sslrootcert=/path/ca.crt
+```
+
+The PostgreSQL JDBC driver (DBeaver, DataGrip) takes the same two settings as
+driver properties, `sslmode` and `sslrootcert`. Other tools set them wherever
+their PostgreSQL driver keeps its SSL options.
+
+### *certificate verify failed* with `require`
+
+`sslmode=require` does not check the certificate, except in one case: given no
+`sslrootcert`, libpq reads `~/.postgresql/root.crt`, and when that file exists
+it checks the server against it, as `verify-ca` would. A user who keeps a root
+certificate there for another database (a hosted Postgres with a Let's Encrypt
+certificate, say) then gets
+
+```text
+SSL error: certificate verify failed
+```
+
+from an OrionBelt server whose certificate another authority signed. The file
+is not wrong, it trusts a different authority. Any one of these fixes it:
+
+- Give OrionBelt a certificate the file already trusts, as in the table above.
+- Append OrionBelt's CA to `~/.postgresql/root.crt`; one file holds several
+  certificates, one after another.
+- Name the CA for this connection: `sslrootcert=/path/ca.crt`, best with
+  `sslmode=verify-full`.
 
 ## 1. Common configuration
 
@@ -122,8 +178,11 @@ JDBC driver.
 
 1. **New Connection → PostgreSQL.** Fill in host, port, database
    (the model name), username `obsl`, no password.
-2. **Driver properties → `sslmode = disable`.** OBSL doesn't ship TLS;
-   the default `sslmode=prefer` will silently fall back.
+2. **Driver properties → SSL.** Against a server started without
+   `PGWIRE_TLS_CERT`, `sslmode = disable`: the default `prefer` falls back
+   to plaintext anyway. Against one with a certificate, `sslmode = verify-full`
+   and `sslrootcert` set to the issuing CA's certificate, see
+   [Which certificate to deploy](#which-certificate-to-deploy).
 3. **Test connection.** DBeaver issues a flurry of pg_catalog probes
    immediately. Expect success.
 4. **Schema browser → "main" schema → Tables.** You should see one
@@ -193,7 +252,10 @@ becomes a network round-trip.
 Self-hosted Metabase ships a Postgres connector.
 
 1. **Admin → Databases → Add database → PostgreSQL.**
-2. Fill in the connection details from §1. Leave SSL disabled.
+2. Fill in the connection details from §1. Leave SSL off against a server
+   started without `PGWIRE_TLS_CERT`; against one with a certificate, turn it
+   on and give it the issuing CA's certificate, see
+   [Which certificate to deploy](#which-certificate-to-deploy).
 3. Metabase scans `information_schema` at connect time to populate the
    "Data Reference" panel.
 4. Build a Question via the GUI — the table appears under the

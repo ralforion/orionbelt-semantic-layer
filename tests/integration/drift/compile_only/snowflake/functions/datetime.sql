@@ -21,6 +21,10 @@ DATEADD('month', 1, CAST('2026-01-31' AS DATE));
 DATEADD('year', 1, CAST('2026-08-01' AS DATE));
 --   date_add('quarter', 1 + 1, DATE '2026-01-01') = '2026-07-01'
 DATEADD('quarter', 1 + 1, CAST('2026-01-01' AS DATE));
+--   date_add('week', 2, DATE '2026-08-01') = '2026-08-15'
+DATEADD('week', 2, CAST('2026-08-01' AS DATE));
+--   date_add('day', div(7, 2), DATE '2026-08-01') = '2026-08-04'
+DATEADD('day', TRUNC(7 / NULLIF(2, 0)), CAST('2026-08-01' AS DATE));
 
 -- date_diff(unit, start, end)
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14
@@ -35,6 +39,12 @@ DATEDIFF('month', CAST('2026-01-31' AS DATE), CAST('2026-03-01' AS DATE));
 DATEDIFF('year', CAST('2026-12-31' AS DATE), CAST('2027-01-01' AS DATE));
 --   date_diff('quarter', DATE '2026-03-31', DATE '2026-04-01') = 1
 DATEDIFF('quarter', CAST('2026-03-31' AS DATE), CAST('2026-04-01' AS DATE));
+--   date_diff('day', TIMESTAMP '2026-01-31 23:00:00', TIMESTAMP '2026-02-01 01:00:00') = 1
+DATEDIFF('day', CAST('2026-01-31 23:00:00' AS TIMESTAMP), CAST('2026-02-01 01:00:00' AS TIMESTAMP));
+--   date_diff('hour', TIMESTAMP '2026-01-31 12:30:00', TIMESTAMP '2026-01-31 13:10:00') = 1
+DATEDIFF('hour', CAST('2026-01-31 12:30:00' AS TIMESTAMP), CAST('2026-01-31 13:10:00' AS TIMESTAMP));
+--   date_diff('second', TIMESTAMP '2026-01-01 00:00:00.9', TIMESTAMP '2026-01-01 00:00:01.1') = 1
+DATEDIFF('second', CAST('2026-01-01 00:00:00.9' AS TIMESTAMP), CAST('2026-01-01 00:00:01.1' AS TIMESTAMP));
 
 -- extract(unit, x)
 --   extract('year', DATE '2026-08-15') = 2026

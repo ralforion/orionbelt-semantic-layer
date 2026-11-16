@@ -28,6 +28,7 @@ from sqlglot import expressions as exp
 from sqlglot.tokens import Token, TokenType
 
 from osi_orionbelt._common import _NON_SQL_DIALECTS, _OSI_DIALECT_TO_SQLGLOT
+from osi_orionbelt._ossie_parse import parse_sql
 from osi_orionbelt._portable import case_collisions, quoted_name
 
 # Marks a payload whose field references are column names.
@@ -200,14 +201,14 @@ def _parse(sql: str, read: str | None) -> tuple[str, exp.Expr] | None:
     bracketed), so positions in the parsed text address the original.
     """
     try:
-        return sql, sqlglot.parse_one(sql, read=read)
+        return sql, parse_sql(sql, read)
     except sqlglot.errors.SqlglotError:
         pass
     normalized = re.sub(r"\[([^\]\"]+)\]", r'"\1"', sql)
     if normalized == sql:
         return None
     try:
-        return normalized, sqlglot.parse_one(normalized, read=read)
+        return normalized, parse_sql(normalized, read)
     except sqlglot.errors.SqlglotError:
         return None
 

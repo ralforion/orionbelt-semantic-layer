@@ -21,20 +21,30 @@ DATE_TRUNC('year', CAST('2026-08-15' AS DATE));
 (CAST('2026-08-01' AS DATE) + make_interval(1, 0, 0, 0, 0, 0, 0));
 --   date_add('quarter', 1 + 1, DATE '2026-01-01') = '2026-07-01'
 (CAST('2026-01-01' AS DATE) + make_interval(0, (1 + 1) * 3, 0, 0, 0, 0, 0));
+--   date_add('week', 2, DATE '2026-08-01') = '2026-08-15'
+(CAST('2026-08-01' AS DATE) + make_interval(0, 0, 2, 0, 0, 0, 0));
+--   date_add('day', div(7, 2), DATE '2026-08-01') = '2026-08-04'
+(CAST('2026-08-01' AS DATE) + make_interval(0, 0, 0, (7 div NULLIF(2, 0)), 0, 0, 0));
 
 -- date_diff(unit, start, end)
 --   date_diff('day', DATE '2026-08-01', DATE '2026-08-15') = 14
-date_diff(DAY, CAST('2026-08-01' AS DATE), CAST('2026-08-15' AS DATE));
+date_diff(DAY, DATE_TRUNC('day', CAST('2026-08-01' AS DATE)), DATE_TRUNC('day', CAST('2026-08-15' AS DATE)));
 --   date_diff('week', DATE '2026-08-09', DATE '2026-08-15') = 1
-(date_diff(DAY, DATE_TRUNC('week', CAST('2026-08-09' AS DATE)), DATE_TRUNC('week', CAST('2026-08-15' AS DATE))) div 7);
+(date_diff(DAY, DATE_TRUNC('day', DATE_TRUNC('week', CAST('2026-08-09' AS DATE))), DATE_TRUNC('day', DATE_TRUNC('week', CAST('2026-08-15' AS DATE)))) div 7);
 --   date_diff('day', DATE '2026-08-15', DATE '2026-08-01') = -14
-date_diff(DAY, CAST('2026-08-15' AS DATE), CAST('2026-08-01' AS DATE));
+date_diff(DAY, DATE_TRUNC('day', CAST('2026-08-15' AS DATE)), DATE_TRUNC('day', CAST('2026-08-01' AS DATE)));
 --   date_diff('month', DATE '2026-01-31', DATE '2026-03-01') = 2
 date_diff(MONTH, DATE_TRUNC('month', CAST('2026-01-31' AS DATE)), DATE_TRUNC('month', CAST('2026-03-01' AS DATE)));
 --   date_diff('year', DATE '2026-12-31', DATE '2027-01-01') = 1
 date_diff(YEAR, DATE_TRUNC('year', CAST('2026-12-31' AS DATE)), DATE_TRUNC('year', CAST('2027-01-01' AS DATE)));
 --   date_diff('quarter', DATE '2026-03-31', DATE '2026-04-01') = 1
 date_diff(QUARTER, DATE_TRUNC('quarter', CAST('2026-03-31' AS DATE)), DATE_TRUNC('quarter', CAST('2026-04-01' AS DATE)));
+--   date_diff('day', TIMESTAMP '2026-01-31 23:00:00', TIMESTAMP '2026-02-01 01:00:00') = 1
+date_diff(DAY, DATE_TRUNC('day', CAST('2026-01-31 23:00:00' AS TIMESTAMP_NTZ)), DATE_TRUNC('day', CAST('2026-02-01 01:00:00' AS TIMESTAMP_NTZ)));
+--   date_diff('hour', TIMESTAMP '2026-01-31 12:30:00', TIMESTAMP '2026-01-31 13:10:00') = 1
+date_diff(HOUR, DATE_TRUNC('hour', CAST('2026-01-31 12:30:00' AS TIMESTAMP_NTZ)), DATE_TRUNC('hour', CAST('2026-01-31 13:10:00' AS TIMESTAMP_NTZ)));
+--   date_diff('second', TIMESTAMP '2026-01-01 00:00:00.9', TIMESTAMP '2026-01-01 00:00:01.1') = 1
+date_diff(SECOND, DATE_TRUNC('second', CAST('2026-01-01 00:00:00.9' AS TIMESTAMP_NTZ)), DATE_TRUNC('second', CAST('2026-01-01 00:00:01.1' AS TIMESTAMP_NTZ)));
 
 -- extract(unit, x)
 --   extract('year', DATE '2026-08-15') = 2026
@@ -62,11 +72,11 @@ LAST_DAY(CAST('2026-02-01' AS DATE));
 
 -- current_date()
 --   date_diff('day', current_date(), current_date()) = 0
-date_diff(DAY, CURRENT_DATE(), CURRENT_DATE());
+date_diff(DAY, DATE_TRUNC('day', CURRENT_DATE()), DATE_TRUNC('day', CURRENT_DATE()));
 
 -- current_timestamp()
 --   date_diff('day', current_timestamp(), current_timestamp()) = 0
-date_diff(DAY, CAST(current_timestamp() AS TIMESTAMP_NTZ), CAST(current_timestamp() AS TIMESTAMP_NTZ));
+date_diff(DAY, DATE_TRUNC('day', CAST(current_timestamp() AS TIMESTAMP_NTZ)), DATE_TRUNC('day', CAST(current_timestamp() AS TIMESTAMP_NTZ)));
 
 -- current_time()
 --   CASE WHEN current_time() IS NULL THEN 0 ELSE 1 END = 1

@@ -67,34 +67,233 @@ def obml_cast_type(to: exp.DataType) -> str | None:
     return None
 
 
-# ``EXTRACT(<part> FROM x)`` parts that mean the same on every engine, as the
-# unit of OBML's ``extract(unit, x)``. WEEK, DAYOFWEEK and DAYOFYEAR number
-# differently from engine to engine, and the Ossie spec does not say which it
-# means; OBML's ``extract`` has no MILLISECOND.
 # The clock reads, as OBML's catalog functions.
 _CLOCKS: dict[type[exp.Expr], str] = {
     exp.CurrentDate: "current_date",
     exp.CurrentTimestamp: "current_timestamp",
     exp.CurrentTime: "current_time",
 }
-_EXTRACT_UNITS = {
-    part: part.lower() for part in ("YEAR", "QUARTER", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND")
+# Date parts as the unit of OBML's ``date_add``, ``date_diff`` and ``extract``.
+_DATE_UNITS = {
+    part: part.lower()
+    for part in ("YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE", "SECOND")
 }
+# ``EXTRACT(<part> FROM x)`` parts as the unit of OBML's ``extract(unit, x)``.
+# WEEK is OBML's ISO week, as the Ossie spec's weeks start on Monday
+# (``DATE_TRUNC('week', d)``) and Snowflake's and Databricks' WEEK are ISO's;
+# the ISO names say so outright. DAYOFWEEK is numbered from Sunday on some
+# engines and from Monday on others, and the spec does not say which it means,
+# so it is left as written; OBML's ``extract`` has no MILLISECOND.
+_EXTRACT_UNITS = {
+    **_DATE_UNITS,
+    "WEEKISO": "week",
+    "ISOWEEK": "week",
+    "DAYOFWEEKISO": "day_of_week",
+    "ISODOW": "day_of_week",
+    "DAY_OF_WEEK": "day_of_week",  # OBML's own, as its export writes it
+}
+_DAY_OF_YEAR = frozenset({"DAYOFYEAR", "DOY"})
+# Calls that read one date part, as OBML's ``extract`` unit.
+_PART_CALLS: dict[type[exp.Expr], str] = {
+    exp.Year: "year",
+    exp.Quarter: "quarter",
+    exp.Month: "month",
+    exp.Day: "day",
+    exp.DayOfMonth: "day",
+    exp.Hour: "hour",
+    exp.Minute: "minute",
+    exp.Second: "second",
+    exp.DayOfWeekIso: "day_of_week",
+}
+# A double, as PI() is: a decimal literal times an integer overflowed DuckDB's
+# DECIMAL(18) at 3000 * pi.
+_PI_DIGITS = exp.Literal.number("3.141592653589793")
+_PI = exp.Anonymous(this="cast", expressions=[_PI_DIGITS, exp.Literal.string("double")])
+
+
+def _call(name: str, *args: exp.Expr) -> exp.Expr:
+    return exp.Anonymous(this=name, expressions=list(args))
+
+
+def _grouped(node: exp.Expr) -> exp.Expr:
+    """*node* in parentheses when an operator inside it could bind to a neighbour."""
+    return (
+        exp.Paren(this=node) if isinstance(node, (exp.Binary, exp.Unary, exp.Predicate)) else node
+    )
+
+
+def _date_unit(part: exp.Expr | None) -> exp.Expr | None:
+    """The OBML unit a date part names, as a string literal, or ``None``."""
+    unit = _DATE_UNITS.get(part.name.upper()) if isinstance(part, exp.Var) else None
+    return exp.Literal.string(unit) if unit else None
+
+
+def _date(node: exp.Expr) -> exp.Expr:
+    """A date argument without the cast to DATE Databricks' ``YEAR(d)`` reads it through."""
+    if isinstance(node, exp.TsOrDsToDate) and not node.args.get("format"):
+        return node.this
+    return node
+
+
+def _day_of_year(date: exp.Expr) -> exp.Expr:
+    """``DAYOFYEAR(d)``, 1 to 366, from OBML's catalog: days since January 1, plus one."""
+    # DATE_TRUNC as sqlglot writes one it read, so the Ossie form reads back alike.
+    year = exp.DateTrunc(this=date, unit=exp.Literal.string("YEAR"))
+    since = _call("date_diff", exp.Literal.string("day"), year, date.copy())
+    return exp.Paren(this=exp.Add(this=since, expression=exp.Literal.number(1)))
+
+
+def whole_unit_counts(tree: exp.Expr) -> list[str]:
+    """The unit of each whole-unit count in *tree* that imports as OBML's
+    ``date_diff``: Databricks' ``DATEDIFF(unit, start, end)`` and
+    ``TIMESTAMPDIFF`` count the units elapsed, ``date_diff`` the boundaries
+    crossed, so the imported numbers can differ from the source's."""
+    units = (_date_unit(n.args.get("unit")) for n in tree.find_all(exp.TimestampDiff))
+    return list(dict.fromkeys(unit.name for unit in units if unit is not None))
+
+
+def _catalog_form(n: exp.Expr, rewrite: Callable[[exp.Expr], exp.Expr]) -> exp.Expr | None:
+    """*n*, a call OBML's catalog has under another name or form, as that
+    catalog's call; ``None`` when it has none. Each argument is rewritten here,
+    since a replaced node's children are not visited."""
+
+    def arg(node: exp.Expr) -> exp.Expr:
+        return node.transform(rewrite)
+
+    if isinstance(n, exp.Extract):
+        part = n.name.upper()
+        if part in _DAY_OF_YEAR:
+            return _day_of_year(arg(_date(n.expression)))
+        named = _EXTRACT_UNITS.get(part)
+        return _call("extract", exp.Literal.string(named), arg(n.expression)) if named else None
+    if isinstance(n, exp.DayOfYear):
+        return _day_of_year(arg(_date(n.this)))
+    part_unit = _PART_CALLS.get(type(n))
+    if part_unit is not None:
+        return _call("extract", exp.Literal.string(part_unit), arg(_date(n.this)))
+    if isinstance(n, exp.Anonymous):
+        return _named_call(str(n.this).upper(), list(n.expressions), arg)
+    if isinstance(n, (exp.DateAdd, exp.TimestampAdd)):
+        # Snowflake's and Databricks' DATEADD.
+        unit = _date_unit(n.args.get("unit"))
+        if unit is None or isinstance(n.expression, exp.Interval):
+            return None
+        return _call("date_add", unit, arg(n.expression), arg(n.this))
+    if isinstance(n, exp.DateDiff) and n.args.get("date_part_boundary"):
+        # Snowflake's DATEDIFF counts boundaries, as OBML's does.
+        unit = _date_unit(n.args.get("unit"))
+        return _call("date_diff", unit, arg(n.expression), arg(n.this)) if unit else None
+    if isinstance(n, exp.TimestampDiff):
+        # Databricks' DATEDIFF(unit, start, end) and TIMESTAMPDIFF count whole
+        # units elapsed; imported as OBML's count of boundaries crossed, one
+        # meaning on every engine, with a warning (see whole_unit_counts).
+        unit = _date_unit(n.args.get("unit"))
+        return _call("date_diff", unit, arg(n.expression), arg(n.this)) if unit else None
+    if isinstance(n, exp.Trim) and _trims_spaces(n):
+        position = str(n.args.get("position") or "").upper()
+        name = {"LEADING": "ltrim", "TRAILING": "rtrim"}.get(position, "trim")
+        return _call(name, arg(n.this))
+    if isinstance(n, exp.Nvl2):
+        otherwise = n.args.get("false")
+        return exp.Case(
+            ifs=[
+                exp.If(
+                    this=exp.Not(this=exp.Is(this=arg(n.this), expression=exp.Null())),
+                    true=arg(n.args["true"]),
+                )
+            ],
+            default=arg(otherwise) if otherwise is not None else exp.Null(),
+        )
+    if (
+        isinstance(n, exp.StrPosition)
+        and not n.args.get("position")
+        and not n.args.get("occurrence")
+    ):
+        return _call("position", arg(n.args["substr"]), arg(n.this))
+    if isinstance(n, exp.Contains) and len(n.args) == 2:
+        found = _call("position", arg(n.expression), arg(n.this))
+        return exp.Paren(this=exp.GT(this=found, expression=exp.Literal.number(0)))
+    if isinstance(n, exp.Left):
+        return _call("substring", arg(n.this), exp.Literal.number(1), arg(n.expression))
+    if isinstance(n, exp.Right):
+        # The last k characters start at length - k + 1; all of a shorter string.
+        start = exp.Add(
+            this=exp.Sub(this=_call("length", arg(n.this)), expression=_grouped(arg(n.expression))),
+            expression=exp.Literal.number(1),
+        )
+        return _call("substring", arg(n.this), _call("greatest", start, exp.Literal.number(1)))
+    if isinstance(n, exp.Pi):
+        return _PI.copy()
+    if isinstance(n, (exp.Degrees, exp.Radians)):
+        # In double, as the engines' own DEGREES and RADIANS are: an integer
+        # times 180 overflows, and one times a decimal pi did at 3000.
+        scale = (exp.Literal.number(180), _PI_DIGITS.copy())
+        num, den = scale if isinstance(n, exp.Degrees) else scale[::-1]
+        double = _call("cast", arg(n.this), exp.Literal.string("double"))
+        return exp.Paren(this=exp.Div(this=exp.Mul(this=double, expression=num), expression=den))
+    return None
+
+
+def _trims_spaces(n: exp.Trim) -> bool:
+    """Whether a ``TRIM`` strips spaces, as OBML's ``trim`` does: none named, or ``' '``."""
+    chars = n.expression
+    if chars is None:
+        return True
+    return isinstance(chars, exp.Literal) and chars.is_string and chars.this == " "
+
+
+def _named_call(
+    name: str, args: list[exp.Expr], arg: Callable[[exp.Expr], exp.Expr]
+) -> exp.Expr | None:
+    """A call sqlglot's default grammar does not know, as OBML's catalog has it."""
+    if name == "DATEDIFF" and len(args) == 2:
+        # DATEDIFF(end, start), Databricks' and MySQL's: the days between the
+        # two dates, which are the day boundaries crossed.
+        return _call("date_diff", exp.Literal.string("day"), arg(args[1]), arg(args[0]))
+    if name in ("DATEADD", "DATEDIFF") and len(args) == 3:
+        # Ossie's own (``_ossie_parse``): the part first, then the amount and
+        # the date, or the start and the end. Ossie's DATEDIFF counts
+        # boundaries, as Tableau's and DAX's, which its spec maps it to, do.
+        unit = _date_unit(args[0])
+        target = "date_add" if name == "DATEADD" else "date_diff"
+        return _call(target, unit, arg(args[1]), arg(args[2])) if unit else None
+    if name == "DATE_PART" and len(args) == 2 and isinstance(args[0], exp.Var):
+        part = args[0].name.upper()
+        if part in _DAY_OF_YEAR:
+            return _day_of_year(arg(args[1]))
+        named = _EXTRACT_UNITS.get(part)
+        return _call("extract", exp.Literal.string(named), arg(args[1])) if named else None
+    if name == "IFF" and len(args) == 3:
+        return exp.Case(ifs=[exp.If(this=arg(args[0]), true=arg(args[1]))], default=arg(args[2]))
+    if name == "ZEROIFNULL" and len(args) == 1:
+        return _call("coalesce", arg(args[0]), exp.Literal.number(0))
+    if name == "NULLIFZERO" and len(args) == 1:
+        return _call("nullif", arg(args[0]), exp.Literal.number(0))
+    return None
 
 
 def render_obml(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> str:
-    """Render *node* as OBML text, each column written by *column*.
+    """Render *node* as OBML text, each column written by *column* (see :func:`obml_tree`)."""
+    return obml_tree(node, column).sql()
+
+
+def obml_tree(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> exp.Expr:
+    """*node* rewritten into the forms OBML reads, each column written by *column*.
 
     A SQL ``CAST(x AS DOUBLE)`` becomes OBML's ``cast(x, 'double')``, the only
     cast form OBML parses; a target it has no type for raises
-    :class:`NotRepresentableError`. ``EXTRACT(YEAR FROM x)`` becomes OBML's
-    ``extract('year', x)`` for a part in ``_EXTRACT_UNITS``; any other part is
-    left as written, which :func:`obml_unreadable_text` refuses.
-    ``CURRENT_DATE``, ``CURRENT_TIMESTAMP`` and ``CURRENT_TIME`` become OBML's
-    ``current_date()``, ``current_timestamp()`` and ``current_time()``, the
-    session's clock as the source's is, unless the model sets a
-    ``queryTimezone``; bare, OBML reads each word as a string. One with an
-    argument (a precision, a zone) raises: OBML's take none.
+    :class:`NotRepresentableError`. ``CURRENT_DATE``, ``CURRENT_TIMESTAMP`` and
+    ``CURRENT_TIME`` become OBML's ``current_date()``, ``current_timestamp()``
+    and ``current_time()``, the session's clock as the source's is, unless the
+    model sets a ``queryTimezone``; bare, OBML reads each word as a string. One
+    with an argument (a precision, a zone) raises: OBML's take none.
+
+    A call OBML's catalog has under another name or form becomes that call
+    (:func:`_catalog_form`): ``EXTRACT(YEAR FROM x)``, ``YEAR(x)`` and
+    ``DATE_PART('year', x)`` OBML's ``extract('year', x)``, ``DATEADD`` and
+    ``DATEDIFF`` its ``date_add`` and ``date_diff``, ``TRIM(BOTH ' ' FROM s)``
+    its ``trim(s)``, and so on. Any other is left as written, which
+    :func:`obml_unreadable_text` refuses where OBML does.
     """
 
     def rewrite(n: exp.Expr) -> exp.Expr:
@@ -119,14 +318,10 @@ def render_obml(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> str
             if any(n.args.values()):
                 raise NotRepresentableError(f"{n.sql()}: OBML's {clock}() takes no argument")
             return exp.Anonymous(this=clock, expressions=[])
-        if isinstance(n, exp.Extract) and n.name.upper() in _EXTRACT_UNITS:
-            unit = exp.Literal.string(_EXTRACT_UNITS[n.name.upper()])
-            return exp.Anonymous(
-                this="extract", expressions=[unit, n.expression.transform(rewrite)]
-            )
-        return n
+        catalog = _catalog_form(n, rewrite)
+        return n if catalog is None else catalog
 
-    return node.transform(rewrite).sql()
+    return node.transform(rewrite)
 
 
 # The nodes OBML's expression grammar reads, rendered by sqlglot as OBML parses
@@ -203,7 +398,11 @@ def _describe(node: exp.Expr) -> str:
 
 
 def unreadable(tree: exp.Expr) -> str | None:
-    """Why OBML cannot read *tree* as a computed column, or ``None`` when it can."""
+    """Why OBML cannot read *tree* as a computed column, or ``None`` when it can.
+
+    *tree* is as :func:`obml_tree` rewrote it, so a call OBML's catalog has
+    under another name or form (``YEAR(d)``) counts as that call.
+    """
     for node in tree.walk():
         if not (isinstance(node, _FUNCTIONS) or _in_grammar(node)):
             return _describe(node)
