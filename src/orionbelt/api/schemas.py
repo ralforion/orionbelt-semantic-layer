@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -358,6 +358,74 @@ class DataSourceListResponse(BaseModel):
     """Response for GET /datasources."""
 
     datasources: list[DataSourceInfo] = Field(default_factory=list)
+
+
+class DataSourceSchemasResponse(BaseModel):
+    """Response for GET /datasources/{name}/schemas."""
+
+    datasource: str
+    dialect: str
+    schemas: list[str] = Field(
+        default_factory=list, description="User schemas, without the engine's own."
+    )
+
+
+class InspectedColumn(BaseModel):
+    """A column as the database declares it."""
+
+    model_config = {"populate_by_name": True}
+
+    name: str
+    data_type: str = Field(alias="dataType", description="The engine's own type name.")
+    ordinal: int = Field(description="Position in the table, counted from 1.")
+    nullable: bool | None = Field(default=None, description="None where the catalog does not say.")
+    comment: str | None = None
+    primary_key: bool = Field(default=False, alias="primaryKey")
+
+
+class InspectedForeignKey(BaseModel):
+    """A foreign key; ``columns`` pair with ``referredColumns`` by position."""
+
+    model_config = {"populate_by_name": True}
+
+    name: str | None = None
+    columns: list[str]
+    referred_schema: str | None = Field(default=None, alias="referredSchema")
+    referred_table: str = Field(alias="referredTable")
+    referred_columns: list[str] = Field(alias="referredColumns")
+
+
+class InspectedTable(BaseModel):
+    """A table or view and what the catalog knows of it."""
+
+    model_config = {"populate_by_name": True}
+
+    name: str
+    kind: Literal["table", "view", "materialized_view"]
+    comment: str | None = None
+    columns: list[InspectedColumn] = Field(default_factory=list)
+    primary_key: list[str] = Field(default_factory=list, alias="primaryKey")
+    foreign_keys: list[InspectedForeignKey] = Field(default_factory=list, alias="foreignKeys")
+    view_definition: str | None = Field(
+        default=None,
+        alias="viewDefinition",
+        description="The view's SQL; only with ?view_definitions=true.",
+    )
+
+
+class SchemaInspectionResponse(BaseModel):
+    """Response for GET /datasources/{name}/schemas/{schema}/tables."""
+
+    model_config = {"populate_by_name": True}
+
+    datasource: str
+    dialect: str
+    schema_name: str = Field(alias="schema")
+    tables: list[InspectedTable] = Field(default_factory=list)
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Catalog facts (keys, view bodies) that could not be read.",
+    )
 
 
 class HealthResponse(BaseModel):
