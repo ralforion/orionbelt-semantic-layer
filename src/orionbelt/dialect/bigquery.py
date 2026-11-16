@@ -347,6 +347,15 @@ class BigQueryDialect(Dialect):
         """
         return f"CURRENT_DATE({self._quote_zone(zone)})"
 
+    def _render_session_timestamp(self) -> str:
+        """BigQuery: ``CURRENT_DATETIME()``, a ``DATETIME`` (OBML's ``timestamp``)
+        in the script's ``@@time_zone``, UTC unless a script sets it."""
+        return "CURRENT_DATETIME()"
+
+    def _render_now_in_zone(self, zone: str) -> str:
+        """BigQuery reads the clock in a zone itself, as ``CURRENT_DATE(zone)``."""
+        return f"CURRENT_DATETIME({self._quote_zone(zone)})"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """BigQuery has no ``AT TIME ZONE`` outside EXTRACT: ``DATETIME(x, zone)``
         reads a TIMESTAMP as wall clock in that zone, which is the same contract

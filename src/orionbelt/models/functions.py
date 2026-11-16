@@ -940,11 +940,7 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
         semantics=(
             "Counted in ``queryTimezone`` as its timestamp columns are read, so a "
             "filter on today compares one zone's dates. Written with parentheses, "
-            "which Postgres rejects, so it renders as the bare keyword there. "
-            "``current_timestamp`` is deliberately not in the "
-            "catalog: the engines disagree on whether it carries a time zone, and "
-            "pinning that needs a stated stance on session time zones rather than a "
-            "rewrite."
+            "which Postgres rejects, so it renders as the bare keyword there."
         ),
         examples=(
             # Today has no constant value, so the example pins it by
@@ -953,6 +949,53 @@ _DATETIME_FUNCTIONS: tuple[FunctionSpec, ...] = (
             # an example is for.
             FunctionExample("date_diff('day', current_date(), current_date())", 0),
         ),
+    ),
+    FunctionSpec(
+        name="current_timestamp",
+        signature="current_timestamp()",
+        group=GROUP_DATETIME,
+        min_args=0,
+        max_args=0,
+        result_type="timestamp",
+        summary=(
+            "The date and time now, as a wall clock without a time zone: in the "
+            "model's ``queryTimezone`` where it sets one, else per the database "
+            "session."
+        ),
+        semantics=(
+            "A ``timestamp``, the type timestamp columns are read as in "
+            "``queryTimezone``, so ``{[Orders].[Placed At]} <= current_timestamp()`` "
+            "compares one zone's clock, as ``current_date()`` compares one zone's "
+            "dates. The engines disagree on what their own ``CURRENT_TIMESTAMP`` is: "
+            "an instant on Postgres, DuckDB, Snowflake, BigQuery and Databricks, the "
+            "session's wall clock on MySQL, UTC's on Dremio. Each renders the wall "
+            "clock itself: the current instant read in the zone, or the session's "
+            "local clock (``LOCALTIMESTAMP``, BigQuery's ``CURRENT_DATETIME()``, "
+            "MySQL's ``NOW(6)``) when the model sets no zone."
+        ),
+        examples=(
+            # No constant value, so pinned by composition, as current_date().
+            FunctionExample("date_diff('day', current_timestamp(), current_timestamp())", 0),
+        ),
+    ),
+    FunctionSpec(
+        name="current_time",
+        signature="current_time()",
+        group=GROUP_DATETIME,
+        min_args=0,
+        max_args=0,
+        result_type="time",
+        summary=(
+            "The time of day now: the clock of ``current_timestamp()``, in the "
+            "model's ``queryTimezone`` where it sets one, else per the database "
+            "session."
+        ),
+        semantics=(
+            "The time part of ``current_timestamp()``. ClickHouse and Databricks "
+            "have no time type, and OBML's ``time`` is text there, so it is "
+            "``'HH:MM:SS'`` text, to the second, on those two."
+        ),
+        examples=(FunctionExample("CASE WHEN current_time() IS NULL THEN 0 ELSE 1 END", 1),),
     ),
 )
 

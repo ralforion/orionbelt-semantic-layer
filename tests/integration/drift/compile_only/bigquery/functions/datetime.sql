@@ -63,3 +63,11 @@ LAST_DAY(CAST('2026-02-01' AS DATE));
 -- current_date()
 --   date_diff('day', current_date(), current_date()) = 0
 DATE_DIFF(CAST(CURRENT_DATE() AS DATETIME), CAST(CURRENT_DATE() AS DATETIME), DAY);
+
+-- current_timestamp()
+--   date_diff('day', current_timestamp(), current_timestamp()) = 0
+DATE_DIFF(CAST(CURRENT_DATETIME() AS DATETIME), CAST(CURRENT_DATETIME() AS DATETIME), DAY);
+
+-- current_time()
+--   CASE WHEN current_time() IS NULL THEN 0 ELSE 1 END = 1
+CASE WHEN CAST(CURRENT_DATETIME() AS TIME) IS NULL THEN 0 ELSE 1 END;
