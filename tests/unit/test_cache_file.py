@@ -152,6 +152,7 @@ class TestInvalidateTable:
         assert await cache.get("a") is None
         assert await cache.get("b") is None
         assert await cache.get("c") is not None
+        assert (await cache.stats()).heartbeat_invalidations_total == 2
 
     async def test_invalidate_no_match_returns_zero(self, cache: FileCache) -> None:
         n = await cache.invalidate_table("NEVER.SEEN.TABLE")
@@ -230,7 +231,7 @@ class TestSweep:
 class TestDeferredCounters:
     """Hit/miss counters accumulate in memory and flush lazily (no per-hit write)."""
 
-    async def test_hits_misses_accumulate_then_flush_into_stats(self, cache: FileCache) -> None:
+    async def test_hits_misses_accumulate_then_flush(self, cache: FileCache) -> None:
         await cache.set(
             "k1",
             b"payload",
@@ -250,14 +251,81 @@ class TestDeferredCounters:
         assert cache._pending_counters.get("hits") == 3
         assert cache._pending_counters.get("misses") == 2
 
-        # stats() flushes the pending counters and reports the merged totals.
+        # stats() reports the totals without writing them.
         stats = await cache.stats()
         assert stats.hit_count_total == 3
         assert stats.miss_count_total == 2
         assert stats.hit_rate == pytest.approx(0.6)
-        # Drained after flush — no double counting on the next read.
+        assert cache._pending_counters.get("hits") == 3
+
+        # A sweep flushes them into DuckDB; the totals stay, not counted twice.
+        await cache.sweep_once()
         assert cache._pending_counters.get("hits", 0) == 0
         assert cache._pending_counters.get("misses", 0) == 0
+        stored = dict(cache._meta.execute("SELECT name, value FROM cache_counters").fetchall())
+        assert (stored["hits"], stored["misses"]) == (3, 2)
+        stats = await cache.stats()
+        assert (stats.hit_count_total, stats.miss_count_total) == (3, 2)
+
+    async def test_totals_survive_a_reopen(self, tmp_path: Path) -> None:
+        def open_cache() -> FileCache:
+            return FileCache(
+                cache_dir=str(tmp_path),
+                max_value_bytes=1024,
+                max_disk_bytes=1024 * 1024,
+                max_ttl_seconds=3600,
+                sweep_interval_seconds=60,
+            )
+
+        first = open_cache()
+        assert await first.get("absent") is None
+        await first.shutdown()  # flushes
+        second = open_cache()
+        try:
+            assert (await second.stats()).miss_count_total == 1
+        finally:
+            await second.shutdown()
+
+
+class TestStatsOnAnyThread:
+    """stats() runs on any thread without the lock the other operations hold."""
+
+    def test_stats_read_while_another_thread_holds_the_lock(self, tmp_path: Path) -> None:
+        cache = FileCache(
+            cache_dir=str(tmp_path),
+            max_value_bytes=1024,
+            max_disk_bytes=1024 * 1024,
+            max_ttl_seconds=3600,
+            sweep_interval_seconds=60,
+        )
+        asyncio.run(
+            cache.set(
+                "k1",
+                b"payload",
+                ttl_seconds=300,
+                physical_tables=["t"],
+                datasource="s",
+                model_id="m",
+                query_hash="h",
+                dialect="d",
+                row_count=1,
+            )
+        )
+        assert asyncio.run(cache.get("k1")) is not None
+        found: list[object] = []
+        # As a slow operation on another thread would: the metrics read
+        # stats() from their scrape thread while the API works on the cache.
+        with cache._lock:
+            reader = threading.Thread(target=lambda: found.append(asyncio.run(cache.stats())))
+            reader.start()
+            reader.join(timeout=5)
+            assert not reader.is_alive(), "stats() waited for the cache's lock"
+        stats = found[0]
+        assert getattr(stats, "entry_count", None) == 1
+        assert getattr(stats, "hit_count_total", None) == 1
+        asyncio.run(cache.shutdown())
+        # Shut down, it reads nothing and still answers.
+        assert asyncio.run(cache.stats()).entry_count == 0
 
 
 class TestWarmup:

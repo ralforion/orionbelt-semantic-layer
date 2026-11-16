@@ -26,7 +26,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode. Each file is loaded into its own named protected session (addressing name = OBML `name:` field or filename stem). A single path is fine. |
 | `API_BASE_URL`             | —           | API URL for standalone UI                 |
 | `ROOT_PATH`                | —           | ASGI root path for UI behind LB           |
-| `METRICS_ENABLED`          | `false`     | Serve Prometheus metrics at `/metrics` on a port of their own ([metrics](../guide/duckdb-workers.md#metrics)) |
+| `METRICS_ENABLED`          | `false`     | Serve Prometheus metrics at `/metrics` on a port of their own ([metrics](metrics.md)) |
 | `METRICS_HOST`             | `0.0.0.0`   | Metrics bind address                      |
 | `METRICS_PORT`             | `9090`      | Metrics port                              |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution       |

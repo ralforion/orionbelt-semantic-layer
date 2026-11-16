@@ -126,41 +126,12 @@ SQL's own connection only.
 
 ## Metrics
 
-OrionBelt serves Prometheus metrics when `METRICS_ENABLED=true`, on a port of
-its own, not the API's:
-
-| Setting | Default | What it sets |
-|---|---|---|
-| `METRICS_ENABLED` | `false` | Serve `/metrics` |
-| `METRICS_HOST` | `0.0.0.0` | The address it listens on |
-| `METRICS_PORT` | `9090` | Its port |
-
-For the pools, read at each scrape, labelled by `source` and `worker` (the
-`host:port` the source lists):
-
-| Metric | Type | What it counts |
-|---|---|---|
-| `obsl_duckdb_worker_up` | gauge | 1 while the worker takes queries, 0 while the pool keeps it out |
-| `obsl_duckdb_worker_connections` | gauge | Connections by `state`: `in_use` (held by a query), `idle`, `opening` (a connect given up on that has not come back) |
-| `obsl_duckdb_worker_statements_total` | counter | Statements the worker ran, a session's setup (`DUCKDB_CONNECTION_SQL`) as one, those that failed or that the pool ended included. One it refused before running counts as a retry |
-| `obsl_duckdb_worker_retries_total` | counter | Queries run again because the worker did not start them, by `reason`: `unreachable`, `connect_timeout`, `session_not_found`, `rate_limited`, `server_draining` |
-| `obsl_duckdb_worker_statements_ended_total` | counter | Statements the pool ended, by `reason`: `deadline` or `unresponsive` |
-
-The process's own metrics come with them: CPU, memory and open files where the
-system reports them, the Python version, and garbage collection. Each worker
-serves Hardcharger's own metrics too, on its port 9091
-(`HARDCHARGER_ENABLE_METRICS`), with its queue and statements. A scrape
-configuration for both:
-
-```yaml
-scrape_configs:
-  - job_name: obsl
-    static_configs:
-      - targets: ["obsl:9090"]
-  - job_name: hardcharger
-    static_configs:
-      - targets: ["hardcharger-1:9091", "hardcharger-2:9091"]
-```
+With `METRICS_ENABLED=true`, OrionBelt's Prometheus metrics show each pool:
+per source and worker, whether it takes queries, its connections, the
+statements it ran, the queries run again and why, and the statements the pool
+ended. The [Metrics](../reference/metrics.md#duckdb-worker-pools)
+reference lists them, with a scrape configuration for them and for the
+workers' own (port 9091).
 
 ## In Docker Compose
 
