@@ -1815,7 +1815,7 @@ class Dialect(ABC):
         value (a negative infinity for a numeric ``greatest``) would not be.
         """
         guards = " OR ".join(
-            f"{self.compile_expr(a, _parent_prec=self._PREC_CMP)} IS NULL" for a in args
+            f"{self.compile_expr(a, _parent_prec=self._PREC_CMP + 1)} IS NULL" for a in args
         )
         return f"CASE WHEN {guards} THEN NULL ELSE {inner_sql} END"
 
@@ -2462,7 +2462,7 @@ class Dialect(ABC):
             return cls._PREC_OR
         if up == "AND":
             return cls._PREC_AND
-        if up in ("=", "<>", "!=", "<", "<=", ">", ">=", "LIKE", "NOT LIKE"):
+        if up in cls._NON_ASSOCIATIVE_OPS:
             return cls._PREC_CMP
         if up in ("+", "-", "||"):
             return cls._PREC_ADD
@@ -2482,7 +2482,19 @@ class Dialect(ABC):
     # differs from ``a - b - c``, so the right operand is wrapped at
     # equal precedence — see the left-associative branch below.
     _NON_ASSOCIATIVE_OPS: frozenset[str] = frozenset(
-        {"=", "<>", "!=", "<", "<=", ">", ">=", "LIKE", "NOT LIKE"}
+        {
+            "=",
+            "<>",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "LIKE",
+            "NOT LIKE",
+            "IS DISTINCT FROM",
+            "IS NOT DISTINCT FROM",
+        }
     )
 
     def _compile_binary_op(self, left: Expr, op: str, right: Expr) -> str:
@@ -2992,15 +3004,17 @@ class Dialect(ABC):
                 sql = f"{op} {self.compile_expr(operand, _parent_prec=self_prec)}"
                 return self._wrap_if_lower(sql, self_prec, _parent_prec)
             case IsNull(expr=inner, negated=False):
-                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP)} IS NULL"
+                # The operand one level tighter, as a comparison's are: SQL
+                # does not chain ``a IS DISTINCT FROM b IS NULL``.
+                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP + 1)} IS NULL"
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case IsNull(expr=inner, negated=True):
-                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP)} IS NOT NULL"
+                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP + 1)} IS NOT NULL"
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case InList(expr=inner, values=values, negated=negated):
                 vals = ", ".join(self.compile_expr(v) for v in values)
                 op = "NOT IN" if negated else "IN"
-                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP)} {op} ({vals})"
+                sql = f"{self.compile_expr(inner, _parent_prec=self._PREC_CMP + 1)} {op} ({vals})"
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case CaseExpr(when_clauses=whens, else_clause=else_):
                 parts = ["CASE"]
@@ -3036,9 +3050,11 @@ class Dialect(ABC):
                 return self.random_fraction_sql()
             case Between(expr=inner, low=low, high=high, negated=negated):
                 op = "NOT BETWEEN" if negated else "BETWEEN"
-                inner_sql = self.compile_expr(inner, _parent_prec=self._PREC_CMP)
-                low_sql = self.compile_expr(low, _parent_prec=self._PREC_CMP)
-                high_sql = self.compile_expr(high, _parent_prec=self._PREC_CMP)
+                # All three one level tighter: a comparison bound would
+                # otherwise read as part of the BETWEEN.
+                inner_sql = self.compile_expr(inner, _parent_prec=self._PREC_CMP + 1)
+                low_sql = self.compile_expr(low, _parent_prec=self._PREC_CMP + 1)
+                high_sql = self.compile_expr(high, _parent_prec=self._PREC_CMP + 1)
                 sql = f"{inner_sql} {op} {low_sql} AND {high_sql}"
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case InTimeZone(expr=inner, zone=zone, from_zone=from_zone):
@@ -3050,7 +3066,8 @@ class Dialect(ABC):
                     sql = self.compile_ilike_match(column, pattern, negated=negated)
                 else:
                     sql = self.compile_like_match(column, pattern, negated=negated)
-                return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
+                prec = self.like_match_precedence(case_insensitive=ci, negated=negated)
+                return self._wrap_if_lower(sql, prec, _parent_prec)
             case RelativeDateRange(
                 column=column,
                 unit=unit,
@@ -3118,6 +3135,11 @@ class Dialect(ABC):
         pat_sql = self.compile_expr(Literal.string(pattern))
         op = "NOT LIKE" if negated else "LIKE"
         return f"{col_sql} {op} {pat_sql}{self._like_escape_sql()}"
+
+    def like_match_precedence(self, *, case_insensitive: bool, negated: bool) -> int:
+        """How tightly a rendered ``[NOT] [I]LIKE`` binds: as a comparison,
+        unless the dialect writes it as a negated call (Dremio)."""
+        return self._PREC_CMP
 
     def compile_ilike_match(self, column: Expr, pattern: str, *, negated: bool) -> str:
         """Compile a case-insensitive LIKE. Default is the ``ILIKE`` operator.
