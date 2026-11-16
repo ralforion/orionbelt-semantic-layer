@@ -77,7 +77,7 @@ DB_LAKE_DUCKDB_CONNECTION_SQL=SET search_path = 'lake.sales'
 | `DB_<NAME>_HARDCHARGER_WORKERS` | | The workers, comma-separated: `hardcharger://host[:port]`. The port is 31337 unless given. TLS is on unless the address ends in `?tls=false` |
 | `DB_<NAME>_HARDCHARGER_USER`, `DB_<NAME>_HARDCHARGER_PASSWORD` | | The user the workers' init SQL creates for the source |
 | `DB_<NAME>_HARDCHARGER_TLS_ROOT_CERTS` | the system's | A PEM file with the CA that signed the workers' certificates |
-| `DB_<NAME>_HARDCHARGER_CONNECTIONS_PER_WORKER` | `4` | Connections of one worker in use at once. Keep it within the worker's statement concurrency plus its queue |
+| `DB_<NAME>_HARDCHARGER_CONNECTIONS_PER_WORKER` | `4` | Connections of one worker this source uses at once, in each OrionBelt process. Every source and process using a worker adds its own: keep their sum within the worker's statement concurrency plus its queue |
 | `DB_<NAME>_HARDCHARGER_QUERY_TIMEOUT_SECONDS` | `120` | Each statement's timeout, set on the worker |
 | `DB_<NAME>_HARDCHARGER_HEALTH_INTERVAL_SECONDS` | `5` | How often each worker's health is checked |
 | `DB_<NAME>_HARDCHARGER_CONNECT_TIMEOUT_SECONDS` | `10` | How long opening a connection to a worker may take |
@@ -164,11 +164,12 @@ SQL's own connection only.
 | Workers | 2 at least | One can stop or fail and the others carry on |
 | CPUs per worker | 2 or more | One query runs on its worker's threads only. Fewer, larger workers answer a single query sooner; on the same CPUs, 1, 2 or 4 workers answered about as many queries a second |
 | A worker's memory | `HARDCHARGER_MEMORY_LIMIT` about 150 MB for each statement it runs at once, and the container's limit above it | 117 to 155 MB per statement held for the queries measured; 33 to 50 MB failed with DuckDB out of memory |
-| Statements at once | The worker's `HARDCHARGER_MAX_CONCURRENT_STATEMENTS` equal to `DB_<NAME>_HARDCHARGER_CONNECTIONS_PER_WORKER` | No statement then waits in a worker's queue or is refused |
-| The source's cap | `DB_<NAME>_MAX_CONNECTIONS` equal to the workers times their connections | It caps a source on workers too: with its default of 10, a source on 4 workers with 4 connections each runs 10 queries at once, not 16 |
+| Statements at once | The worker's `HARDCHARGER_MAX_CONCURRENT_STATEMENTS` equal to the sum of `DB_<NAME>_HARDCHARGER_CONNECTIONS_PER_WORKER` over everything that uses the worker: each source on it, in each OrionBelt process | No statement then waits in a worker's queue or is refused. Each source has its own connections in each process, and none of them knows the others': two processes with 4 each send 8 statements to a worker that runs 4, and the other 4 wait |
+| The source's cap | `DB_<NAME>_MAX_CONNECTIONS` equal to the workers times their connections | It caps a source on workers too, in each process: with its default of 10, a source on 4 workers with 4 connections each runs 10 queries at once, not 16 |
 | OrionBelt with workers | 1 GB and 2 CPUs | Measured: at most 0.53 GB, and about one CPU under full load |
 
-For example, four workers with 2 CPUs each:
+For example, four workers with 2 CPUs each, for one source in one OrionBelt
+process:
 
 ```bash
 # The workers (deploy/compose/.env)
@@ -181,6 +182,11 @@ HC_CONCURRENCY=4
 DB_LAKE_HARDCHARGER_CONNECTIONS_PER_WORKER=4
 DB_LAKE_MAX_CONNECTIONS=16
 ```
+
+With two OrionBelt processes, or a second source on the same workers, each
+worker serves two of these allowances. Either halve them (`2` connections per
+worker and a cap of `8`), or let each worker run 8 statements at once, with the
+memory for 8 (`HC_DUCKDB_MEMORY=1240MB` and `HC_MEMORY=2g`).
 
 ## Metrics
 
