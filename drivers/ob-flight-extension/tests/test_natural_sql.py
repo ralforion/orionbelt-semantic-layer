@@ -379,6 +379,93 @@ class TestPrepareSQL:
         assert mode == "catalog"
 
 
+class TestCompiledSQLRunsAsCompiled:
+    """Flight runs the SQL the compiler wrote, as REST does.
+
+    It used to replace each quoted data object name in the compiled SQL with
+    the object's code, unquoted: a file path became ``AS /data/orders.parquet``
+    and a result column named like a data object lost its name.
+    """
+
+    @staticmethod
+    def _model(yaml: str) -> Any:
+        raw, source_map = TrackedLoader().load_string(yaml)
+        m, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        return m
+
+    def test_a_data_object_reading_a_file(self, tmp_path: Any) -> None:
+        import duckdb
+
+        path = tmp_path / "orders.parquet"
+        duckdb.sql(
+            "COPY (SELECT * FROM (VALUES (1, 'c0', 1.0), (2, 'c0', 2.0), (3, 'c1', 7.0)) "
+            f"t(id, cust, amount)) TO '{path}' (FORMAT parquet)"
+        )
+        model = self._model(
+            f"""\
+version: 1.0
+dataObjects:
+  Orders:
+    code: {path}
+    schema: ""
+    columns:
+      Order Id: {{code: id, abstractType: int}}
+      Order Customer: {{code: cust, abstractType: string}}
+      Amount: {{code: amount, abstractType: float}}
+dimensions:
+  Customer: {{dataObject: Orders, column: Order Customer, resultType: string}}
+measures:
+  Revenue:
+    columns: [{{dataObject: Orders, column: Amount}}]
+    resultType: float
+    aggregation: sum
+"""
+        )
+        server = _make_server(model)
+        sql, *_ = server._prepare_sql('SELECT "Customer", "Revenue" FROM sample_model')
+
+        assert 'AS "Orders"' in sql
+        rows = duckdb.connect().execute(sql + " ORDER BY 1").fetchall()
+        assert rows == [("c0", 3.0), ("c1", 7.0)]
+
+    def test_a_result_column_named_like_a_data_object(self) -> None:
+        import duckdb
+
+        model = self._model(
+            """\
+version: 1.0
+dataObjects:
+  Orders:
+    code: orders
+    schema: main
+    columns:
+      Order Id: {code: id, abstractType: int}
+      Order Customer: {code: cust, abstractType: string}
+dimensions:
+  Customer: {dataObject: Orders, column: Order Customer, resultType: string}
+measures:
+  Orders:
+    columns: [{dataObject: Orders, column: Order Id}]
+    resultType: int
+    aggregation: count
+"""
+        )
+        server = _make_server(model)
+        sql, _dialect, _m, schema, *_ = server._prepare_sql(
+            'SELECT "Customer", "Orders" FROM sample_model'
+        )
+
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE orders AS "
+            "SELECT * FROM (VALUES (1, 'c0'), (2, 'c0'), (3, 'c1')) t(id, cust)"
+        )
+        result = con.execute(sql + " ORDER BY 1")
+        assert [d[0] for d in result.description] == [f.name for f in schema]
+        assert result.fetchall() == [("c0", 2), ("c1", 1)]
+
+
 class TestWriteOperationBlocking:
     """v2.4.0+: DDL / DML / TCL never reach the warehouse."""
 

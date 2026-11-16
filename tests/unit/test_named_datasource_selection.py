@@ -599,7 +599,6 @@ class TestFlight:
             REGION,
             types.SimpleNamespace(sql='SELECT region AS "Region" FROM shop', physical_tables=[]),
         )
-        server._rewrite_table_names.side_effect = lambda sql, m: sql
         server._source_for.side_effect = lambda m, d, compiled=None: resolve_datasource(m, d)
         return server
 

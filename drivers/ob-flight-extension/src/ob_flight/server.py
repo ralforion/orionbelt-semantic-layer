@@ -287,9 +287,6 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     # SQL classification / preparation / execution — delegates to
     # ``server_execution``.
     # ------------------------------------------------------------------
-    def _rewrite_table_names(self, sql: str, model: Any) -> str:
-        return server_execution.rewrite_table_names(self, sql, model)
-
     def _classify_sql(self, sql: str, model: Any) -> str:
         return server_execution.classify_sql(self, sql, model)
 
