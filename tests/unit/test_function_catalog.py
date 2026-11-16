@@ -888,6 +888,94 @@ class TestTodayInTheQueryZone:
         assert engine.compile_expr(FunctionCall(name="current_date", args=[])) == expected
 
 
+_NOW_IN_ZONE = {
+    "duckdb": "(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')",
+    "postgres": "(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')",
+    "bigquery": "CURRENT_DATETIME('America/New_York')",
+    "snowflake": (
+        "CAST(CONVERT_TIMEZONE('America/New_York', CURRENT_TIMESTAMP()) AS TIMESTAMP_NTZ)"
+    ),
+    "clickhouse": "toTimeZone(now64(6), 'America/New_York')",
+    "databricks": (
+        "convert_timezone('UTC', 'America/New_York', timestampadd(MICROSECOND, "
+        "unix_micros(current_timestamp()), TIMESTAMP_NTZ'1970-01-01 00:00:00'))"
+    ),
+    "mysql": "CONVERT_TZ(UTC_TIMESTAMP(6), '+00:00', 'America/New_York')",
+    "dremio": "CONVERT_TIMEZONE('America/New_York', CURRENT_TIMESTAMP)",
+}
+_NOW_IN_SESSION = {
+    "duckdb": "LOCALTIMESTAMP",
+    "postgres": "LOCALTIMESTAMP",
+    "bigquery": "CURRENT_DATETIME()",
+    "snowflake": "CAST(CURRENT_TIMESTAMP() AS TIMESTAMP_NTZ)",
+    "clickhouse": "now64(6)",
+    "databricks": "CAST(current_timestamp() AS TIMESTAMP_NTZ)",
+    "mysql": "NOW(6)",
+    "dremio": "CURRENT_TIMESTAMP",
+}
+
+
+def _clock(dialect: str, name: str, zone: str | None) -> str:
+    from orionbelt.ast.nodes import FunctionCall
+
+    engine = DialectRegistry.get(dialect)
+    engine.today_zone = zone
+    return engine.compile_expr(FunctionCall(name=name, args=[]))
+
+
+class TestNowInTheQueryZone:
+    """``current_timestamp()`` and ``current_time()`` are the wall clock in
+    ``queryTimezone``, read from the current instant as ``current_date()`` is,
+    else the session's local clock. Each run on all eight engines in
+    ``tests/integration/drift/vendor_exec/test_current_clock_exec.py``."""
+
+    @pytest.mark.parametrize("dialect", sorted(_NOW_IN_ZONE))
+    def test_current_timestamp_reads_the_instant_in_the_zone(self, dialect: str) -> None:
+        assert _clock(dialect, "current_timestamp", "America/New_York") == _NOW_IN_ZONE[dialect]
+
+    @pytest.mark.parametrize("dialect", sorted(_NOW_IN_SESSION))
+    def test_without_a_zone_it_is_the_sessions_local_clock(self, dialect: str) -> None:
+        assert _clock(dialect, "current_timestamp", None) == _NOW_IN_SESSION[dialect]
+
+    @pytest.mark.parametrize("dialect", sorted(_NOW_IN_ZONE))
+    def test_current_time_is_the_time_of_that_clock(self, dialect: str) -> None:
+        now = _NOW_IN_ZONE[dialect]
+        expected = {
+            "clickhouse": f"formatDateTime({now}, '%H:%i:%S')",
+            "databricks": f"date_format({now}, 'HH:mm:ss')",
+            "mysql": f"CAST({now} AS TIME(6))",
+        }.get(dialect, f"CAST({now} AS TIME)")
+        assert _clock(dialect, "current_time", "America/New_York") == expected
+
+    def test_an_expression_reads_the_models_zone(self) -> None:
+        from orionbelt.compiler.pipeline import CompilationPipeline
+
+        yaml_text = _TZ_MODEL_YAML.format(
+            settings="  queryTimezone: America/New_York", ttype="timestamp_tz"
+        ).replace(
+            "  Event Count:\n",
+            "  Hours Ago:\n"
+            "    expression: \"date_diff('hour', {[Events].[Occurred At]}, current_timestamp())\"\n"
+            "    aggregation: min\n"
+            "    resultType: int\n"
+            "  Event Count:\n",
+        )
+        raw, source_map = TrackedLoader().load_string(yaml_text)
+        model, result = ReferenceResolver().resolve(raw, source_map)
+        assert result.valid, result.errors
+        query = QueryObject.model_validate({"select": {"measures": ["Hours Ago"]}})
+        sql = CompilationPipeline().compile(query, model, "duckdb").sql
+        assert _NOW_IN_ZONE["duckdb"] in sql
+
+    @pytest.mark.parametrize("dialect", sorted(_NOW_IN_ZONE))
+    def test_a_query_reading_the_clock_is_not_cached(self, dialect: str) -> None:
+        from orionbelt.cache.determinism import is_nondeterministic_sql
+
+        for zone in ("America/New_York", None):
+            for name in ("current_timestamp", "current_time"):
+                assert is_nondeterministic_sql(f"SELECT {_clock(dialect, name, zone)}")[0]
+
+
 class TestWeeklyGrainFollowsTheCalendar:
     """Every weekly path buckets the same way, not just the catalog function.
 

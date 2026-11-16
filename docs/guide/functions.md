@@ -176,6 +176,8 @@ since Dremio is the one dialect that puts them in identifier position.
 | `extract(unit, x)` | int | **ISO week numbering**, and `'day_of_week'` as **ISO, Monday 1 to Sunday 7**; an integer, not a numeric |
 | `last_day(x)` | date | Last day of `x`'s month |
 | `current_date()` | date | Today, in the model's [`queryTimezone`](#which-time-zone-a-timestamp-is-read-in) where it sets one, else per the database session |
+| `current_timestamp()` | timestamp | The date and time now, as a **wall clock without a time zone**: in `queryTimezone` where the model sets one, else the session's |
+| `current_time()` | time | The time of day of `current_timestamp()`; **`'HH:MM:SS'` text** on ClickHouse and Databricks, where OBML's `time` is text |
 | `json_value(x, path)` | string | Scalar at a **literal JSONPath**; NULL when absent or when the path resolves to an object or array |
 | `cast(x, 'type')` | argument | To a **quoted OBML type**, `decimal(p, s)` or `double` only; a decimal target rounds ties away from zero, except where ClickHouse has no room for the digit the rounding reads |
 | `to_number(x)` | float | The number `x` names, or **NULL** when it does not name one; surrounding whitespace ignored |
@@ -423,6 +425,29 @@ DATE)` on DuckDB and Postgres, `CURRENT_DATE('America/New_York')` on BigQuery),
 whatever zone the session runs in. Without `queryTimezone`, today is the
 session's, as before.
 
+`current_timestamp()` and `current_time()` read the same clock. Each is the
+current instant read in `queryTimezone` as a timestamp column is, a timestamp
+without a time zone, so `{[Orders].[Placed At]} <= current_timestamp()`
+compares one zone's wall clock on both sides. The engines disagree on what
+their own `CURRENT_TIMESTAMP` is (an instant on Postgres, DuckDB, Snowflake,
+BigQuery and Databricks, the session's wall clock on MySQL, UTC's on Dremio),
+so each renders the wall clock itself:
+
+| Engine | `current_timestamp()` in `queryTimezone` | Without `queryTimezone` |
+|---|---|---|
+| DuckDB, Postgres | `CURRENT_TIMESTAMP AT TIME ZONE 'zone'` | `LOCALTIMESTAMP` |
+| BigQuery | `CURRENT_DATETIME('zone')` | `CURRENT_DATETIME()`, UTC unless the script sets `@@time_zone` |
+| Snowflake | `CONVERT_TIMEZONE('zone', CURRENT_TIMESTAMP())` as `TIMESTAMP_NTZ` | `CURRENT_TIMESTAMP()` as `TIMESTAMP_NTZ` |
+| ClickHouse | `toTimeZone(now64(6), 'zone')` | `now64(6)` |
+| Databricks | the instant's UTC clock converted with `convert_timezone('UTC', 'zone', ...)` | `current_timestamp()` as `TIMESTAMP_NTZ` |
+| MySQL | `CONVERT_TZ(UTC_TIMESTAMP(6), '+00:00', 'zone')` | `NOW(6)` |
+| Dremio | `CONVERT_TIMEZONE('zone', CURRENT_TIMESTAMP)` | `CURRENT_TIMESTAMP`, UTC's |
+
+`current_time()` is its time of day: `CAST(... AS TIME)`, `TIME(6)` on MySQL to
+keep the fraction of a second, and `'HH:MM:SS'` text on ClickHouse and
+Databricks, which have no time type. A query reading the clock is never served
+from the result cache.
+
 ## Changing the week start
 
 `date_trunc('week', …)` and `date_diff('week', …)` follow `settings.weekStart`:
@@ -454,10 +479,7 @@ on three, and a truncated quotient on Snowflake.
 Date literals are written `DATE '2026-08-15'` and `TIMESTAMP '2026-08-15 13:45:00'`,
 and compile to a cast, so they mean the same thing on every engine.
 
-Three neighbours are deliberately *not* in the catalog. `current_timestamp` is
-left out because the engines disagree on whether it carries a time zone, and
-pinning that needs a stated stance on session time zones rather than a rewrite —
-`current_date()` has no such ambiguity. `to_date` and `format_date` are left out
+Two neighbours are deliberately *not* in the catalog. `to_date` and `format_date` are left out
 because format strings are strftime-style on Postgres, DuckDB and ClickHouse,
 picture strings on Snowflake and `%`-style on BigQuery, which is its own problem
 rather than a rewrite. The single-argument `log`
