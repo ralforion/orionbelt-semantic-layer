@@ -146,7 +146,8 @@ BOOLEAN_KEYWORDS: frozenset[str] = frozenset({"AND", "OR", "NOT"})
 """Logical operators, spelled as words."""
 
 SQL_KEYWORDS: frozenset[str] = frozenset(
-    {"CASE", "WHEN", "THEN", "ELSE", "END", "IS", "IN", "BETWEEN", "LIKE"}
+    {"CASE", "WHEN", "THEN", "ELSE", "END", "IS", "IN", "BETWEEN", "LIKE", "ILIKE"}
+    | {"DISTINCT", "FROM"}
 )
 """Predicate and control-flow keywords the expression grammar recognises.
 

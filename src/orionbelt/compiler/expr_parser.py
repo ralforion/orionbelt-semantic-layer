@@ -12,12 +12,15 @@ Both share the same grammar:
     not_expr  → 'NOT' not_expr | predicate
     predicate → cmp_expr (postfix)?
     postfix   → 'IS' ['NOT'] 'NULL'
+              | 'IS' ['NOT'] 'DISTINCT' 'FROM' cat_expr
               | ['NOT'] 'IN' '(' expr (',' expr)* ')'
-              | ['NOT'] 'BETWEEN' add_expr 'AND' add_expr
-              | ['NOT'] 'LIKE' STRING
-    cmp_expr  → add_expr (('=' | '<>' | '!=' | '<' | '<=' | '>' | '>=') add_expr)?
+              | ['NOT'] 'BETWEEN' cat_expr 'AND' cat_expr
+              | ['NOT'] 'LIKE' cat_expr
+              | ['NOT'] 'ILIKE' STRING
+    cmp_expr  → cat_expr (('=' | '<>' | '!=' | '<' | '<=' | '>' | '>=') cat_expr)?
+    cat_expr  → add_expr ('||' add_expr)*      -- concat(a, b, ...)
     add_expr  → mul_expr (('+' | '-') mul_expr)*
-    mul_expr  → factor (('*' | '/') factor)*
+    mul_expr  → factor (('*' | '/' | '%') factor)*  -- a % b is mod(a, b)
     factor → '(' expr ')'
            | ('-' | '+') factor      -- unary sign
            | ('DATE' | 'TIMESTAMP' | 'TIME') STRING  -- typed literal
@@ -47,6 +50,7 @@ from orionbelt.ast.nodes import (
     FunctionCall,
     InList,
     IsNull,
+    LikeMatch,
     Literal,
     NestedField,
     RegexMatch,
@@ -115,6 +119,9 @@ _LITERAL_KEYWORDS: dict[str, str | int | float | bool | None] = {
 # already knows.
 _TYPED_LITERAL_KEYWORDS: frozenset[str] = frozenset({"DATE", "TIMESTAMP", "TIME"})
 
+# Keywords that follow an operand, optionally after ``NOT``.
+_POSTFIX_OPS: tuple[str, ...] = ("IN", "BETWEEN", "LIKE", "ILIKE")
+
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 
 # ``{ColumnName}`` placeholder handling lives in ``models.expressions`` so the
@@ -172,7 +179,10 @@ def _tokenize_common(formula: str, tokens: list[_Token], start: int) -> int:
         if formula.startswith(sym, start):
             tokens.append(_Token(kind="op", value=sym))
             return start + len(sym)
-    if ch in "+-*/":
+    if formula.startswith("||", start):
+        tokens.append(_Token(kind="op", value="||"))
+        return start + 2
+    if ch in "+-*/%":
         tokens.append(_Token(kind="op", value=ch))
         return start + 1
     if ch == "(":
@@ -540,7 +550,7 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         """
         is_negation = isinstance(operand, UnaryOp) and operand.op == "NOT"
         if (
-            isinstance(operand, IsNull | InList | Between | RegexMatch)
+            isinstance(operand, IsNull | InList | Between | RegexMatch | LikeMatch)
             or is_negation
             or (isinstance(operand, BinaryOp) and operand.op in _PREDICATE_OPS)
         ):
@@ -552,10 +562,15 @@ def parse_expression(tokens: list[_Token]) -> Expr:
 
     def _parse_term() -> Expr:
         left = _parse_factor()
-        while _peek() and _peek().kind == "op" and _peek().value in "*/":  # type: ignore[union-attr]
+        while _peek() and _peek().kind == "op" and _peek().value in ("*", "/", "%"):  # type: ignore[union-attr]
             op_tok = _advance()
             right = _parse_factor()
-            left = BinaryOp(left=left, op=op_tok.value, right=right)
+            # The catalog's ``mod``, which every dialect renders with the sign
+            # of the dividend, as ``%`` has: BigQuery has no ``%`` operator.
+            if op_tok.value == "%":
+                left = FunctionCall(name="mod", args=[left, right])
+            else:
+                left = BinaryOp(left=left, op=op_tok.value, right=right)
         return left
 
     def _parse_add() -> Expr:
@@ -566,8 +581,20 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             left = BinaryOp(left=left, op=op_tok.value, right=right)
         return left
 
+    def _parse_concat() -> Expr:
+        operands = [_parse_add()]
+        while _is_op("||"):
+            _advance()
+            operands.append(_parse_add())
+        # The catalog's ``concat``, which keeps ``||``'s rule that a NULL
+        # operand makes the result NULL on every dialect: MySQL reads ``||``
+        # as OR, and three engines' own CONCAT skips NULLs.
+        if len(operands) == 1:
+            return operands[0]
+        return FunctionCall(name="concat", args=operands)
+
     def _parse_cmp() -> Expr:
-        left = _parse_add()
+        left = _parse_concat()
         t = _peek()
         if t is None or t.kind != "op":
             return left
@@ -575,36 +602,68 @@ def parse_expression(tokens: list[_Token]) -> Expr:
         if t.value in _COMPARISON_OPS:
             op_tok = _advance()
             op = "<>" if op_tok.value == "!=" else op_tok.value
-            right = _parse_add()
+            right = _parse_concat()
             return BinaryOp(left=left, op=op, right=right)
-        # SQL postfix predicates: IS [NOT] NULL, [NOT] IN (...),
-        # [NOT] BETWEEN ... AND ..., [NOT] LIKE 'pat'
+        # SQL postfix predicates: IS [NOT] NULL, IS [NOT] DISTINCT FROM ...,
+        # [NOT] IN (...), [NOT] BETWEEN ... AND ..., [NOT] [I]LIKE 'pat'
         if t.value == "IS":
             _advance()
-            negated = False
-            nxt = _peek()
-            if nxt is not None and nxt.kind == "op" and nxt.value == "NOT":
+            negated = _is_op("NOT")
+            if negated:
                 _advance()
-                negated = True
+            if _is_op("DISTINCT"):
+                return _parse_distinct_from(left, negated=negated)
             null_tok = _peek()
             if null_tok is None or null_tok.kind != "ident" or null_tok.value.upper() != "NULL":
-                raise ValueError("IS predicate must be followed by NULL or NOT NULL")
+                raise ValueError(
+                    "IS predicate must be followed by NULL, NOT NULL or [NOT] DISTINCT FROM"
+                )
             _advance()
             return IsNull(expr=left, negated=negated)
         if t.value == "NOT":
-            # Look ahead for IN / BETWEEN / LIKE; otherwise leave NOT
+            # Look ahead for IN / BETWEEN / [I]LIKE; otherwise leave NOT
             # for the outer logical layer to consume.
             nxt = tokens[pos[0] + 1] if pos[0] + 1 < len(tokens) else None
-            if nxt is not None and nxt.kind == "op" and nxt.value in ("IN", "BETWEEN", "LIKE"):
+            if nxt is not None and nxt.kind == "op" and nxt.value in _POSTFIX_OPS:
                 _advance()  # consume NOT
                 return _parse_postfix_predicate(left, negated=True)
             return left
-        if t.value in ("IN", "BETWEEN", "LIKE"):
+        if t.value in _POSTFIX_OPS:
             return _parse_postfix_predicate(left, negated=False)
         return left
 
+    def _parse_distinct_from(left: Expr, *, negated: bool) -> Expr:
+        """``left IS [NOT] DISTINCT FROM right``, in operators every dialect has.
+
+        ``IS NOT DISTINCT FROM`` is ``(l = r AND l IS NOT NULL AND r IS NOT
+        NULL) OR (l IS NULL AND r IS NULL)``, which is never NULL, so ``IS
+        DISTINCT FROM`` is its negation. MySQL has neither form, and
+        ClickHouse reads them only in a join condition. Against a ``NULL``
+        literal it is ``IS [NOT] NULL``: BigQuery refuses ``=`` on one.
+        """
+        _advance()  # DISTINCT
+        if not _is_op("FROM"):
+            raise ValueError("IS DISTINCT must be followed by FROM")
+        _advance()
+        right = _parse_concat()
+        for value, other in ((right, left), (left, right)):
+            if isinstance(value, Literal) and value.value is None:
+                return IsNull(expr=other, negated=not negated)
+        both = BinaryOp(
+            left=BinaryOp(
+                left=BinaryOp(left=left, op="=", right=right),
+                op="AND",
+                right=IsNull(expr=left, negated=True),
+            ),
+            op="AND",
+            right=IsNull(expr=right, negated=True),
+        )
+        neither = BinaryOp(left=IsNull(expr=left), op="AND", right=IsNull(expr=right))
+        same: Expr = BinaryOp(left=both, op="OR", right=neither)
+        return same if negated else UnaryOp(op="NOT", operand=same)
+
     def _parse_postfix_predicate(left: Expr, *, negated: bool) -> Expr:
-        op_tok = _advance()  # IN / BETWEEN / LIKE
+        op_tok = _advance()  # IN / BETWEEN / LIKE / ILIKE
         if op_tok.value == "IN":
             if _peek() is None or _peek().kind != "lparen":  # type: ignore[union-attr]
                 raise ValueError("IN must be followed by '('")
@@ -612,16 +671,28 @@ def parse_expression(tokens: list[_Token]) -> Expr:
             values = _parse_arg_list("IN list")  # consumes the matching )
             return InList(expr=left, values=values, negated=negated)
         if op_tok.value == "BETWEEN":
-            low = _parse_add()
+            low = _parse_concat()
             t = _peek()
             if t is None or t.kind != "op" or t.value != "AND":
                 raise ValueError("BETWEEN must use the form 'BETWEEN x AND y'")
             _advance()  # consume AND
-            high = _parse_add()
+            high = _parse_concat()
             return Between(expr=left, low=low, high=high, negated=negated)
         if op_tok.value == "LIKE":
-            right = _parse_add()
+            right = _parse_concat()
             return BinaryOp(left=left, op="NOT LIKE" if negated else "LIKE", right=right)
+        if op_tok.value == "ILIKE":
+            # The case-insensitive match query filters render: ``ILIKE`` where
+            # the engine has it, ``LOWER`` of both sides on BigQuery and MySQL,
+            # Dremio's ``ILIKE()`` function. A backslash escapes ``%``, ``_``
+            # and itself, as in a filter's pattern.
+            pattern = _peek()
+            if pattern is None or pattern.kind != "string":
+                raise ValueError("ILIKE must be followed by a string pattern")
+            _advance()
+            return LikeMatch(
+                column=left, pattern=pattern.value, negated=negated, case_insensitive=True
+            )
         raise ValueError(f"Unexpected postfix predicate {op_tok.value!r}")
 
     def _parse_not() -> Expr:
