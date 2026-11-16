@@ -144,6 +144,13 @@ class TestValues:
             ("NULL IS DISTINCT FROM NULL", False),
             ("1 IS NOT DISTINCT FROM NULL", False),
             ("NULL IS NOT DISTINCT FROM NULL", True),
+            # A comparison as an operand of IS NULL or BETWEEN keeps its
+            # parentheses, bounds included.
+            ("(1 IS DISTINCT FROM 2) IS NULL", False),
+            ("(1 IS DISTINCT FROM 1) BETWEEN FALSE AND TRUE", True),
+            ("FALSE BETWEEN TRUE AND (1 IS DISTINCT FROM 2)", False),
+            ("TRUE BETWEEN (1 IS DISTINCT FROM 1) AND TRUE", True),
+            ("TRUE NOT BETWEEN (1 IS DISTINCT FROM 1) AND (1 = 1)", False),
         ],
     )
     def test_value(self, text: str, expected: object) -> None:

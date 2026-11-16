@@ -3050,9 +3050,11 @@ class Dialect(ABC):
                 return self.random_fraction_sql()
             case Between(expr=inner, low=low, high=high, negated=negated):
                 op = "NOT BETWEEN" if negated else "BETWEEN"
+                # All three one level tighter: a comparison bound would
+                # otherwise read as part of the BETWEEN.
                 inner_sql = self.compile_expr(inner, _parent_prec=self._PREC_CMP + 1)
-                low_sql = self.compile_expr(low, _parent_prec=self._PREC_CMP)
-                high_sql = self.compile_expr(high, _parent_prec=self._PREC_CMP)
+                low_sql = self.compile_expr(low, _parent_prec=self._PREC_CMP + 1)
+                high_sql = self.compile_expr(high, _parent_prec=self._PREC_CMP + 1)
                 sql = f"{inner_sql} {op} {low_sql} AND {high_sql}"
                 return self._wrap_if_lower(sql, self._PREC_CMP, _parent_prec)
             case InTimeZone(expr=inner, zone=zone, from_zone=from_zone):
