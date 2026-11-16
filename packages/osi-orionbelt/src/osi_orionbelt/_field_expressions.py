@@ -189,8 +189,12 @@ def _in_grammar(node: exp.Expr) -> bool:
     if isinstance(node, exp.Like):
         return isinstance(node.expression, exp.Literal)
     if isinstance(node, exp.ILike):
-        # OBML's ILIKE takes a string literal pattern only.
-        return isinstance(node.expression, exp.Literal) and node.expression.is_string
+        # OBML's ILIKE takes a string literal pattern only, where a backslash
+        # escapes. Snowflake and ANSI SQL have no default escape character, and
+        # string literals escape differently from engine to engine, so a pattern
+        # with a backslash is kept aside rather than matched differently.
+        pattern = node.expression
+        return isinstance(pattern, exp.Literal) and pattern.is_string and "\\" not in pattern.this
     return isinstance(node, _OPERATORS)
 
 

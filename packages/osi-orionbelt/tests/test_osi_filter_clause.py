@@ -135,6 +135,9 @@ class TestImport:
             # would stop the whole model loading. OBML's ILIKE takes a string
             # pattern, and its LIKE has no ESCAPE clause.
             "SUM(orders.amount) FILTER (WHERE orders.status ILIKE orders.cust)",
+            # A backslash escapes in OBML's ILIKE pattern; Snowflake and ANSI
+            # SQL have no default escape character.
+            "SUM(orders.amount) FILTER (WHERE orders.status ILIKE 'a\\_b')",
             "SUM(orders.amount) FILTER (WHERE orders.status LIKE 'a!_%' ESCAPE '!')",
             "COUNT(*) FILTER (WHERE orders.status ILIKE orders.cust) / COUNT(orders.id)",
         ],
@@ -183,6 +186,17 @@ class TestMeasureExpressions:
     )
     def test_one_obml_parses_imports(self, sql: str) -> None:
         assert "m" in _convert(_doc(sql))[0]["measures"]
+
+    @pytest.mark.parametrize("dialect", ["SNOWFLAKE", "DATABRICKS", "OSSIE_SQL_2026"])
+    def test_an_ilike_pattern_with_a_backslash_is_preserved(self, dialect: str) -> None:
+        # Snowflake: ILIKE 'a\\_b' matches a\_b literally; OBML's ILIKE would
+        # read the backslash as an escape and match a_b.
+        doc = _doc("SUM(orders.amount)")
+        sql = "SUM(orders.amount) FILTER (WHERE orders.status ILIKE 'a\\\\_b')"
+        doc["metrics"][0]["expression"] = {"dialects": [{"dialect": dialect, "expression": sql}]}
+        obml, warnings = _convert(doc)
+        assert "m" not in obml.get("measures", {})
+        assert any("LOSSY" in w and "'m'" in w for w in warnings)
 
     @pytest.mark.parametrize(
         ("sql", "expression"),
