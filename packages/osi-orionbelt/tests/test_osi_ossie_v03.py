@@ -107,7 +107,8 @@ class TestSqlForm:
     def test_field_sql_is_the_column_code(self) -> None:
         obml, _ = _convert(_shop())
         # Read as the field name before, silently: `amount` for `amount_cents / 100.0`.
-        assert obml["dataObjects"]["orders"]["columns"]["amount"]["code"] == "amount_cents / 100.0"
+        amount = obml["dataObjects"]["orders"]["columns"]["amount"]
+        assert amount["expression"] == "{amount_cents} / 100.0"
 
     def test_metric_sql_becomes_a_measure(self) -> None:
         doc = _shop(metrics=[{"name": "revenue", "expression": {"sql": "SUM(orders.amount)"}}])
@@ -126,7 +127,8 @@ class TestSqlForm:
             ],
         }
         obml, _ = _convert(doc)
-        assert obml["dataObjects"]["orders"]["columns"]["amount"]["code"] == "amount_cents / 100.0"
+        amount = obml["dataObjects"]["orders"]["columns"]["amount"]
+        assert amount["expression"] == "{amount_cents} / 100.0"
 
 
 class TestDatasetScopedMetrics:

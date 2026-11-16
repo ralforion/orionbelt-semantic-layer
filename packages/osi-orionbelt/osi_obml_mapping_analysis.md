@@ -151,7 +151,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 ### 3.1 OSI → OBML
 
 1. Parse `source` string to extract `database`, `schema`, and `table`
-2. Convert fields to columns, mapping the Ossie `datatype` to `abstractType` when present, else inferring it from the name heuristic
+2. Convert fields to columns, mapping the Ossie `datatype` to `abstractType` when present, else inferring it from the name heuristic; a field computed by an expression becomes a computed column over sibling columns (`{amount_cents} / 100.0`), adding a column for a source column no field computes as is
 3. Restructure global relationships into inline joins on data objects
 4. Decompose metric SQL expressions into OBML measures + metrics
 5. Extract dimension-flagged fields into the top-level `dimensions` section, join keys included
