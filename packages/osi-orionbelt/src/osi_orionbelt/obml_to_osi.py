@@ -571,7 +571,7 @@ class OBMLtoOSI:
         missing: list[str] = []
 
         def sibling(match: re.Match[str]) -> str:
-            name = match.group(1)
+            name = match.group(1).strip()  # as OBML reads it
             col = columns.get(name)
             if col is None or name in seen:
                 missing.append(name)

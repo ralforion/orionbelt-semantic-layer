@@ -193,8 +193,13 @@ def test_a_field_computed_by_an_expression_runs() -> None:
 
 @pytest.mark.parametrize(
     ("sql", "expected"),
-    [("amount_cents / 1e2", 30.0), ('"$amount" * 2', 60.0)],
-    ids=["scientific notation", "name no placeholder holds"],
+    [
+        ("amount_cents / 1e2", 30.0),
+        ('"$amount" * 2', 60.0),
+        ('"Amount [USD]" * 2', 60.0),
+        ('"amount " * 2', 60.0),
+    ],
+    ids=["scientific notation", "name no placeholder holds", "bracket", "trailing space"],
 )
 def test_a_field_obml_writes_differently_still_runs(sql: str, expected: float) -> None:
     doc = copy.deepcopy(_COMPUTED_DOC)
@@ -205,8 +210,8 @@ def test_a_field_obml_writes_differently_still_runs(sql: str, expected: float) -
     query = QueryObject(select={"measures": ["paid"]})
     con = duckdb.connect()
     con.execute(
-        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 1000, 10), (2, 2000, 20))"
-        ' t(order_id, amount_cents, "$amount")'
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 1000, 10, 10, 10), (2, 2000, 20, 20, 20))"
+        ' t(order_id, amount_cents, "$amount", "Amount [USD]", "amount ")'
     )
     rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
     assert rows == [(pytest.approx(expected),)]

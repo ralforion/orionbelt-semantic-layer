@@ -28,6 +28,8 @@ import copy
 import json
 from typing import Any
 
+import pytest
+
 import osi_orionbelt.converter as conv
 
 
@@ -201,3 +203,30 @@ class TestReview:
         columns, _ = _columns(_doc(_field("amount", '"$amount" * 2')))
         assert columns["amount"]["expression"] == "{source__amount} * 2"
         assert columns["source__amount"]["code"] == "$amount"
+
+    @pytest.mark.parametrize(
+        ("name", "safe"),
+        [
+            ("amount_cents", True),
+            ("Net Total", True),
+            ("Amount [USD]", False),  # OBML's {[orders].[name]} ends at the first ]
+            ("amount ", False),  # OBML strips the name: {amount } reads amount
+            ("$amount", False),
+            ("5", False),  # read as a regex quantifier
+        ],
+    )
+    def test_a_sibling_name_is_one_obml_resolves_as_itself(self, name: str, safe: bool) -> None:
+        from osi_orionbelt._field_expressions import is_sibling_name
+
+        assert is_sibling_name(name) is safe
+
+    def test_a_source_name_with_a_bracket_gets_a_safe_sibling(self) -> None:
+        columns, _ = _columns(_doc(_field("amount", '"Amount [USD]" * 2')))
+        assert columns["amount"]["expression"] == "{source_Amount_USD_} * 2"
+        assert columns["source_Amount_USD_"]["code"] == "Amount [USD]"
+
+    def test_a_source_name_trimming_changes_is_not_read_as_the_field(self) -> None:
+        # {amount } is {amount} to OBML: the field would read itself.
+        columns, _ = _columns(_doc(_field("amount", '"amount " * 2')))
+        assert columns["amount"]["expression"] == "{source_amount_} * 2"
+        assert columns["source_amount_"]["code"] == "amount "

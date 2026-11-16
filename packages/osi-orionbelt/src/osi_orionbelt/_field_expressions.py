@@ -161,7 +161,11 @@ _EXPONENT = re.compile(r"[eE]")
 SIBLING_REF = re.compile(r"\{(\w[^}]*)\}")
 QUALIFIED_REF = re.compile(r"\{\[[^\]]+\]\.\[[^\]]+\]\}")
 SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
-_SIBLING_NAME = re.compile(r"\w[^}]*")
+# A name OBML resolves as itself: it strips the name and writes it into
+# ``{[Data Object].[name]}``, which ends at the first ``]``; a bare number is
+# read as a regex quantifier.
+_SIBLING_NAME = re.compile(r"\w[^}\]]*")
+_REGEX_QUANTIFIER = re.compile(r"\d+(?:,\d*)?")
 # What OBML's tokenizer reads besides literals and references.
 _OBML_CHARACTERS = re.compile(r"[\w\s+\-*/(),.=<>!]")
 # A number OBML reads as two tokens: 1e2 is "1" then "e2".
@@ -170,7 +174,11 @@ _NUMBER_THEN_WORD = re.compile(r"(?<![\w.])\d[\d.]*[A-Za-z_]")
 
 def is_sibling_name(name: str) -> bool:
     """Whether *name* can be written as an OBML sibling placeholder ``{name}``."""
-    return bool(_SIBLING_NAME.fullmatch(name))
+    return (
+        name == name.strip()
+        and _SIBLING_NAME.fullmatch(name) is not None
+        and _REGEX_QUANTIFIER.fullmatch(name) is None
+    )
 
 
 def substitute_outside_strings(
