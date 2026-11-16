@@ -56,7 +56,8 @@ The converter handles this decomposition automatically:
 | Snowflake `APPROX_PERCENTILE(a.x, p)` / Databricks `approx_percentile(a.x, p[, accuracy])`, `percentile_approx(...)` | The exact percentile it estimates, with an `APPROXIMATE` warning: `percentile_cont` from Snowflake (an interpolating t-digest), `percentile_disc` from Databricks (a value of the column). A list of fractions or a weighted form is preserved verbatim |
 | Multi-aggregation expression | Auto-generated measures + metric formula |
 | Aggregate nested in a larger expression (`ROUND(SUM(a.x), 2)`, `CASE WHEN SUM(a.x) > 0 THEN SUM(a.y) END`) | Auto-generated measures + metric formula |
-| Aggregate with `FILTER (WHERE p)` (`SUM(a.x) FILTER (WHERE a.s = 'done')`) | The measure of `CASE WHEN p THEN x END`, the rewrite Apache Ossie's expression language gives (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); a FILTER over an aggregate with several arguments is preserved verbatim |
+| Aggregate with `FILTER (WHERE p)` (`SUM(a.x) FILTER (WHERE a.s = 'done')`) | The measure of `CASE WHEN p THEN x END`, the rewrite Apache Ossie's expression language gives (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); a FILTER over an aggregate not relied on to skip NULLs (`ANY_VALUE`, `MODE`, `LISTAGG`) or with several arguments is preserved verbatim |
+| Aggregated expression with an operator OBML's parser does not read (`ILIKE`, `IS DISTINCT FROM`, `%`, `\|\|`) | Preserved verbatim: as a measure it would stop the model loading (`INVALID_MEASURE_EXPRESSION`) |
 | Aggregate with `OVER (...)` | Preserved verbatim: the window is not part of the measure the aggregate would become |
 | Expression containing a query (`(SELECT ...)`, `UNION`) | Preserved verbatim: a metric formula is over measures, and the query's own tables and aliases are not datasets |
 

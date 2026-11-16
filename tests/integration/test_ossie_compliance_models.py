@@ -302,3 +302,41 @@ def test_a_filtered_metric_keeps_every_group() -> None:
     )
     rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
     assert rows == [("east", 30, 2), ("west", None, 0)]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SUM(amount) FILTER (WHERE status ILIKE 'done')",
+        "SUM(amount) FILTER (WHERE status IS DISTINCT FROM region)",
+        "SUM(CASE WHEN order_id % 2 = 0 THEN amount END)",
+    ],
+    ids=["ilike", "is distinct from", "modulo"],
+)
+def test_a_metric_obml_cannot_parse_leaves_the_model_loading(sql: str) -> None:
+    # Imported as a measure, the expression stopped the whole model loading
+    # (INVALID_MEASURE_EXPRESSION); it is preserved instead.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "unparsed",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}}
+                    for n in ("order_id", "region", "status", "amount")
+                ],
+                "metrics": [
+                    {"name": "kept", "expression": {"sql": sql}},
+                    {"name": "total", "expression": {"sql": "SUM(amount)"}},
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    assert "total" in model.measures
+    assert "kept" not in model.measures

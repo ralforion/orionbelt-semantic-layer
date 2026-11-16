@@ -127,6 +127,16 @@ class TestImport:
             "SUM(orders.amount) FILTER (WHERE orders.status = 'done') OVER ()",
             # Two arguments: no single value for the predicate to gate.
             "LISTAGG(orders.status, ',') FILTER (WHERE orders.amount > 1)",
+            # Aggregates not relied on to skip NULLs: Databricks' ANY_VALUE
+            # keeps them, so a rejected row's NULL could be the answer.
+            "ANY_VALUE(orders.amount) FILTER (WHERE orders.status = 'done')",
+            "MODE(orders.amount) FILTER (WHERE orders.status = 'done')",
+            # Predicates OBML's expression parser does not read: the measure
+            # would stop the whole model loading.
+            "SUM(orders.amount) FILTER (WHERE orders.status ILIKE 'done')",
+            "SUM(orders.amount) FILTER (WHERE orders.status IS DISTINCT FROM orders.cust)",
+            "SUM(orders.amount) FILTER (WHERE orders.id % 2 = 0)",
+            "COUNT(*) FILTER (WHERE orders.status ILIKE 'done') / COUNT(orders.id)",
         ],
     )
     def test_a_filter_it_cannot_rewrite_is_preserved(self, sql: str) -> None:
@@ -134,3 +144,34 @@ class TestImport:
         assert "m" not in obml.get("measures", {})
         assert "m" not in obml.get("metrics", {})
         assert any("LOSSY" in w and "'m'" in w for w in warnings)
+
+
+class TestMeasureExpressions:
+    """Any aggregated expression, FILTER or not, is checked against OBML's grammar."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SUM(CASE WHEN orders.status ILIKE 'done' THEN orders.amount END)",
+            "SUM(orders.amount % 7)",
+            "COUNT(DISTINCT orders.status || orders.cust)",
+        ],
+    )
+    def test_one_obml_cannot_parse_is_preserved(self, sql: str) -> None:
+        obml, warnings = _convert(_doc(sql))
+        assert "m" not in obml.get("measures", {})
+        assert any("not one OBML can read" in w for w in warnings)
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SUM(YEAR(orders.status))",
+            "SUM(CASE WHEN REGEXP_LIKE(orders.status, 'x') THEN orders.amount END)",
+            "SUM(CASE WHEN orders.status IS NOT NULL AND orders.id NOT IN (1, 2)"
+            " THEN orders.amount END)",
+            "SUM(orders.amount) FILTER (WHERE orders.status NOT LIKE 'x%'"
+            " AND orders.id BETWEEN 1 AND 5)",
+        ],
+    )
+    def test_one_obml_parses_imports(self, sql: str) -> None:
+        assert "m" in _convert(_doc(sql))[0]["measures"]

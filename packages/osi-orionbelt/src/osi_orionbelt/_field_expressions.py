@@ -138,18 +138,42 @@ _FUNCTIONS = (
 )
 
 
+def _in_grammar(node: exp.Expr) -> bool:
+    """Whether *node* is an operator or predicate OBML's expression grammar has."""
+    if isinstance(node, exp.Is):
+        return isinstance(node.expression, exp.Null)
+    if isinstance(node, exp.In):
+        return not node.args.get("query")
+    if isinstance(node, exp.Like):
+        return isinstance(node.expression, exp.Literal)
+    return isinstance(node, _OPERATORS)
+
+
+def _describe(node: exp.Expr) -> str:
+    return f"{type(node).__name__.upper()} ({node.sql()})"
+
+
 def unreadable(tree: exp.Expr) -> str | None:
     """Why OBML cannot read *tree* as a computed column, or ``None`` when it can."""
     for node in tree.walk():
-        if isinstance(node, (*_OPERATORS, *_FUNCTIONS)):
-            continue
-        if isinstance(node, exp.Is) and isinstance(node.expression, exp.Null):
-            continue
-        if isinstance(node, exp.In) and not node.args.get("query"):
-            continue
-        if isinstance(node, exp.Like) and isinstance(node.expression, exp.Literal):
-            continue
-        return f"{type(node).__name__.upper()} ({node.sql()})"
+        if not (isinstance(node, _FUNCTIONS) or _in_grammar(node)):
+            return _describe(node)
+    return None
+
+
+def unreadable_operator(tree: exp.Expr) -> str | None:
+    """The first operator or predicate in *tree* OBML's expression grammar lacks.
+
+    A measure expression OBML cannot parse stops the whole model loading
+    (``INVALID_MEASURE_EXPRESSION``). Its grammar calls any function written
+    ``NAME(args)``, so only operators and predicates are checked: ``%``,
+    ``||``, ``ILIKE`` and ``IS DISTINCT FROM`` are not in it.
+    """
+    for node in tree.walk():
+        operator = isinstance(node, (exp.Binary, exp.Unary, exp.Predicate))
+        call = isinstance(node, exp.Func) and node.sql().startswith(f"{node.sql_name()}(")
+        if operator and not call and not _in_grammar(node):
+            return _describe(node)
     return None
 
 
