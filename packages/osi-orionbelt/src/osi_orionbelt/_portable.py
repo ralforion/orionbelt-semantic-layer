@@ -353,6 +353,59 @@ def _sql_casts(sql: str) -> str:
     return sql
 
 
+def _closing_paren(tokens: list[Any], open_paren: int) -> tuple[int, list[int]] | None:
+    """The ``)`` closing the ``(`` at *open_paren*, and the commas at its depth."""
+    depth, commas = 0, list[int]()
+    for j in range(open_paren, len(tokens)):
+        kind = tokens[j].token_type
+        if kind is TokenType.L_PAREN:
+            depth += 1
+        elif kind is TokenType.R_PAREN:
+            depth -= 1
+            if depth == 0:
+                return j, commas
+        elif kind is TokenType.COMMA and depth == 1:
+            commas.append(j)
+    return None
+
+
+def _ansi_calls(sql: str) -> str:
+    """*sql* with OBML's ``EXTRACT('year', d)`` and ``POSITION(a, s)`` in SQL's
+    own forms, ``EXTRACT(YEAR FROM d)`` and ``POSITION(a IN s)``.
+
+    ANSI SQL has no date difference, and adds a date only an interval constant;
+    ``date_add`` and ``date_diff`` are written ``DATEADD`` and ``DATEDIFF``, the
+    part first, as Ossie's language and most engines spell them, and as the
+    import reads them.
+    """
+    try:
+        tokens = sqlglot.tokenize(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql
+    edits: list[tuple[int, int, str]] = []
+    for i, token in enumerate(tokens[:-1]):
+        name = token.text.upper()
+        if tokens[i + 1].token_type is not TokenType.L_PAREN:
+            continue
+        if name in ("DATE_ADD", "DATE_DIFF"):
+            edits.append((token.start, token.end, _OSSIE_CALLS[name]))
+            continue
+        if name not in ("EXTRACT", "POSITION"):
+            continue
+        call = _closing_paren(tokens, i + 1)
+        if call is None or len(call[1]) != 1:
+            continue
+        comma = tokens[call[1][0]]
+        if name == "POSITION":
+            edits.append((comma.start, comma.end, " IN"))
+        elif tokens[i + 2].token_type is TokenType.STRING and call[1][0] == i + 3:
+            unit = tokens[i + 2]
+            edits.append((unit.start, comma.end, f"{unit.text.upper()} FROM"))
+    for start, end, text in sorted(edits, reverse=True):
+        sql = sql[:start] + text + sql[end + 1 :]
+    return sql
+
+
 def _ossie_calls(sql: str) -> str:
     """*sql* with each call in ``_OSSIE_CALLS`` under Ossie's name."""
     try:
@@ -430,7 +483,7 @@ class PortableRenderer:
 
     def _expression(self, template: str) -> str:
         sql = _sql_casts(_COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template))
-        return _ossie_calls(sql) if self.ossie else sql
+        return _ossie_calls(sql) if self.ossie else _ansi_calls(sql)
 
     # ── measures ──────────────────────────────────────────────────────
 
@@ -674,7 +727,7 @@ class PortableRenderer:
         formula = _sql_casts(_MEASURE_REF.sub(lambda m: self._reference(m.group(1)), template))
         # A formula calls catalog functions too: YEAR(MAX(d)) imports as
         # extract('year', {[_max]}).
-        return _ossie_calls(formula) if self.ossie else formula
+        return _ossie_calls(formula) if self.ossie else _ansi_calls(formula)
 
     def _partitions(self, met: dict[str, Any]) -> list[str]:
         return [self._dimension(d) for d in met.get("partitionBy") or []]

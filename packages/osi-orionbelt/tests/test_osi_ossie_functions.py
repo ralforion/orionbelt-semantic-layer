@@ -213,17 +213,17 @@ class TestParse:
 
 
 class TestExport:
+    @pytest.mark.parametrize("dialect", ["OSSIE_SQL_2026", "ANSI_SQL"])
     @pytest.mark.parametrize(("sql", "_"), CASES)
-    def test_the_ossie_form_reads_back_as_the_same_measure(self, sql: str, _: str) -> None:
+    def test_each_form_reads_back_as_the_same_measure(self, sql: str, _: str, dialect: str) -> None:
         imported, _warnings = _convert(_doc(sql))
         osi = conv.OBMLtoOSI(copy.deepcopy(imported)).convert()
         metric = next(m for m in osi["metrics"] if m["name"] == "m")
-        ossie = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}[
-            "OSSIE_SQL_2026"
-        ]
-        assert subset_violations(ossie) == []
-        # Another tool reads the Ossie form alone, without OBML's extensions.
-        again, _warnings = _convert(_doc(ossie))
+        written = {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}[dialect]
+        if dialect == "OSSIE_SQL_2026":
+            assert subset_violations(written) == []
+        # Another tool reads one form alone, without OBML's extensions.
+        again, _warnings = _convert(_doc(written, dialect))
         assert again["measures"]["m"] == imported["measures"]["m"]
 
     def test_the_ossie_form_uses_the_language_s_names(self) -> None:
@@ -259,8 +259,13 @@ class TestExport:
         assert forms["OSSIE_SQL_2026"] == (
             "DATE_PART('year', MAX(orders.opened)) + CHARINDEX('a', MIN(orders.status))"
         )
-        again, _ = _convert(_doc(forms["OSSIE_SQL_2026"]))
-        assert again["metrics"]["m"] == imported["metrics"]["m"]
+        # SQL's own forms, which OBML's comma forms are not.
+        assert forms["ANSI_SQL"] == (
+            "EXTRACT(YEAR FROM MAX(orders.opened)) + POSITION('a' IN MIN(orders.status))"
+        )
+        for dialect, written in forms.items():
+            again, _ = _convert(_doc(written, dialect))
+            assert again["metrics"]["m"] == imported["metrics"]["m"], dialect
 
     @pytest.mark.parametrize(
         ("sql", "written"),
