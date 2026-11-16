@@ -132,11 +132,11 @@ class TestImport:
             "ANY_VALUE(orders.amount) FILTER (WHERE orders.status = 'done')",
             "MODE(orders.amount) FILTER (WHERE orders.status = 'done')",
             # Predicates OBML's expression parser does not read: the measure
-            # would stop the whole model loading.
-            "SUM(orders.amount) FILTER (WHERE orders.status ILIKE 'done')",
-            "SUM(orders.amount) FILTER (WHERE orders.status IS DISTINCT FROM orders.cust)",
-            "SUM(orders.amount) FILTER (WHERE orders.id % 2 = 0)",
-            "COUNT(*) FILTER (WHERE orders.status ILIKE 'done') / COUNT(orders.id)",
+            # would stop the whole model loading. OBML's ILIKE takes a string
+            # pattern, and its LIKE has no ESCAPE clause.
+            "SUM(orders.amount) FILTER (WHERE orders.status ILIKE orders.cust)",
+            "SUM(orders.amount) FILTER (WHERE orders.status LIKE 'a!_%' ESCAPE '!')",
+            "COUNT(*) FILTER (WHERE orders.status ILIKE orders.cust) / COUNT(orders.id)",
         ],
     )
     def test_a_filter_it_cannot_rewrite_is_preserved(self, sql: str) -> None:
@@ -152,9 +152,8 @@ class TestMeasureExpressions:
     @pytest.mark.parametrize(
         "sql",
         [
-            "SUM(CASE WHEN orders.status ILIKE 'done' THEN orders.amount END)",
-            "SUM(orders.amount % 7)",
-            "COUNT(DISTINCT orders.status || orders.cust)",
+            "SUM(CASE WHEN orders.status ILIKE orders.cust THEN orders.amount END)",
+            "SUM(orders.amount | 7)",
             # SQL syntax inside a call, which OBML reads as NAME(arg, ...) only.
             "SUM(orders.amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM orders.cust) = 1)",
             # A catalog function with an argument count or unit OBML refuses:
@@ -184,6 +183,37 @@ class TestMeasureExpressions:
     )
     def test_one_obml_parses_imports(self, sql: str) -> None:
         assert "m" in _convert(_doc(sql))[0]["measures"]
+
+    @pytest.mark.parametrize(
+        ("sql", "expression"),
+        [
+            (
+                "SUM(orders.amount) FILTER (WHERE orders.status NOT ILIKE 'do%')",
+                "CASE WHEN {[orders].[status]} NOT ILIKE 'do%' THEN {[orders].[amount]} END",
+            ),
+            (
+                "SUM(orders.amount) FILTER (WHERE orders.status IS DISTINCT FROM orders.cust)",
+                "CASE WHEN {[orders].[status]} IS DISTINCT FROM {[orders].[cust]}"
+                " THEN {[orders].[amount]} END",
+            ),
+            (
+                "COUNT(*) FILTER (WHERE orders.status IS NOT DISTINCT FROM orders.cust)",
+                "CASE WHEN {[orders].[status]} IS NOT DISTINCT FROM {[orders].[cust]} THEN 1 END",
+            ),
+            ("SUM(orders.amount % 7)", "{[orders].[amount]} % 7"),
+            ("SUM(MOD(orders.amount, 7))", "{[orders].[amount]} % 7"),
+            (
+                "COUNT(DISTINCT orders.status || orders.cust)",
+                "{[orders].[status]} || {[orders].[cust]}",
+            ),
+        ],
+    )
+    def test_the_operators_obml_parses_since_import(self, sql: str, expression: str) -> None:
+        # %, ||, ILIKE with a string pattern and IS [NOT] DISTINCT FROM are in
+        # OBML's expression grammar.
+        obml, warnings = _convert(_doc(sql))
+        assert obml["measures"]["m"]["expression"] == expression
+        assert not any("LOSSY" in w for w in warnings)
 
     @pytest.mark.parametrize(
         ("predicate", "obml"),

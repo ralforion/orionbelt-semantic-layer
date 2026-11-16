@@ -24,10 +24,12 @@ where each sibling has the physical column as its ``code``.
 
 OBML parses a computed column's expression itself (``compiler/expr_parser.py``)
 and refuses the whole model when it cannot, so only what that grammar reads is
-converted: arithmetic, comparisons, ``AND`` / ``OR`` / ``NOT``, ``IS NULL``,
-``IN``, ``BETWEEN``, ``LIKE``, ``CASE``, literals, and plain function calls. A
-SQL ``CAST`` becomes OBML's ``cast(x, 'double')``. Anything else (``||``,
-``EXTRACT(... FROM ...)``, a subquery) is reported and left as it was.
+converted: arithmetic (``%`` included), ``||``, comparisons, ``IS [NOT]
+DISTINCT FROM``, ``AND`` / ``OR`` / ``NOT``, ``IS NULL``, ``IN``, ``BETWEEN``,
+``LIKE``, ``ILIKE`` with a string pattern, ``CASE``, literals, and plain function
+calls. A SQL ``CAST`` becomes OBML's ``cast(x, 'double')``. Anything else
+(``EXTRACT(WEEK FROM ...)``, ``LIKE ... ESCAPE``, a subquery) is reported and
+left as it was.
 """
 
 from __future__ import annotations
@@ -140,6 +142,8 @@ _OPERATORS = (
     exp.Sub,
     exp.Mul,
     exp.Div,
+    exp.Mod,
+    exp.DPipe,
     exp.Neg,
     exp.EQ,
     exp.NEQ,
@@ -147,6 +151,8 @@ _OPERATORS = (
     exp.GTE,
     exp.LT,
     exp.LTE,
+    exp.NullSafeEQ,
+    exp.NullSafeNEQ,
     exp.And,
     exp.Or,
     exp.Not,
@@ -182,6 +188,9 @@ def _in_grammar(node: exp.Expr) -> bool:
         return not node.args.get("query")
     if isinstance(node, exp.Like):
         return isinstance(node.expression, exp.Literal)
+    if isinstance(node, exp.ILike):
+        # OBML's ILIKE takes a string literal pattern only.
+        return isinstance(node.expression, exp.Literal) and node.expression.is_string
     return isinstance(node, _OPERATORS)
 
 
@@ -202,8 +211,8 @@ def unreadable_operator(tree: exp.Expr) -> str | None:
 
     A measure expression OBML cannot parse stops the whole model loading
     (``INVALID_MEASURE_EXPRESSION``). Its grammar calls any function written
-    ``NAME(args)``, so only operators and predicates are checked: ``%``,
-    ``||``, ``ILIKE`` and ``IS DISTINCT FROM`` are not in it.
+    ``NAME(args)``, so only operators and predicates are checked: bitwise
+    operators, ``ILIKE`` against a column and ``LIKE ... ESCAPE`` are not in it.
     """
     for node in tree.walk():
         operator = isinstance(node, (exp.Binary, exp.Unary, exp.Predicate))
@@ -227,7 +236,7 @@ SQL_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
 _SIBLING_NAME = re.compile(r"\w[^}\]]*")
 _REGEX_QUANTIFIER = re.compile(r"\d+(?:,\d*)?")
 # What OBML's tokenizer reads besides literals and references.
-_OBML_CHARACTERS = re.compile(r"[\w\s+\-*/(),.=<>!]")
+_OBML_CHARACTERS = re.compile(r"[\w\s+\-*/%(),.=<>!]")
 # A number OBML reads as two tokens: 1e2 is "1" then "e2".
 _NUMBER_THEN_WORD = re.compile(r"(?<![\w.])\d[\d.]*[A-Za-z_]")
 # A word, and the words OBML's grammar reads other than a function's name: its
@@ -237,7 +246,8 @@ _NUMBER_THEN_WORD = re.compile(r"(?<![\w.])\d[\d.]*[A-Za-z_]")
 _WORD = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 _OBML_WORDS = frozenset(
     {"AND", "OR", "NOT", "CASE", "WHEN", "THEN", "ELSE", "END", "IS", "IN", "BETWEEN"}
-    | {"LIKE", "NULL", "TRUE", "FALSE", "DATE", "TIMESTAMP", "TIME"}
+    | {"LIKE", "ILIKE", "DISTINCT", "FROM", "NULL", "TRUE", "FALSE", "DATE", "TIMESTAMP"}
+    | {"TIME"}
 )
 # An expression's tokens as OBML's call scanner sees them: a string literal or a
 # reference whole, a word, or one character.
@@ -342,7 +352,8 @@ def obml_unreadable_text(expression: str) -> str | None:
     misuse = _catalog_misuse(expression)
     if misuse:
         return f"a call OBML's function catalog refuses: {misuse}"
-    stray = sorted(set(_OBML_CHARACTERS.sub("", text.replace("''", ""))))
+    # ``||`` is concatenation; a single ``|`` is not OBML.
+    stray = sorted(set(_OBML_CHARACTERS.sub("", text.replace("''", "").replace("||", ""))))
     if stray:
         return f"characters OBML does not read: {' '.join(stray)}"
     return None

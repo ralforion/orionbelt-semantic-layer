@@ -307,14 +307,12 @@ def test_a_filtered_metric_keeps_every_group() -> None:
 @pytest.mark.parametrize(
     "sql",
     [
-        "SUM(amount) FILTER (WHERE status ILIKE 'done')",
-        "SUM(amount) FILTER (WHERE status IS DISTINCT FROM region)",
-        "SUM(CASE WHEN order_id % 2 = 0 THEN amount END)",
+        "SUM(amount) FILTER (WHERE status ILIKE region)",
         "SUM(amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM order_id) = 1)",
         "SUM(amount) FILTER (WHERE region > CURRENT_TIMESTAMP(3))",
         "SUM(amount) FILTER (WHERE TRIM(BOTH ' ' FROM status) = 'done')",
     ],
-    ids=["ilike", "is distinct from", "modulo", "extract dayofweek", "clock precision", "trim"],
+    ids=["ilike a column", "extract dayofweek", "clock precision", "trim"],
 )
 def test_a_metric_obml_cannot_parse_leaves_the_model_loading(sql: str) -> None:
     # Imported as a measure, the expression stopped the whole model loading
@@ -343,6 +341,49 @@ def test_a_metric_obml_cannot_parse_leaves_the_model_loading(sql: str) -> None:
     model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
     assert "total" in model.measures
     assert "kept" not in model.measures
+
+
+def test_the_sql_operators_obml_parses_run() -> None:
+    # %, ||, ILIKE and IS [NOT] DISTINCT FROM import as measures and run.
+    metrics = {
+        "done_any_case": "SUM(amount) FILTER (WHERE status ILIKE 'do%')",
+        "not_open": "COUNT(*) FILTER (WHERE status IS DISTINCT FROM 'open')",
+        "even_ids": "SUM(CASE WHEN order_id % 2 = 0 THEN amount END)",
+        "labels": "COUNT(DISTINCT region || '-' || status)",
+    }
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "operators",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}}
+                    for n in ("order_id", "region", "status", "amount")
+                ],
+                "metrics": [
+                    {"name": name, "expression": {"sql": sql}} for name, sql in metrics.items()
+                ],
+            }
+        ],
+    }
+    converter = osi_orionbelt.OSItoOBML(doc)
+    obml = converter.convert()
+    assert not any("LOSSY" in w for w in converter.warnings)
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(select={"measures": list(metrics)})
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 'east', 'Done', 10),"
+        " (2, 'east', 'open', 5), (3, 'west', NULL, 7), (4, 'east', 'done', 20))"
+        " t(order_id, region, status, amount)"
+    )
+    rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+    # A NULL status is distinct from 'open', and makes its label NULL.
+    assert rows == [(30, 3, 25, 3)]
 
 
 def test_extract_and_current_date_run() -> None:
