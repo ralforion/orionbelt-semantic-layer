@@ -543,12 +543,14 @@ class DremioDialect(Dialect):
 
         ``7 / 2`` is an integer division there, and one that truncates, so
         the dividend is promoted first: the quotient is then exact, and
-        truncated once, toward zero, by ``SIGN * FLOOR(ABS)``.
+        truncated once, toward zero, by ``SIGN * FLOOR(ABS)``. That is still a
+        DECIMAL, which ``TIMESTAMPADD`` refuses as an amount (a week difference
+        is a ``div``), so it is cast to the catalog's integer.
         """
         left = self.promote_dividend(self.compile_expr(args[0]))
         right = self.compile_expr(args[1], _parent_prec=self._PREC_MUL + 1)
         quotient = f"({left} / {right})"
-        return self._render_infix(f"SIGN({quotient}) * FLOOR(ABS({quotient}))")
+        return f"CAST(SIGN({quotient}) * FLOOR(ABS({quotient})) AS BIGINT)"
 
     def _render_log(self, args: list[Expr]) -> str:
         """Dremio's ``LOG`` accepts a base, but its reference does not state

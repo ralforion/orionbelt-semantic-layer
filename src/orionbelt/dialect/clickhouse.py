@@ -725,6 +725,10 @@ class ClickHouseDialect(Dialect):
           metric's declared precision), pre-round the inner expression
           to the target scale before casting.
         """
+        if self._is_fractional_timestamp_literal(inner, type_name):
+            # DateTime holds whole seconds and drops the fraction of
+            # '00:00:00.9'; DateTime64(6) keeps the microseconds.
+            return f"CAST({self.compile_expr(inner)} AS Nullable(DateTime64(6)))"
         resolved_type = self._resolve_type_name(type_name)
         nullable = resolved_type
         if not nullable.startswith("Nullable("):

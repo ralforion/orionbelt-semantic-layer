@@ -394,12 +394,14 @@ class BigQueryDialect(Dialect):
 
         BigQuery still refuses a month-or-larger interval on a TIMESTAMP; that
         surfaces as its own error rather than a wrong answer, and casting the
-        column to DATE or DATETIME is the fix.
+        column to DATE or DATETIME is the fix. A week is ``WEEK`` here:
+        ``ISOWEEK``, the numbering DATE_DIFF and EXTRACT take, is no interval
+        part ("Invalid interval datetime field ISOWEEK").
         """
         n = self.compile_expr(count, _parent_prec=self._PREC_MUL)
+        part = "WEEK" if unit == "week" else self._SQL_UNITS[unit]
         return self._render_infix(
-            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} "
-            f"+ INTERVAL {n} {self._SQL_UNITS[unit]}"
+            f"{self.compile_expr(value, _parent_prec=self._PREC_ADD)} + INTERVAL {n} {part}"
         )
 
     def _render_date_diff(self, unit: str, start: Expr, end: Expr) -> str:
