@@ -274,6 +274,20 @@ class SnowflakeDialect(Dialect):
         which the two-argument ``CONVERT_TIMEZONE`` reads in *zone*."""
         return f"CAST(CONVERT_TIMEZONE({self._quote_zone(zone)}, CURRENT_TIMESTAMP()) AS DATE)"
 
+    def _render_session_timestamp(self) -> str:
+        """Snowflake: ``CURRENT_TIMESTAMP()`` is a ``TIMESTAMP_LTZ``; as a
+        ``TIMESTAMP_NTZ`` it is the session's wall clock."""
+        return "CAST(CURRENT_TIMESTAMP() AS TIMESTAMP_NTZ)"
+
+    def _render_now_in_zone(self, zone: str) -> str:
+        """Snowflake: the instant read in *zone*, as :meth:`_render_today_in_zone`,
+        kept a ``TIMESTAMP_NTZ``: compared with a ``TIMESTAMP_TZ`` a naive value
+        would be read in the session's zone."""
+        return (
+            f"CAST(CONVERT_TIMEZONE({self._quote_zone(zone)}, CURRENT_TIMESTAMP()) "
+            "AS TIMESTAMP_NTZ)"
+        )
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """Snowflake: ``CONVERT_TIMEZONE``, whose two-argument form reads an
         aware value in *zone* and whose three-argument form declares a naive
