@@ -102,9 +102,11 @@ Most answers agree with the Ossie compliance cases. Where Ossie refuses a query,
 | A filter one metric's dataset cannot reach: revenue and returns by region, where order amount > 100 | Refused, `E_UNSUPPORTED_FILTER_PATH` | Filters revenue; returns are not filtered. Warns `FILTER_NOT_APPLIED` | Query the two metrics separately |
 | One aggregate over two datasets: `SUM(orders.amount - returns.amount)` | Refused, `E_AMBIGUOUS_MEASURE_GRAIN` | Sums each dataset per customer, the data object both join to, and evaluates per customer. A customer with orders and no returns counts their orders. Warns `CONFORMED_GRAIN_ASSUMED` | Set `anchor:` on the measure to choose the grain |
 | Rows on the one side that no fact reaches: departments counted by employee job, and one department has no employees | Left out, unless the query sets `includeUnmatched` | Kept, in a row where job is empty | Filter that row out: `where: [{field: job, op: set}]` |
+| Two routes lead to a dimension's dataset: sales by year, where a sale has a date and its store a closing date | Refused, `E_AMBIGUOUS_PATH`, even when one route is shorter | Takes the shorter route: the date the sale joins itself. A filter on year reads the same date. Two routes of the same length are refused (`AMBIGUOUS_JOIN_PATH`) | Nothing to do for the shorter route. For the other one, add a dimension over the same field that names the dataset to go through: `{dataObject: date_dim, column: year, via: store}` groups sales by the store's closing year |
+| Dimensions only, from datasets that cannot reach each other: item brands by store state, with no metric | Refused, `E_NO_ANCHOR` | Reads the pairs through a dataset that joins both: the brands and states that occur together in sales. Where several datasets join both, the pairs that occur in any of them | Select a metric of the dataset whose pairs you want, such as `total_sales` |
 | `ROLLUP` (`grouping: rollup` in OBML) | The grouped rows and the total rows | The same rows, plus one 0/1 column per dimension that marks the total rows | Leave out the flag columns |
 
-See [Cross-fact measure expressions](compilation.md#cross-fact-measure-expressions) for how a measure over two facts is evaluated.
+See [Cross-fact measure expressions](compilation.md#cross-fact-measure-expressions) for how a measure over two facts is evaluated, and [Dimension-Only Queries](compilation.md#dimension-only-queries) for how a query without measures chooses its rows.
 
 ## Gradio UI
 
