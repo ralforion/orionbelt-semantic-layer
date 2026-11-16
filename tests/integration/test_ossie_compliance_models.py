@@ -310,7 +310,7 @@ def test_a_filtered_metric_keeps_every_group() -> None:
         "SUM(amount) FILTER (WHERE status ILIKE region)",
         "SUM(amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM order_id) = 1)",
         "SUM(amount) FILTER (WHERE region > CURRENT_TIMESTAMP(3))",
-        "SUM(amount) FILTER (WHERE TRIM(BOTH ' ' FROM status) = 'done')",
+        "SUM(amount) FILTER (WHERE TRIM(BOTH 'x' FROM status) = 'done')",
     ],
     ids=["ilike a column", "extract dayofweek", "clock precision", "trim"],
 )
@@ -386,6 +386,81 @@ def test_the_sql_operators_obml_parses_run() -> None:
     rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
     # A NULL status is distinct from 'open', and makes its label NULL.
     assert rows == [(30, 3, 25, 3, 42)]
+
+
+# Ossie's functions OBML's catalog has under another name or form, each beside
+# DuckDB's own function for it.
+_OSSIE_FUNCTIONS = {
+    "days": ("SUM(DATEDIFF(day, opened, closed))", "SUM(date_diff('day', opened, closed))"),
+    "months": ("SUM(DATEDIFF(month, opened, closed))", "SUM(date_diff('month', opened, closed))"),
+    "week_on": ("MAX(DATEADD(day, 7, opened))", "MAX(opened + INTERVAL 7 DAY)"),
+    "years": ("SUM(YEAR(opened))", "SUM(year(opened))"),
+    "quarters": ("SUM(DATE_PART('quarter', opened))", "SUM(quarter(opened))"),
+    "weeks": ("SUM(EXTRACT(WEEK FROM opened))", "SUM(weekofyear(opened))"),
+    "day_of_year": ("SUM(DAYOFYEAR(opened))", "SUM(dayofyear(opened))"),
+    "trimmed": ("SUM(LENGTH(TRIM(BOTH ' ' FROM status)))", "SUM(length(trim(status)))"),
+    "positive": ("SUM(IFF(amount > 0, 1, 0))", "SUM(CASE WHEN amount > 0 THEN 1 ELSE 0 END)"),
+    "known": ("SUM(NVL2(amount, 1, 0))", "COUNT(amount)"),
+    "zeroed": ("SUM(ZEROIFNULL(amount))", "SUM(coalesce(amount, 0))"),
+    "nonzero": ("COUNT(NULLIFZERO(amount))", "COUNT(nullif(amount, 0))"),
+    "at_n": ("SUM(POSITION('n' IN status))", "SUM(position('n' IN status))"),
+    "at_b": ("SUM(CHARINDEX('b', status))", "SUM(position('b' IN status))"),
+    "with_n": (
+        "COUNT(CASE WHEN CONTAINS(status, 'n') THEN 1 END)",
+        "COUNT(CASE WHEN contains(status, 'n') THEN 1 END)",
+    ),
+    "heads": ("MAX(LEFT(status, 3))", "MAX(left(status, 3))"),
+    "tails": ("MAX(RIGHT(status, 3))", "MAX(right(status, 3))"),
+    "degrees": ("SUM(DEGREES(amount))", "SUM(degrees(amount))"),
+    "radians": ("SUM(RADIANS(amount))", "SUM(radians(amount))"),
+    "circles": ("SUM(PI() * amount)", "SUM(pi() * amount)"),
+}
+
+
+def test_the_ossie_functions_run_as_duckdb_s_own() -> None:
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "functions",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}}
+                    for n in ("id", "amount", "status", "opened", "closed")
+                ],
+                "metrics": [
+                    {"name": name, "expression": {"sql": ossie}}
+                    for name, (ossie, _) in _OSSIE_FUNCTIONS.items()
+                ],
+            }
+        ],
+    }
+    converter = osi_orionbelt.OSItoOBML(doc)
+    obml = converter.convert()
+    assert not any("LOSSY" in w for w in converter.warnings)
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(select={"measures": list(_OSSIE_FUNCTIONS)})
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES"
+        " (1, 10.0, ' Done ', TIMESTAMP '2026-01-31 23:00:00', TIMESTAMP '2026-02-01 01:00:00'),"
+        " (2, NULL, 'pending', TIMESTAMP '2026-03-15 08:00:00', TIMESTAMP '2026-04-02 09:30:00'),"
+        " (3, -2.5, 'nab', TIMESTAMP '2024-12-31 12:00:00', TIMESTAMP '2025-01-01 00:00:00'))"
+        " t(id, amount, status, opened, closed)"
+    )
+    ours = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchone()
+    native = con.execute(
+        "SELECT " + ", ".join(sql for _, sql in _OSSIE_FUNCTIONS.values()) + " FROM orders"
+    ).fetchone()
+    assert ours is not None and native is not None
+    for name, got, want in zip(_OSSIE_FUNCTIONS, ours, native, strict=True):
+        if isinstance(want, float):
+            assert got == pytest.approx(want), name
+        else:
+            assert got == want, name
 
 
 def test_extract_and_current_date_run() -> None:

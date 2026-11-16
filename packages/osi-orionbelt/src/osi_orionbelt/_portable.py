@@ -29,11 +29,22 @@ from typing import Any
 
 import sqlglot
 from sqlglot import expressions as exp
+from sqlglot.tokens import TokenType
 
 from osi_orionbelt._sql_reserved import DUCKDB_REJECTED_WORDS, SQL_RESERVED_WORDS
 
 _MEASURE_REF = re.compile(r"\{\[([^\]]+)\]\}")
 _COLUMN_REF = re.compile(r"\{\[([^\]]+)\]\.\[([^\]]+)\]\}")
+# OBML catalog calls Ossie's language spells otherwise, with the same arguments
+# in the same order: DATEADD(part, n, d), DATEDIFF(part, start, end),
+# DATE_PART('part', d) for OBML's extract('part', d), and CHARINDEX(substr, str),
+# its comma form of POSITION(substr IN str).
+_OSSIE_CALLS = {
+    "DATE_ADD": "DATEADD",
+    "DATE_DIFF": "DATEDIFF",
+    "EXTRACT": "DATE_PART",
+    "POSITION": "CHARINDEX",
+}
 
 _DEFAULT_COUNT_PATTERN = "{object} Count"
 
@@ -303,6 +314,23 @@ def synthesized_counts(obml: dict[str, Any]) -> dict[str, str]:
     return counts
 
 
+def _ossie_calls(sql: str) -> str:
+    """*sql* with each call in ``_OSSIE_CALLS`` under Ossie's name."""
+    try:
+        tokens = sqlglot.tokenize(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql
+    for token, following in reversed(list(zip(tokens, tokens[1:], strict=False))):
+        name = _OSSIE_CALLS.get(token.text.upper())
+        if (
+            name
+            and following.token_type is TokenType.L_PAREN
+            and token.token_type is not TokenType.STRING
+        ):
+            sql = sql[: token.start] + name + sql[token.end + 1 :]
+    return sql
+
+
 class PortableRenderer:
     """Render OBML measures and metrics as portable Ossie SQL expressions.
 
@@ -362,7 +390,8 @@ class PortableRenderer:
         return f"CAST({truncated} AS {cast})" if cast else truncated
 
     def _expression(self, template: str) -> str:
-        return _COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template)
+        sql = _COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template)
+        return _ossie_calls(sql) if self.ossie else sql
 
     # ── measures ──────────────────────────────────────────────────────
 
