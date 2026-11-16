@@ -180,6 +180,13 @@ _CATALOGS: dict[str, type[Catalog]] = {}
 #: A Snowflake name that can go into a statement as written: plain or quoted.
 _SNOWFLAKE_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+"')
 
+#: The tokens of a ClickHouse key expression as the engine writes it back: a
+#: string literal ('b', 'it\'s'), a backquoted name, a number (100000., 1e100),
+#: a function name with its parenthesis ("toDate(") and a plain name. Only the
+#: names can equal a column's, so a word inside a literal, a number's exponent
+#: or a function named like a column is never taken for the column.
+_CLICKHOUSE_KEY_TOKENS = r"'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\d[\w.]*|[A-Za-z_]\w*\(|[A-Za-z_]\w*"
+
 
 def _register(cls: type[Catalog]) -> type[Catalog]:
     _CATALOGS[cls.dialect] = cls
@@ -603,11 +610,11 @@ class ClickHouseCatalog(Catalog):
         # system.columns flags a key's columns, but its position is the column's
         # place in the table. The declared order is system.tables.primary_key, as
         # SQL ("b, a", "toDate(ts), id"): a column ranks by where its name first
-        # appears there, backquoted or not.
+        # appears there among the expression's tokens (_CLICKHOUSE_KEY_TOKENS).
         return CatalogQuery(
             "SELECT c.table AS table_name, c.name AS column_name, "
             "indexOf(arrayMap(x -> replaceAll(x, '`', ''), "
-            "extractAll(t.primary_key, '`[^`]+`|[A-Za-z_][A-Za-z0-9_]*')), c.name) AS ordinal "
+            f"extractAll(t.primary_key, {self.lit(_CLICKHOUSE_KEY_TOKENS)})), c.name) AS ordinal "
             "FROM system.columns AS c INNER JOIN system.tables AS t "
             "ON t.database = c.database AND t.name = c.table "
             f"WHERE c.database = {self.lit(schema)} AND c.is_in_primary_key"

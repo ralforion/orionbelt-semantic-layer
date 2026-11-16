@@ -44,6 +44,18 @@ SHOP_DDL = (
     "CREATE TABLE shop.quoted (a UInt32, `my col` UInt32) "
     "ENGINE = MergeTree ORDER BY (`my col`, a)",
     "CREATE TABLE shop.keyless (a UInt32) ENGINE = MergeTree ORDER BY tuple()",
+    # A string literal holding a column's name.
+    "CREATE TABLE shop.literal (a String, b UInt32) "
+    "ENGINE = MergeTree ORDER BY (concat('b', a), b)",
+    # Names quoted and escaped inside a literal.
+    "CREATE TABLE shop.literal_quotes (a String, b UInt32, `my col` UInt8) "
+    "ENGINE = MergeTree ORDER BY (concat('it\\'s `b` and \"b\"', a), `my col`, b)",
+    # A number's exponent written like a column's name (1e100 stays 1e100).
+    "CREATE TABLE shop.exponent (e100 UInt32, b UInt32) "
+    "ENGINE = MergeTree ORDER BY (1e100 + b, e100)",
+    # A function named like a column.
+    "CREATE TABLE shop.function (`toDate` Date, ts DateTime) "
+    "ENGINE = MergeTree ORDER BY (toDate(ts), `toDate`)",
 )
 
 SOURCE = DataSource(name="clickhouse", dialect="clickhouse", environ={})
@@ -102,7 +114,11 @@ def test_primary_keys_in_the_order_the_table_declares(run: Runner) -> None:
     assert info is not None
     assert {t.name: t.primary_key for t in info.tables} == {
         "events": ["ts", "id", "x"],
+        "exponent": ["b", "e100"],
+        "function": ["ts", "toDate"],
         "keyless": [],
+        "literal": ["a", "b"],
+        "literal_quotes": ["a", "my col", "b"],
         "orders": ["b", "a"],
         "prefix": ["c", "a"],
         "quoted": ["my col", "a"],
