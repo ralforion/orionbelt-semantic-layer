@@ -1118,6 +1118,18 @@ class ClickHouseDialect(Dialect):
         session's zone, which ``toTimeZone`` shows in *zone* instead."""
         return f"CAST(toTimeZone(now(), {self._quote_zone(zone)}) AS DATE)"
 
+    def _render_session_timestamp(self) -> str:
+        """ClickHouse: ``now64(6)``, a ``DateTime64`` shown in the session's zone."""
+        return "now64(6)"
+
+    def _render_now_in_zone(self, zone: str) -> str:
+        """ClickHouse: ``now64(6)`` shown in *zone*, as a timestamp column is read."""
+        return f"toTimeZone(now64(6), {self._quote_zone(zone)})"
+
+    def _render_current_time(self) -> str:
+        """ClickHouse has no time type; OBML's ``time`` is text here: ``HH:MM:SS``."""
+        return f"formatDateTime({self._render_current_timestamp()}, '%H:%i:%S')"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """ClickHouse: ``toTimeZone``, which keeps the value's type.
 

@@ -211,6 +211,20 @@ class DatabricksDialect(Dialect):
             "TIMESTAMP_NTZ'1970-01-01 00:00:00')"
         )
 
+    def _render_session_timestamp(self) -> str:
+        """Databricks: ``current_timestamp()`` is an instant; as a
+        ``TIMESTAMP_NTZ`` it is the session's wall clock."""
+        return "CAST(current_timestamp() AS TIMESTAMP_NTZ)"
+
+    def _render_now_in_zone(self, zone: str) -> str:
+        """Databricks: the instant read in *zone*, as :meth:`_render_today_in_zone`."""
+        now = self._utc_wall_clock("current_timestamp()")
+        return f"convert_timezone('UTC', {self._quote_zone(zone)}, {now})"
+
+    def _render_current_time(self) -> str:
+        """Databricks has no time type; OBML's ``time`` is text here: ``HH:mm:ss``."""
+        return f"date_format({self._render_current_timestamp()}, 'HH:mm:ss')"
+
     def _render_in_timezone(self, value: Expr, zone: str, from_zone: str | None) -> str:
         """Databricks: ``convert_timezone``, which answers the wall-clock time
         in *zone* as a ``TIMESTAMP_NTZ``, as every other engine returns it.

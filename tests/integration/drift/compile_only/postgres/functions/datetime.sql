@@ -63,3 +63,11 @@ CAST(DATE_TRUNC('month', CAST('2026-02-01' AS DATE)) + INTERVAL '1 month' - INTE
 -- current_date()
 --   date_diff('day', current_date(), current_date()) = 0
 CAST(TRUNC(EXTRACT(EPOCH FROM (DATE_TRUNC('day', CURRENT_DATE) - DATE_TRUNC('day', CURRENT_DATE))) / 86400) AS INTEGER);
+
+-- current_timestamp()
+--   date_diff('day', current_timestamp(), current_timestamp()) = 0
+CAST(TRUNC(EXTRACT(EPOCH FROM (DATE_TRUNC('day', LOCALTIMESTAMP) - DATE_TRUNC('day', LOCALTIMESTAMP))) / 86400) AS INTEGER);
+
+-- current_time()
+--   CASE WHEN current_time() IS NULL THEN 0 ELSE 1 END = 1
+CASE WHEN CAST(LOCALTIMESTAMP AS TIME) IS NULL THEN 0 ELSE 1 END;
