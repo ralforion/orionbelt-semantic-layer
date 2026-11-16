@@ -56,7 +56,10 @@ The converter handles this decomposition automatically:
 | Snowflake `APPROX_PERCENTILE(a.x, p)` / Databricks `approx_percentile(a.x, p[, accuracy])`, `percentile_approx(...)` | The exact percentile it estimates, with an `APPROXIMATE` warning: `percentile_cont` from Snowflake (an interpolating t-digest), `percentile_disc` from Databricks (a value of the column). A list of fractions or a weighted form is preserved verbatim |
 | Multi-aggregation expression | Auto-generated measures + metric formula |
 | Aggregate nested in a larger expression (`ROUND(SUM(a.x), 2)`, `CASE WHEN SUM(a.x) > 0 THEN SUM(a.y) END`) | Auto-generated measures + metric formula |
-| Aggregate with `FILTER (WHERE ...)` or `OVER (...)` | Preserved verbatim: neither is part of the measure the aggregate would become |
+| Aggregate with `FILTER (WHERE p)` (`SUM(a.x) FILTER (WHERE a.s = 'done')`) | The measure of `CASE WHEN p THEN x END`, the rewrite Apache Ossie's expression language gives (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); a FILTER over an aggregate not relied on to skip NULLs (`ANY_VALUE`, `MODE`, `LISTAGG`) or with several arguments is preserved verbatim |
+| Aggregated expression OBML's parser does not read: an operator it lacks (bitwise, `LIKE ... ESCAPE`, `ILIKE` against a column or with a backslash in its pattern; `%`, `\|\|`, `ILIKE 'p'` and `IS [NOT] DISTINCT FROM` import), SQL syntax inside a call (`EXTRACT(DAYOFWEEK FROM d)`, `TRIM(BOTH ' ' FROM s)`), a clock read with an argument (`CURRENT_TIMESTAMP(3)`), or a catalog function with an argument count or unit OBML refuses | Preserved verbatim: as a measure it would stop the model loading (`INVALID_MEASURE_EXPRESSION`, `WRONG_FUNCTION_ARITY`, `UNKNOWN_TIME_UNIT`) |
+| `EXTRACT(<part> FROM x)` for YEAR, QUARTER, MONTH, DAY, HOUR, MINUTE, SECOND; `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME` | OBML's `extract('<part>', x)`; `current_date()`, `current_timestamp()`, `current_time()` |
+| Aggregate with `OVER (...)` | Preserved verbatim: the window is not part of the measure the aggregate would become |
 | Expression containing a query (`(SELECT ...)`, `UNION`) | Preserved verbatim: a metric formula is over measures, and the query's own tables and aliases are not datasets |
 
 The decomposition is driven by **sqlglot**: the resolved SQL is parsed under its source dialect grammar, the aggregate nodes are located in the AST, and each is lifted into an auto-measure with the surrounding expression becoming the metric formula. This is why an aggregate nested inside `ROUND(...)`, a `CASE` expression, or any other function decomposes rather than falling back to preserve-verbatim, and why a numeric or string literal containing a dot (`1.23`, `'north.1'`) is never mistaken for a `dataset.column` reference.
@@ -111,7 +114,7 @@ customExtensions:
     data: '{"synonyms": ["sales transactions", "store purchases"]}'
 ```
 
-This applies at all levels: datasets → data objects, fields → columns, and model-level `ai_context`.
+This applies at all levels: datasets → data objects, fields → columns, metrics → measures and metrics, and the model. A metric's synonyms become the OBML synonyms, and the rest of its `ai_context` is kept under the `obml_ai_context` key; the model's whole `ai_context` is kept on the OBML model the same way. A plain-string `ai_context` is read as its `instructions`.
 
 During OBML → OSI conversion, the `customExtensions` with `vendor: "OSI"` are read back and restored as native `ai_context` on the OSI side.
 

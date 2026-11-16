@@ -257,3 +257,260 @@ def test_a_field_obml_writes_differently_still_runs(sql: str, expected: float) -
     )
     rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
     assert rows == [(pytest.approx(expected),)]
+
+
+def test_a_filtered_metric_keeps_every_group() -> None:
+    # FILTER (WHERE ...) gates the aggregate's input, never the groups: a region
+    # with no completed order still has its row, with no sum and a count of 0.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "filtered",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}}
+                    for n in ("order_id", "region", "status", "amount")
+                ],
+                "metrics": [
+                    {
+                        "name": "done_amount",
+                        "expression": {"sql": "SUM(amount) FILTER (WHERE status = 'done')"},
+                    },
+                    {
+                        "name": "done_orders",
+                        "expression": {"sql": "COUNT(*) FILTER (WHERE status = 'done')"},
+                    },
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(
+        select={"dimensions": ["region"], "measures": ["done_amount", "done_orders"]},
+        order_by=[{"field": "region"}],
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 'east', 'done', 10),"
+        " (2, 'east', 'open', 5), (3, 'west', 'open', 7), (4, 'east', 'done', 20))"
+        " t(order_id, region, status, amount)"
+    )
+    rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+    assert rows == [("east", 30, 2), ("west", None, 0)]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SUM(amount) FILTER (WHERE status ILIKE region)",
+        "SUM(amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM order_id) = 1)",
+        "SUM(amount) FILTER (WHERE region > CURRENT_TIMESTAMP(3))",
+        "SUM(amount) FILTER (WHERE TRIM(BOTH ' ' FROM status) = 'done')",
+    ],
+    ids=["ilike a column", "extract dayofweek", "clock precision", "trim"],
+)
+def test_a_metric_obml_cannot_parse_leaves_the_model_loading(sql: str) -> None:
+    # Imported as a measure, the expression stopped the whole model loading
+    # (INVALID_MEASURE_EXPRESSION); it is preserved instead.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "unparsed",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}}
+                    for n in ("order_id", "region", "status", "amount")
+                ],
+                "metrics": [
+                    {"name": "kept", "expression": {"sql": sql}},
+                    {"name": "total", "expression": {"sql": "SUM(amount)"}},
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    assert "total" in model.measures
+    assert "kept" not in model.measures
+
+
+def test_the_sql_operators_obml_parses_run() -> None:
+    # %, ||, ILIKE and IS [NOT] DISTINCT FROM import as measures and run.
+    metrics = {
+        "done_any_case": "SUM(amount) FILTER (WHERE status ILIKE 'do%')",
+        "not_open": "COUNT(*) FILTER (WHERE status IS DISTINCT FROM 'open')",
+        "even_ids": "SUM(CASE WHEN order_id % 2 = 0 THEN amount END)",
+        "labels": "COUNT(DISTINCT region || '-' || status)",
+        # In the formula over the measures: MIN(status) is 'Done'.
+        "d_first": "CASE WHEN MIN(status) ILIKE 'd%' THEN SUM(amount) ELSE 0 END",
+    }
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "operators",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}}
+                    for n in ("order_id", "region", "status", "amount")
+                ],
+                "metrics": [
+                    {"name": name, "expression": {"sql": sql}} for name, sql in metrics.items()
+                ],
+            }
+        ],
+    }
+    converter = osi_orionbelt.OSItoOBML(doc)
+    obml = converter.convert()
+    assert not any("LOSSY" in w for w in converter.warnings)
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(select={"measures": list(metrics)})
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 'east', 'Done', 10),"
+        " (2, 'east', 'open', 5), (3, 'west', NULL, 7), (4, 'east', 'done', 20))"
+        " t(order_id, region, status, amount)"
+    )
+    rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+    # A NULL status is distinct from 'open', and makes its label NULL.
+    assert rows == [(30, 3, 25, 3, 42)]
+
+
+def test_extract_and_current_date_run() -> None:
+    # EXTRACT(YEAR FROM x) is OBML's extract('year', x), and CURRENT_DATE its
+    # current_date(): a bare CURRENT_DATE is a string to OBML.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "dated",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}} for n in ("order_id", "day", "amount")
+                ],
+                "metrics": [
+                    {
+                        "name": "this_year",
+                        "expression": {
+                            "sql": "SUM(amount) FILTER (WHERE EXTRACT(YEAR FROM day) = 2026"
+                            " AND day <= CURRENT_DATE)"
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    sql = (
+        CompilationPipeline()
+        .compile(QueryObject(select={"measures": ["this_year"]}), model, "duckdb")
+        .sql
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, DATE '2026-01-05', 10),"
+        " (2, DATE '2025-06-01', 5), (3, DATE '2999-01-01', 7)) t(order_id, day, amount)"
+    )
+    assert con.execute(sql).fetchall() == [(10,)]
+
+
+def _function_samples() -> list[str]:
+    from osi_orionbelt._ossie_sql import _FUNCTIONS
+
+    aggregates_and_windows = {
+        "SUM", "COUNT", "AVG", "MIN", "MAX", "STDDEV", "STDDEV_POP", "STDDEV_SAMP",
+        "VARIANCE", "VAR_POP", "VAR_SAMP", "MEDIAN", "PERCENTILE_CONT", "PERCENTILE_DISC",
+        "APPROX_COUNT_DISTINCT", "APPROX_PERCENTILE", "ROW_NUMBER", "RANK", "DENSE_RANK",
+        "NTILE", "PERCENT_RANK", "CUME_DIST", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE",
+        "NTH_VALUE",
+    }  # fmt: skip
+    return [
+        part.strip()
+        for name, sample in sorted(_FUNCTIONS.items())
+        if name not in aggregates_and_windows
+        for part in re.split(r"\s\+\s|\s\|\|\s", sample)
+    ]
+
+
+@pytest.mark.parametrize("call", _function_samples())
+def test_every_ossie_function_leaves_the_model_loading(call: str) -> None:
+    # Each function of Ossie's expression language, inside a metric: imported as
+    # a measure or kept aside, never one that stops the model loading.
+    fields = ("id", "x", "y", "d", "s", "a", "b", "c")
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "functions",
+        "datasets": [
+            {
+                "name": "t",
+                "source": "main.t",
+                "primary_key": ["id"],
+                "fields": [{"name": n, "expression": {"sql": n}} for n in fields],
+                "metrics": [{"name": "m", "expression": {"sql": f"COUNT({call})"}}],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    ModelStore().load_model(yaml.safe_dump(obml), dedup=False)
+
+
+def test_the_clock_functions_run() -> None:
+    # CURRENT_TIMESTAMP and CURRENT_TIME are OBML's current_timestamp() and
+    # current_time(): the session's clock, as the source's, with no queryTimezone.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "clocked",
+        "datasets": [
+            {
+                "name": "events",
+                "source": "main.events",
+                "primary_key": ["event_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}} for n in ("event_id", "happened", "opens")
+                ],
+                "metrics": [
+                    {
+                        "name": "past",
+                        "expression": {
+                            "sql": "COUNT(*) FILTER (WHERE happened <= CURRENT_TIMESTAMP)"
+                        },
+                    },
+                    {
+                        "name": "open_now",
+                        "expression": {"sql": "COUNT(*) FILTER (WHERE opens <= CURRENT_TIME)"},
+                    },
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(select={"measures": ["past", "open_now"]})
+    sql = CompilationPipeline().compile(query, model, "duckdb").sql
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE events AS SELECT * FROM (VALUES"
+        " (1, TIMESTAMP '2001-01-01 00:00:00', TIME '00:00:00'),"
+        " (2, TIMESTAMP '2999-01-01 00:00:00', TIME '23:59:59.999999'))"
+        " t(event_id, happened, opens)"
+    )
+    past, open_now = con.execute(sql).fetchone()  # type: ignore[misc]
+    assert past == 1
+    assert open_now in (1, 2)  # 2 only in the last microsecond of the day

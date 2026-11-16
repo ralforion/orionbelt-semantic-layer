@@ -108,9 +108,21 @@ class TestImport:
             "CASE WHEN {status} = 'paid' THEN CAST({amount_cents}, 'double') / 100 ELSE 0 END"
         )
 
+    def test_concatenation_and_null_safe_comparison(self) -> None:
+        columns, warnings = _columns(
+            _doc(
+                _field("full_name", "first_name || ' ' || last_name"),
+                _field("renamed", "first_name IS DISTINCT FROM last_name"),
+            )
+        )
+        assert columns["full_name"]["expression"] == "{first_name} || ' ' || {last_name}"
+        assert columns["renamed"]["expression"] == "{first_name} IS DISTINCT FROM {last_name}"
+        assert not any("LOSSY" in w and "'orders." in w for w in warnings)
+
     def test_what_obml_cannot_parse_is_kept_and_reported(self) -> None:
-        columns, warnings = _columns(_doc(_field("amount", "first_name || ' ' || last_name")))
-        assert columns["amount"]["code"] == "first_name || ' ' || last_name"
+        # OBML's ILIKE takes a string pattern, not a column.
+        columns, warnings = _columns(_doc(_field("amount", "first_name ILIKE last_name")))
+        assert columns["amount"]["code"] == "first_name ILIKE last_name"
         assert any("LOSSY" in w and "'orders.amount'" in w for w in warnings)
 
 

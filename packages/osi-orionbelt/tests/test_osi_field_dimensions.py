@@ -98,8 +98,8 @@ class TestImport:
         doc = _doc(
             _dataset(
                 "orders",
-                _field("label", "first_name || last_name"),
-                _field("marked", "first_name || last_name", dimension={}),
+                _field("label", "first_name ILIKE last_name"),
+                _field("marked", "first_name ILIKE last_name", dimension={}),
             )
         )
         dims = _dimensions(doc)

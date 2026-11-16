@@ -36,6 +36,7 @@ from osi_orionbelt._field_expressions import (
     obml_unreadable_text,
     render_obml,
     unreadable,
+    unreadable_operator,
 )
 from osi_orionbelt._field_names import (
     FIELD_NAMES_COLUMN,
@@ -77,6 +78,14 @@ _ANON_AGG_TO_OBML = {
     "LISTAGG": "listagg",
 }
 
+# Aggregations that ignore NULL inputs, for which ``AGG(x) FILTER (WHERE p)`` is
+# ``AGG(CASE WHEN p THEN x END)``. ``any_value`` keeps NULLs on Databricks, and
+# ``mode`` and ``listagg`` are not relied on to skip them.
+_IGNORES_NULLS = frozenset(
+    {"sum", "count", "avg", "min", "max", "median", "stddev", "stddev_pop", "variance"}
+    | {"var_pop", "percentile_cont", "percentile_disc"}
+)
+
 # Exact percentile aggregates, keyed by the sqlglot node: the ordered-set form
 # ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`` parses as a ``WithinGroup``
 # over one of these with the fraction as its only argument; the two-argument
@@ -115,6 +124,21 @@ _PERCENTILE_NAMES = frozenset(
         "QUANTILE_DISC",
     }
 )
+
+
+def _ai_context(value: Any) -> dict[str, Any]:
+    """An Ossie ``ai_context`` as an object: a plain string is its instructions."""
+    if isinstance(value, str):
+        return {"instructions": value} if value else {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _keep_ai_context(target: dict[str, Any], ai_context: dict[str, Any]) -> None:
+    """Keep the ``ai_context`` OBML has no slot for on *target*, for the export."""
+    if ai_context:
+        target.setdefault("customExtensions", []).append(
+            {"vendor": _VENDOR_OSI, "data": json.dumps({"obml_ai_context": ai_context})}
+        )
 
 
 def _restore_concept_links(
@@ -391,6 +415,8 @@ class OSItoOBML:
         # ── Model description ─────────────────────────────────────
         if model.get("description"):
             obml["description"] = model["description"]
+        # OBML has no model-level ai_context; the export writes it back.
+        _keep_ai_context(obml, _ai_context(model.get("ai_context")))
 
         # ── DataObjects ─────────────────────────────────────────────
         datasets = model.get("datasets", [])
@@ -1565,6 +1591,16 @@ class OSItoOBML:
             target = metrics.get(m["name"]) or measures.get(m["name"])
             if target is not None:
                 self._carry_foreign_extensions(m.get("custom_extensions"), target)
+                # The ai_context besides synonyms, which OBML has no slot for. A
+                # definition an OBML export wrote keeps what that export kept,
+                # not the instructions it generated.
+                if m["name"] in self._restored_names:
+                    saved = self._extract_obml_extras(m).get("obml_ai_context")
+                    _keep_ai_context(target, saved if isinstance(saved, dict) else {})
+                else:
+                    ai_context = _ai_context(m.get("ai_context"))
+                    ai_context.pop("synonyms", None)
+                    _keep_ai_context(target, ai_context)
                 # External concept links, whichever OBML entity the metric became.
                 _restore_concept_links(self._extract_obml_extras(m), target)
                 # Apache Ossie v0.2+ metric `datatype` -> OBML exact `dataType`
@@ -2081,6 +2117,32 @@ class OSItoOBML:
         return False
 
     @staticmethod
+    def _filter_as_case(node: exp.Expr) -> exp.Expr:
+        """``AGG(x) FILTER (WHERE p)`` as ``AGG(CASE WHEN p THEN x END)``.
+
+        The rewrite Apache Ossie's expression language gives for an aggregate
+        that ignores NULL inputs (``_IGNORES_NULLS``): a row the predicate
+        rejects contributes NULL. ``COUNT(*)`` counts ``1`` for each row it
+        keeps. A FILTER over any other aggregate, or one with several
+        arguments, stays, and the metric is preserved.
+        """
+        if not isinstance(node, exp.Filter):
+            return node
+        if OSItoOBML._obml_agg_name(node.this) not in _IGNORES_NULLS:
+            return node
+        agg = node.this.copy()
+        arg, _ = OSItoOBML._agg_arg(agg)
+        value: exp.Expr
+        if arg is not None:
+            value = arg.copy()
+        elif isinstance(agg, exp.Count) and isinstance(agg.this, exp.Star):
+            arg, value = agg.this, exp.Literal.number(1)
+        else:
+            return node
+        arg.replace(exp.Case(ifs=[exp.If(this=node.expression.this.copy(), true=value)]))
+        return agg
+
+    @staticmethod
     def _filtered_or_windowed(node: exp.Expr) -> bool:
         """Whether aggregate *node* carries a ``FILTER (WHERE ...)`` or an
         ``OVER (...)``, directly or around its ``WITHIN GROUP``.
@@ -2165,6 +2227,27 @@ class OSItoOBML:
 
         return render_obml(node, column)
 
+    @classmethod
+    def _readable_obml(cls, node: exp.Expr, what: str) -> str:
+        """*node* as OBML text: an aggregate's argument, or the formula over the
+        measures.
+
+        Raises :class:`NotRepresentableError` for one OBML cannot parse: it
+        would stop the whole model loading, so the metric is preserved.
+        """
+        expression = cls._render_obml(node)
+        reason = unreadable_operator(node) or obml_unreadable_text(expression)
+        if reason:
+            raise NotRepresentableError(
+                f"its {what} {node.sql()} is not one OBML can read ({reason})"
+            )
+        return expression
+
+    @classmethod
+    def _measure_expression(cls, arg: exp.Expr) -> str:
+        """*arg*, an aggregate's argument, as an OBML measure expression."""
+        return cls._readable_obml(arg, "aggregated expression")
+
     def _decompose_metric(
         self,
         expr_text: str,
@@ -2192,6 +2275,7 @@ class OSItoOBML:
         if tree.find(exp.Query) is not None:
             return None
         tree, self._approximated = self._exact_percentiles(tree, read)
+        tree = tree.transform(self._filter_as_case)
 
         # Resolve qualified column refs on the parsed AST, canonicalising each
         # dataset/column to its model name (see ``_NameIndex``). Working on the
@@ -2244,7 +2328,7 @@ class OSItoOBML:
             extra = self._percentile_extra(tree)
             if isinstance(arg, exp.Column) and arg.table:
                 return ("simple", agg, arg.table, arg.name, is_distinct, extra)
-            return ("expr", agg, self._render_obml(arg), is_distinct, extra)
+            return ("expr", agg, self._measure_expression(arg), is_distinct, extra)
 
         # Otherwise aggregates are embedded in a larger formula: each becomes an
         # auto-measure leaf, replaced by a ``{[key]}`` reference in the outer
@@ -2268,7 +2352,7 @@ class OSItoOBML:
                 expr_slug = re.sub(r"[^a-zA-Z0-9]", "_", arg.sql())[:40]
                 key = f"_{agg}_{expr_slug}{suffix}"
                 measure_def = {
-                    "expression": self._render_obml(arg),
+                    "expression": self._measure_expression(arg),
                     "aggregation": agg,
                 }
             if is_distinct:
@@ -2285,4 +2369,4 @@ class OSItoOBML:
         stray = next(iter(tree.find_all(exp.Column)), None)
         if stray is not None:
             raise NotRepresentableError(f"{stray.sql()} is read outside every aggregate")
-        return ("complex", self._render_obml(tree), auto_measures)
+        return ("complex", self._readable_obml(tree, "formula"), auto_measures)

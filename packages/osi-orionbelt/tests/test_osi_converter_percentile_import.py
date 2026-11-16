@@ -207,9 +207,7 @@ def test_inside_a_formula() -> None:
         "quantile_cont(Orders.amount, 0.3, Orders.cost)",
         "percentile(DISTINCT Orders.amount, 0.3)",
         "PERCENTILE_CONT(0.3, 1) WITHIN GROUP (ORDER BY Orders.amount)",
-        "percentile(Orders.amount, 0.3) FILTER (WHERE Orders.cost > 0)",
         "percentile(Orders.amount, 0.3) OVER ()",
-        "PERCENTILE_CONT(0.3) WITHIN GROUP (ORDER BY Orders.amount) FILTER (WHERE Orders.cost > 0)",
         "PERCENTILE_CONT(0.3) WITHIN GROUP (ORDER BY Orders.amount) OVER ()",
         "PERCENTILE_CONT(CAST(0.9 AS DECIMAL)) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(CAST(0.25 AS DECIMAL(3, 1))) WITHIN GROUP (ORDER BY Orders.amount)",
@@ -223,7 +221,6 @@ def test_inside_a_formula() -> None:
         "PERCENTILE_CONT(CAST('Infinity' AS DOUBLE)) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(CAST(1e40 AS FLOAT)) WITHIN GROUP (ORDER BY Orders.amount)",
         "PERCENTILE_CONT(CAST(-1e40 AS FLOAT)) WITHIN GROUP (ORDER BY Orders.amount)",
-        "SUM(Orders.amount) FILTER (WHERE Orders.cost > 0)",
         "SUM(Orders.amount) OVER () - SUM(Orders.cost)",
     ],
     ids=[
@@ -238,9 +235,7 @@ def test_inside_a_formula() -> None:
         "duckdb third argument",
         "distinct",
         "within group two arguments",
-        "filter",
         "over",
-        "within group filter",
         "within group over",
         "cast to bare decimal",
         "cast to a narrower scale",
@@ -254,19 +249,40 @@ def test_inside_a_formula() -> None:
         "infinity",
         "float overflow",
         "float negative overflow",
-        "sum filter",
         "sum over in a formula",
     ],
 )
 def test_preserved_when_not_modelable(expression: str) -> None:
     """Each would otherwise import as a different measure: a weighted
     percentile as an unweighted one (sqlglot drops the frequency argument), a
-    DISTINCT one as an invalid expression, and any aggregate with a FILTER or
-    OVER as a formula OBML does not parse."""
+    DISTINCT one as an invalid expression, and any aggregate with an OVER as a
+    formula OBML does not parse."""
     dialect = "DATABRICKS" if expression.startswith("percentile(") else "ANSI_SQL"
     obml = _import(expression, dialect)
     assert "Probe" not in obml.get("measures", {})
     assert "Probe" not in obml.get("metrics", {})
+
+
+@pytest.mark.parametrize(
+    ("expression", "aggregation"),
+    [
+        ("percentile(Orders.amount, 0.3) FILTER (WHERE Orders.cost > 0)", "percentile_cont"),
+        (
+            "PERCENTILE_CONT(0.3) WITHIN GROUP (ORDER BY Orders.amount)"
+            " FILTER (WHERE Orders.cost > 0)",
+            "percentile_cont",
+        ),
+        ("SUM(Orders.amount) FILTER (WHERE Orders.cost > 0)", "sum"),
+    ],
+    ids=["filter", "within group filter", "sum filter"],
+)
+def test_a_filter_gates_the_aggregated_value(expression: str, aggregation: str) -> None:
+    """``FILTER (WHERE p)`` becomes ``CASE WHEN p THEN x END`` in the
+    aggregated value, the rewrite Apache Ossie's expression language gives."""
+    dialect = "DATABRICKS" if expression.startswith("percentile(") else "ANSI_SQL"
+    measure = _import(expression, dialect)["measures"]["Probe"]
+    assert measure["expression"] == "CASE WHEN {[Orders].[cost]} > 0 THEN {[Orders].[amount]} END"
+    assert measure["aggregation"] == aggregation
 
 
 def test_nested_call_in_the_argument_still_imports() -> None:
