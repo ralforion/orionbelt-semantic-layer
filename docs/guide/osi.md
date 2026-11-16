@@ -90,6 +90,8 @@ An Apache Ossie document holds one semantic model, its properties (`name`, `data
 
 Apache Ossie drafts two ways to query a model: SQL with `AGG()` (the [relational interface](https://github.com/apache/ossie/blob/main/core-spec/relational_semantics.md), "Layer 2") and a request naming metrics, dimensions and a filter (the [wide-table interface](https://github.com/apache/ossie/blob/main/core-spec/wide_table_semantics.md), "Layer 3"). OBSL implements neither yet. An imported Ossie model is queried like any OBML model, with dimensions, measures and `where`.
 
+Every field of the model is a dimension, named as the field: `region`, `deptno`. Fields marked `dimension` are named first. A field whose name a field of another dataset already has is named with its dataset, `returns amount`, and so is a field named like a metric, since a dimension and a measure cannot share a name in OBML. The import lists each renamed field in its warnings. A field OBML cannot read (reported `LOSSY`) is a dimension only when marked.
+
 Most answers agree with the Ossie compliance cases. Where Ossie refuses a query, or returns other rows, OBSL answers as follows:
 
 | Query | Ossie | OBSL | If you want Ossie's answer |
