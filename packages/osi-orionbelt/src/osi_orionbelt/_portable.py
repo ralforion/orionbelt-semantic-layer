@@ -314,6 +314,45 @@ def synthesized_counts(obml: dict[str, Any]) -> dict[str, str]:
     return counts
 
 
+def _sql_casts(sql: str) -> str:
+    """*sql* with OBML's ``CAST(x, 'double')`` written as SQL's ``CAST(x AS DOUBLE)``.
+
+    OBML's cast takes its type as a quoted string (``'double'``,
+    ``'decimal(p, s)'``), which no SQL dialect reads; written as the SQL cast,
+    the import reads it back as the same OBML cast.
+    """
+    try:
+        tokens = sqlglot.tokenize(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql
+    edits: list[tuple[int, int, str]] = []
+    for i, token in enumerate(tokens[:-1]):
+        if token.text.upper() != "CAST" or tokens[i + 1].token_type is not TokenType.L_PAREN:
+            continue
+        depth, last_comma = 0, None
+        for j in range(i + 1, len(tokens)):
+            kind = tokens[j].token_type
+            if kind is TokenType.L_PAREN:
+                depth += 1
+            elif kind is TokenType.R_PAREN:
+                depth -= 1
+                if depth == 0:
+                    break
+            elif kind is TokenType.COMMA and depth == 1:
+                last_comma = j
+        else:
+            continue
+        if last_comma is None or last_comma + 2 != j:
+            continue
+        type_token = tokens[last_comma + 1]
+        if type_token.token_type is TokenType.STRING:
+            edits.append((tokens[last_comma].start, type_token.end, type_token.text.upper()))
+    for start, end, sql_type in sorted(edits, reverse=True):
+        # The string token ends at its closing quote.
+        sql = f"{sql[:start]} AS {sql_type}{sql[end + 1 :]}"
+    return sql
+
+
 def _ossie_calls(sql: str) -> str:
     """*sql* with each call in ``_OSSIE_CALLS`` under Ossie's name."""
     try:
@@ -390,7 +429,7 @@ class PortableRenderer:
         return f"CAST({truncated} AS {cast})" if cast else truncated
 
     def _expression(self, template: str) -> str:
-        sql = _COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template)
+        sql = _sql_casts(_COLUMN_REF.sub(lambda m: self.column(m.group(1), m.group(2)), template))
         return _ossie_calls(sql) if self.ossie else sql
 
     # ── measures ──────────────────────────────────────────────────────
@@ -632,7 +671,10 @@ class PortableRenderer:
         template = met.get("expression")
         if not template:
             raise NotPortableError(f"metric '{name}' has no expression")
-        return _MEASURE_REF.sub(lambda m: self._reference(m.group(1)), template)
+        formula = _sql_casts(_MEASURE_REF.sub(lambda m: self._reference(m.group(1)), template))
+        # A formula calls catalog functions too: YEAR(MAX(d)) imports as
+        # extract('year', {[_max]}).
+        return _ossie_calls(formula) if self.ossie else formula
 
     def _partitions(self, met: dict[str, Any]) -> list[str]:
         return [self._dimension(d) for d in met.get("partitionBy") or []]

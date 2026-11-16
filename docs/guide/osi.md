@@ -98,9 +98,9 @@ A function OBML's [catalog](functions.md) has under another name or form imports
 | `ZEROIFNULL(x)`, `NULLIFZERO(x)` | `coalesce(x, 0)`, `nullif(x, 0)` |
 | `POSITION(a IN s)`, `CHARINDEX(a, s)`, `CONTAINS(s, a)` | `position(a, s)`, and `position(a, s) > 0` |
 | `LEFT(s, n)`, `RIGHT(s, n)` | `substring(s, 1, n)`, `substring(s, greatest(length(s) - n + 1, 1))` |
-| `PI()`, `DEGREES(x)`, `RADIANS(x)` | the number, `x * 180 / pi`, `x * pi / 180` |
+| `PI()`, `DEGREES(x)`, `RADIANS(x)` | the number, `x * 180 / pi`, `x * pi / 180`, each in double as the engines' own are |
 
-Kept aside with a `LOSSY` warning: `EXTRACT(DAYOFWEEK ...)`, which some engines number from Sunday and others from Monday, the spec not saying which it means; MILLISECOND, which OBML's `extract` does not have; and `TRIM` of a character other than a space. `INTERVAL`, a three-argument `ROUND` and `DATE_TRUNC('decade', d)` are not Ossie SQL. The export writes OBML's `date_add`, `date_diff`, `extract` and `position` in `OSSIE_SQL_2026` as the language spells them: `DATEADD`, `DATEDIFF`, `DATE_PART` and `CHARINDEX`.
+Kept aside with a `LOSSY` warning: `EXTRACT(DAYOFWEEK ...)`, which some engines number from Sunday and others from Monday, the spec not saying which it means; MILLISECOND, which OBML's `extract` does not have; and `TRIM` of a character other than a space. `INTERVAL`, a three-argument `ROUND` and `DATE_TRUNC('decade', d)` are not Ossie SQL. The export writes OBML's `date_add`, `date_diff`, `extract` and `position` in `OSSIE_SQL_2026` as the language spells them, `DATEADD`, `DATEDIFF`, `DATE_PART` and `CHARINDEX`, in a measure and in a metric's formula, and OBML's `cast(x, 'double')` as SQL's `CAST(x AS DOUBLE)` in both forms.
 
 A model's and a metric's `ai_context` come back on export: synonyms become the OBML synonyms, and the rest (`instructions`, `examples`, other keys) is kept in an `OSI` custom extension on the OBML model, measure or metric, as it already was for datasets and fields. An `ai_context` given as plain text is read as its `instructions`.
 

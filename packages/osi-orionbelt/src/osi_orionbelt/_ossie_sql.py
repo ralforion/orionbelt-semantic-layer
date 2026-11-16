@@ -289,6 +289,20 @@ def _written_violations(tokens: list[Token]) -> list[str]:
                 found.append(f"function {token.text} is not in OSSIE_SQL_2026")
             elif name in ("TO_DATE", "TO_TIMESTAMP") and _argument_count(tokens, i + 1) != 1:
                 found.append(f"{name} with a format is EXPERIMENTAL, not in OSSIE_SQL_2026")
+            elif (
+                name == "EXTRACT"
+                and i + 2 < len(tokens)
+                and tokens[i + 2].token_type is TokenType.STRING
+            ):
+                # sqlglot reads EXTRACT('year', d); the language has
+                # EXTRACT(YEAR FROM d) and its comma form DATE_PART('year', d).
+                found.append(
+                    "EXTRACT takes part FROM date; DATE_PART('part', date) is its comma form"
+                )
+            elif name == "POSITION" and _argument_count(tokens, i + 1) != 1:
+                found.append(
+                    "POSITION takes substr IN str; CHARINDEX(substr, str) is its comma form"
+                )
         elif (
             bare
             and nxt is not None

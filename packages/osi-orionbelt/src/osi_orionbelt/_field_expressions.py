@@ -105,7 +105,10 @@ _PART_CALLS: dict[type[exp.Expr], str] = {
     exp.Second: "second",
     exp.DayOfWeekIso: "day_of_week",
 }
-_PI = exp.Literal.number("3.141592653589793")
+# A double, as PI() is: a decimal literal times an integer overflowed DuckDB's
+# DECIMAL(18) at 3000 * pi.
+_PI_DIGITS = exp.Literal.number("3.141592653589793")
+_PI = exp.Anonymous(this="cast", expressions=[_PI_DIGITS, exp.Literal.string("double")])
 
 
 def _call(name: str, *args: exp.Expr) -> exp.Expr:
@@ -222,10 +225,12 @@ def _catalog_form(n: exp.Expr, rewrite: Callable[[exp.Expr], exp.Expr]) -> exp.E
     if isinstance(n, exp.Pi):
         return _PI.copy()
     if isinstance(n, (exp.Degrees, exp.Radians)):
-        scale = (exp.Literal.number(180), _PI.copy())
+        # In double, as the engines' own DEGREES and RADIANS are: an integer
+        # times 180 overflows, and one times a decimal pi did at 3000.
+        scale = (exp.Literal.number(180), _PI_DIGITS.copy())
         num, den = scale if isinstance(n, exp.Degrees) else scale[::-1]
-        product = exp.Mul(this=_grouped(arg(n.this)), expression=num)
-        return exp.Paren(this=exp.Div(this=product, expression=den))
+        double = _call("cast", arg(n.this), exp.Literal.string("double"))
+        return exp.Paren(this=exp.Div(this=exp.Mul(this=double, expression=num), expression=den))
     return None
 
 

@@ -414,6 +414,10 @@ _OSSIE_FUNCTIONS = {
     "degrees": ("SUM(DEGREES(amount))", "SUM(degrees(amount))"),
     "radians": ("SUM(RADIANS(amount))", "SUM(radians(amount))"),
     "circles": ("SUM(PI() * amount)", "SUM(pi() * amount)"),
+    # Integers, which overflowed DuckDB's DECIMAL(18) times a decimal pi.
+    "int_degrees": ("SUM(DEGREES(id * 1000))", "SUM(degrees(id * 1000))"),
+    "int_radians": ("SUM(RADIANS(id * 1000))", "SUM(radians(id * 1000))"),
+    "int_circles": ("SUM(PI() * id * 1000)", "SUM(pi() * id * 1000)"),
 }
 
 
@@ -458,7 +462,8 @@ def test_the_ossie_functions_run_as_duckdb_s_own() -> None:
     assert ours is not None and native is not None
     for name, got, want in zip(_OSSIE_FUNCTIONS, ours, native, strict=True):
         if isinstance(want, float):
-            assert got == pytest.approx(want), name
+            # A measure over integers is a decimal unless it declares a type.
+            assert float(got) == pytest.approx(want), name
         else:
             assert got == want, name
 

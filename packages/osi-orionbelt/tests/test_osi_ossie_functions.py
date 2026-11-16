@@ -98,9 +98,12 @@ CASES = [
         "MAX(RIGHT(orders.status, orders.id + 1))",
         f"SUBSTRING({_S}, GREATEST(LENGTH({_S}) - ({{[orders].[id]}} + 1) + 1, 1))",
     ),
-    ("SUM(PI() * orders.amount)", f"3.141592653589793 * {_A}"),
-    ("SUM(DEGREES(orders.amount))", f"({_A} * 180 / 3.141592653589793)"),
-    ("SUM(RADIANS(orders.amount + 1))", f"(({_A} + 1) * 3.141592653589793 / 180)"),
+    ("SUM(PI() * orders.amount)", f"CAST(3.141592653589793, 'double') * {_A}"),
+    ("SUM(DEGREES(orders.amount))", f"(CAST({_A}, 'double') * 180 / 3.141592653589793)"),
+    (
+        "SUM(RADIANS(orders.amount + 1))",
+        f"(CAST({_A} + 1, 'double') * 3.141592653589793 / 180)",
+    ),
 ]
 
 
@@ -239,3 +242,67 @@ class TestExport:
             "SUM(DATEDIFF('day', orders.opened, DATEADD('day', 7, orders.closed))"
             " + DATE_PART('year', orders.opened) + CHARINDEX('a', orders.status))"
         )
+
+    def _forms(self, sql: str, name: str = "m") -> tuple[dict[str, Any], dict[str, str]]:
+        imported, warnings = _convert(_doc(sql))
+        assert not any("LOSSY" in w for w in warnings)
+        osi = conv.OBMLtoOSI(copy.deepcopy(imported)).convert()
+        metric = next(m for m in osi["metrics"] if m["name"] == name)
+        return imported, {d["dialect"]: d["expression"] for d in metric["expression"]["dialects"]}
+
+    def test_a_formula_over_measures_uses_the_language_s_names(self) -> None:
+        # YEAR over an aggregate is in the metric's formula, not a measure.
+        imported, forms = self._forms(
+            "YEAR(MAX(orders.opened)) + CHARINDEX('a', MIN(orders.status))"
+        )
+        assert "m" in imported["metrics"]
+        assert forms["OSSIE_SQL_2026"] == (
+            "DATE_PART('year', MAX(orders.opened)) + CHARINDEX('a', MIN(orders.status))"
+        )
+        again, _ = _convert(_doc(forms["OSSIE_SQL_2026"]))
+        assert again["metrics"]["m"] == imported["metrics"]["m"]
+
+    @pytest.mark.parametrize(
+        ("sql", "written"),
+        [
+            ("SUM(CAST(orders.amount AS DOUBLE))", "SUM(CAST(orders.amount AS DOUBLE))"),
+            (
+                "SUM(CAST(orders.amount AS DECIMAL(10, 2)))",
+                "SUM(CAST(orders.amount AS DECIMAL(10, 2)))",
+            ),
+            ("SUM(PI() * orders.amount)", "SUM(CAST(3.141592653589793 AS DOUBLE) * orders.amount)"),
+        ],
+    )
+    def test_a_cast_is_written_as_sql_s(self, sql: str, written: str) -> None:
+        # OBML's cast(x, 'double') is no SQL; it went out as CAST(x, 'double').
+        imported, forms = self._forms(sql)
+        assert forms["ANSI_SQL"] == written
+        assert forms["OSSIE_SQL_2026"] == written
+        again, _ = _convert(_doc(written))
+        assert again["measures"]["m"] == imported["measures"]["m"]
+
+
+class TestOssieForms:
+    @pytest.mark.parametrize(
+        ("sql", "violation"),
+        [
+            ("EXTRACT('year', orders.opened)", "DATE_PART"),
+            ("POSITION('a', orders.status)", "CHARINDEX"),
+        ],
+    )
+    def test_the_comma_forms_are_not_the_language_s(self, sql: str, violation: str) -> None:
+        # sqlglot reads both; the language writes EXTRACT(YEAR FROM d) and
+        # POSITION(a IN s), whose comma forms are DATE_PART and CHARINDEX.
+        assert any(violation in v for v in subset_violations(sql))
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "EXTRACT(YEAR FROM orders.opened)",
+            "POSITION('a' IN orders.status)",
+            "DATE_PART('year', orders.opened)",
+            "CHARINDEX('a', orders.status)",
+        ],
+    )
+    def test_the_language_s_forms_pass(self, sql: str) -> None:
+        assert subset_violations(sql) == []
