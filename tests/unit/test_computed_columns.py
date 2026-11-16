@@ -311,13 +311,13 @@ class TestUnparseableComputedColumn:
     #: expression is dialect-leaky and to pin ``defaultDialect`` - and which the
     #: parser does not take.
     #:
-    #: Two of the original five have since been given to the parser rather than
-    #: left to this error: ``cast`` became a catalog entry (#355) and the simple
-    #: ``CASE`` form became grammar (#360). What is left is what still has to be
-    #: written another way, and :meth:`test_what_the_parser_has_since_learned`
-    #: pins the two that moved.
+    #: Three of the original five have since been given to the parser rather
+    #: than left to this error: ``cast`` became a catalog entry (#355), the
+    #: simple ``CASE`` form became grammar (#360), and so did the ``||``
+    #: operator, as the catalog's ``concat``. What is left is what still has to
+    #: be written another way, and :meth:`test_what_the_parser_has_since_learned`
+    #: pins the three that moved.
     UNPARSEABLE = {
-        "concat operator": "{Code} || '-eu'",
         "interval literal": "{Day} + INTERVAL 1 DAY",
         "extract": "EXTRACT(YEAR FROM {Day})",
     }
@@ -370,21 +370,22 @@ measures:
         """
         query = QueryObject(select=QuerySelect(dimensions=["Tagged"], measures=["Total"]))
         with pytest.raises(ResolutionError) as excinfo:
-            CompilationPipeline().compile(query, self._model("{Code} || '-eu'"), "duckdb")
+            CompilationPipeline().compile(query, self._model("EXTRACT(YEAR FROM {Day})"), "duckdb")
         (error,) = excinfo.value.errors
         assert error.code == "INVALID_COLUMN_EXPRESSION"
         assert error.path == "dataObjects.Event.columns.Tagged.expression"
 
     def test_what_the_parser_has_since_learned(self) -> None:
-        """Two of the five this error was written for are now accepted.
+        """Three of the five this error was written for are now accepted.
 
-        ``cast(x, 'type')`` is a catalog entry (#355) and the simple ``CASE``
-        form is grammar (#360). Pinned here so the error's reach shrinking is
-        deliberate rather than noticed later.
+        ``cast(x, 'type')`` is a catalog entry (#355), the simple ``CASE`` form
+        is grammar (#360), and ``||`` is the catalog's ``concat``. Pinned here
+        so the error's reach shrinking is deliberate rather than noticed later.
         """
         for expression in (
             "cast({Amount}, 'double')",
             "CASE {Code} WHEN 'DE' THEN 'EU' ELSE 'Other' END",
+            "{Code} || '-eu'",
         ):
             errors = [
                 e

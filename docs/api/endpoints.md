@@ -1910,6 +1910,76 @@ target, as a MotherDuck database string can carry its token.
 **503** when the data sources in the environment are not usable as written (a name declared
 twice, or a missing or unknown `DB_<NAME>_TYPE`); the detail says which.
 
+### `GET /v1/datasources/{name}/schemas`
+
+List the schemas of a data source, read from its catalog, without the engine's own
+(`information_schema`, `pg_catalog`, `system`, ...). A schema is a database on MySQL and
+ClickHouse and a dataset on BigQuery. `{name}` is matched as in `settings.defaultDataSource`:
+case, spaces, dashes and underscores are ignored.
+
+```json
+{"datasource": "shop-eu", "dialect": "mysql", "schemas": ["shop_eu", "staging"]}
+```
+
+### `GET /v1/datasources/{name}/schemas/{schema}/tables`
+
+Describe the tables of a schema: each table's columns (engine type, position from 1,
+nullability, comment), its primary key and foreign keys, as the catalog declares them. The
+schema is read in one query per kind of fact, not one per table.
+
+| Query parameter | Default | Description |
+|---|---|---|
+| `table` | all | Only these tables; repeat for several (`?table=orders&table=customers`). |
+| `views` | `true` | List views and materialized views. |
+| `view_definitions` | `false` | Include each view's SQL in `viewDefinition`. |
+
+```json
+{
+  "datasource": "shop-eu",
+  "dialect": "postgres",
+  "schema": "sales",
+  "tables": [
+    {
+      "name": "customer",
+      "kind": "table",
+      "comment": null,
+      "columns": [
+        {"name": "id", "dataType": "integer", "ordinal": 1, "nullable": false,
+         "comment": null, "primaryKey": true},
+        {"name": "region_id", "dataType": "integer", "ordinal": 2, "nullable": true,
+         "comment": null, "primaryKey": false}
+      ],
+      "primaryKey": ["id"],
+      "foreignKeys": [
+        {"name": "customer_region_id_fkey", "columns": ["region_id"],
+         "referredSchema": "sales", "referredTable": "region", "referredColumns": ["id"]}
+      ],
+      "viewDefinition": null
+    }
+  ],
+  "warnings": []
+}
+```
+
+`kind` is `table`, `view` or `materialized_view`. Keys come from declared constraints:
+PostgreSQL, MySQL, DuckDB, Snowflake (`SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS`), Databricks
+and BigQuery have primary and foreign keys; ClickHouse has its primary key only (the sorting
+key's index prefix, not a uniqueness constraint), in the order the table declares it, where a
+key expression such as `toDate(ts)` stands for the columns it reads; Dremio has neither, nor
+comments. Dremio lists a table of a file source (such as `$scratch`) once it has been queried
+or the source's metadata refreshed, as its own catalog does. A key or view query the catalog
+refuses this user leaves those facts out and adds a `warnings` entry instead of failing the
+request.
+
+Each engine's catalog SQL is checked against a schema built for it by
+`scripts/probe_schema_inspection.py`: composite keys declared in another order than their
+columns, a composite foreign key, comments and a view, then the filters and an unknown schema.
+
+Both endpoints connect to the database, so they require `QUERY_EXECUTE=true` (**503**
+otherwise). **404** for an unknown data source or schema, with or without `table`; a `table`
+that matches nothing in a known schema returns no tables. **502** when a catalog query fails,
+**503** when the source cannot be connected to.
+
 ## Dialects
 
 ### `GET /v1/dialects`
