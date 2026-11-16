@@ -45,7 +45,9 @@ packages = ["src/osi_orionbelt"]
 # canonical OBML schema) live in src/osi_orionbelt/schemas/ as tracked files,
 # so the sdist and wheel are self-contained and build in isolation. The OBML
 # snapshot is kept in sync with the repo-root schema/obml-schema.json by a
-# drift-guard test (tests/unit/test_osi_orionbelt_schema_sync.py).
+# drift-guard test (tests/unit/test_osi_orionbelt_schema_sync.py). Beside them,
+# obml-functions.json holds OBML's catalog functions (arity, units), written by
+# scripts/refresh_osi_function_table.py and guarded by the same test.
 
 [tool.ruff]
 line-length = 100

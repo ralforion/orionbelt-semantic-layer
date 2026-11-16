@@ -155,12 +155,21 @@ class TestMeasureExpressions:
             "SUM(CASE WHEN orders.status ILIKE 'done' THEN orders.amount END)",
             "SUM(orders.amount % 7)",
             "COUNT(DISTINCT orders.status || orders.cust)",
+            # SQL syntax inside a call, which OBML reads as NAME(arg, ...) only.
+            "SUM(orders.amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM orders.cust) = 1)",
+            # A catalog function with an argument count or unit OBML refuses:
+            # sqlglot writes TRIM(BOTH ' ' FROM s) as TRIM(s, ' ').
+            "SUM(orders.amount) FILTER (WHERE TRIM(BOTH ' ' FROM orders.status) = 'x')",
+            "SUM(CASE WHEN ROUND(orders.amount, 1, 2) > 0 THEN 1 END)",
+            "SUM(CASE WHEN DATE_TRUNC('decade', orders.cust) > 0 THEN 1 END)",
+            # No OBML function, and written with parentheses most engines refuse.
+            "SUM(orders.amount) FILTER (WHERE orders.cust > CURRENT_TIMESTAMP)",
         ],
     )
     def test_one_obml_cannot_parse_is_preserved(self, sql: str) -> None:
         obml, warnings = _convert(_doc(sql))
         assert "m" not in obml.get("measures", {})
-        assert any("not one OBML can read" in w for w in warnings)
+        assert any("LOSSY" in w and "'m'" in w for w in warnings)
 
     @pytest.mark.parametrize(
         "sql",
@@ -175,3 +184,18 @@ class TestMeasureExpressions:
     )
     def test_one_obml_parses_imports(self, sql: str) -> None:
         assert "m" in _convert(_doc(sql))[0]["measures"]
+
+    @pytest.mark.parametrize(
+        ("predicate", "obml"),
+        [
+            ("EXTRACT(YEAR FROM orders.cust) = 2026", "EXTRACT('year', {[orders].[cust]}) = 2026"),
+            ("EXTRACT(QUARTER FROM orders.cust) = 1", "EXTRACT('quarter', {[orders].[cust]}) = 1"),
+            ("orders.cust <= CURRENT_DATE", "{[orders].[cust]} <= CURRENT_DATE()"),
+        ],
+    )
+    def test_sql_forms_become_obml_functions(self, predicate: str, obml: str) -> None:
+        # OBML's extract(unit, x) and current_date(); a bare CURRENT_DATE is a
+        # string to OBML.
+        sql = f"SUM(orders.amount) FILTER (WHERE {predicate})"
+        measure = _convert(_doc(sql))[0]["measures"]["m"]
+        assert measure["expression"] == f"CASE WHEN {obml} THEN {{[orders].[amount]}} END"

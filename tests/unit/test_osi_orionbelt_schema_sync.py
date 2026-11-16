@@ -33,3 +33,21 @@ def test_vendored_obml_schema_matches_canonical() -> None:
         f"{vendored_rel} has drifted from schema/obml-schema.json. "
         f"Refresh it: cp schema/obml-schema.json {vendored_rel}"
     )
+
+
+def test_vendored_function_table_matches_the_catalog() -> None:
+    """The converter's copy of the catalog's arities and units (see
+    ``scripts/refresh_osi_function_table.py``), which keeps it from writing a
+    measure OBML refuses with WRONG_FUNCTION_ARITY or UNKNOWN_TIME_UNIT."""
+    import importlib.util
+
+    script = _REPO_ROOT / "scripts" / "refresh_osi_function_table.py"
+    spec = importlib.util.spec_from_file_location("refresh_osi_function_table", script)
+    assert spec is not None and spec.loader is not None
+    refresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(refresh)
+    assert refresh.TABLE.read_text() == refresh.render(refresh.function_table()), (
+        "packages/osi-orionbelt/src/osi_orionbelt/schemas/obml-functions.json has drifted "
+        "from models/functions.py. Refresh it: "
+        "uv run python scripts/refresh_osi_function_table.py"
+    )

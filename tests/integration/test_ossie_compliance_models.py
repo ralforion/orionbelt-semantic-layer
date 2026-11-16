@@ -310,8 +310,11 @@ def test_a_filtered_metric_keeps_every_group() -> None:
         "SUM(amount) FILTER (WHERE status ILIKE 'done')",
         "SUM(amount) FILTER (WHERE status IS DISTINCT FROM region)",
         "SUM(CASE WHEN order_id % 2 = 0 THEN amount END)",
+        "SUM(amount) FILTER (WHERE EXTRACT(DAYOFWEEK FROM order_id) = 1)",
+        "SUM(amount) FILTER (WHERE region > CURRENT_TIMESTAMP)",
+        "SUM(amount) FILTER (WHERE TRIM(BOTH ' ' FROM status) = 'done')",
     ],
-    ids=["ilike", "is distinct from", "modulo"],
+    ids=["ilike", "is distinct from", "modulo", "extract dayofweek", "current_timestamp", "trim"],
 )
 def test_a_metric_obml_cannot_parse_leaves_the_model_loading(sql: str) -> None:
     # Imported as a measure, the expression stopped the whole model loading
@@ -340,3 +343,85 @@ def test_a_metric_obml_cannot_parse_leaves_the_model_loading(sql: str) -> None:
     model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
     assert "total" in model.measures
     assert "kept" not in model.measures
+
+
+def test_extract_and_current_date_run() -> None:
+    # EXTRACT(YEAR FROM x) is OBML's extract('year', x), and CURRENT_DATE its
+    # current_date(): a bare CURRENT_DATE is a string to OBML.
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "dated",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "main.orders",
+                "primary_key": ["order_id"],
+                "fields": [
+                    {"name": n, "expression": {"sql": n}} for n in ("order_id", "day", "amount")
+                ],
+                "metrics": [
+                    {
+                        "name": "this_year",
+                        "expression": {
+                            "sql": "SUM(amount) FILTER (WHERE EXTRACT(YEAR FROM day) = 2026"
+                            " AND day <= CURRENT_DATE)"
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    sql = (
+        CompilationPipeline()
+        .compile(QueryObject(select={"measures": ["this_year"]}), model, "duckdb")
+        .sql
+    )
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, DATE '2026-01-05', 10),"
+        " (2, DATE '2025-06-01', 5), (3, DATE '2999-01-01', 7)) t(order_id, day, amount)"
+    )
+    assert con.execute(sql).fetchall() == [(10,)]
+
+
+def _function_samples() -> list[str]:
+    from osi_orionbelt._ossie_sql import _FUNCTIONS
+
+    aggregates_and_windows = {
+        "SUM", "COUNT", "AVG", "MIN", "MAX", "STDDEV", "STDDEV_POP", "STDDEV_SAMP",
+        "VARIANCE", "VAR_POP", "VAR_SAMP", "MEDIAN", "PERCENTILE_CONT", "PERCENTILE_DISC",
+        "APPROX_COUNT_DISTINCT", "APPROX_PERCENTILE", "ROW_NUMBER", "RANK", "DENSE_RANK",
+        "NTILE", "PERCENT_RANK", "CUME_DIST", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE",
+        "NTH_VALUE",
+    }  # fmt: skip
+    return [
+        part.strip()
+        for name, sample in sorted(_FUNCTIONS.items())
+        if name not in aggregates_and_windows
+        for part in re.split(r"\s\+\s|\s\|\|\s", sample)
+    ]
+
+
+@pytest.mark.parametrize("call", _function_samples())
+def test_every_ossie_function_leaves_the_model_loading(call: str) -> None:
+    # Each function of Ossie's expression language, inside a metric: imported as
+    # a measure or kept aside, never one that stops the model loading.
+    fields = ("id", "x", "y", "d", "s", "a", "b", "c")
+    doc = {
+        "version": "0.3.0.dev0",
+        "name": "functions",
+        "datasets": [
+            {
+                "name": "t",
+                "source": "main.t",
+                "primary_key": ["id"],
+                "fields": [{"name": n, "expression": {"sql": n}} for n in fields],
+                "metrics": [{"name": "m", "expression": {"sql": f"COUNT({call})"}}],
+            }
+        ],
+    }
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    ModelStore().load_model(yaml.safe_dump(obml), dedup=False)

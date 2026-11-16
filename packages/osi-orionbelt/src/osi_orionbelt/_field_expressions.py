@@ -32,9 +32,13 @@ SQL ``CAST`` becomes OBML's ``cast(x, 'double')``. Anything else (``||``,
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from decimal import Decimal
+from functools import cache
+from pathlib import Path
+from typing import Any
 
 from sqlglot import expressions as exp
 
@@ -61,12 +65,26 @@ def obml_cast_type(to: exp.DataType) -> str | None:
     return None
 
 
+# ``EXTRACT(<part> FROM x)`` parts that mean the same on every engine, as the
+# unit of OBML's ``extract(unit, x)``. WEEK, DAYOFWEEK and DAYOFYEAR number
+# differently from engine to engine, and the Ossie spec does not say which it
+# means; OBML's ``extract`` has no MILLISECOND.
+_EXTRACT_UNITS = {
+    part: part.lower() for part in ("YEAR", "QUARTER", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND")
+}
+
+
 def render_obml(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> str:
     """Render *node* as OBML text, each column written by *column*.
 
     A SQL ``CAST(x AS DOUBLE)`` becomes OBML's ``cast(x, 'double')``, the only
     cast form OBML parses; a target it has no type for raises
-    :class:`NotRepresentableError`.
+    :class:`NotRepresentableError`. ``EXTRACT(YEAR FROM x)`` becomes OBML's
+    ``extract('year', x)`` for a part in ``_EXTRACT_UNITS``; any other part is
+    left as written, which :func:`obml_unreadable_text` refuses. ``CURRENT_DATE``
+    becomes OBML's ``current_date()``: bare, OBML reads the word as a string.
+    ``CURRENT_TIMESTAMP`` and ``CURRENT_TIME`` have no OBML function, and
+    sqlglot writes them with parentheses, which most engines refuse: they raise.
     """
 
     def rewrite(n: exp.Expr) -> exp.Expr:
@@ -85,6 +103,15 @@ def render_obml(node: exp.Expr, column: Callable[[exp.Column], exp.Expr]) -> str
             # rewritten here.
             return exp.Anonymous(
                 this="cast", expressions=[n.this.transform(rewrite), exp.Literal.string(target)]
+            )
+        if isinstance(n, exp.CurrentDate) and not n.args.get("this"):
+            return exp.Anonymous(this="current_date", expressions=[])
+        if isinstance(n, (exp.CurrentDate, exp.CurrentTimestamp, exp.CurrentTime)):
+            raise NotRepresentableError(f"{n.sql()}: OBML has no such function")
+        if isinstance(n, exp.Extract) and n.name.upper() in _EXTRACT_UNITS:
+            unit = exp.Literal.string(_EXTRACT_UNITS[n.name.upper()])
+            return exp.Anonymous(
+                this="extract", expressions=[unit, n.expression.transform(rewrite)]
             )
         return n
 
@@ -194,6 +221,75 @@ _REGEX_QUANTIFIER = re.compile(r"\d+(?:,\d*)?")
 _OBML_CHARACTERS = re.compile(r"[\w\s+\-*/(),.=<>!]")
 # A number OBML reads as two tokens: 1e2 is "1" then "e2".
 _NUMBER_THEN_WORD = re.compile(r"(?<![\w.])\d[\d.]*[A-Za-z_]")
+# A word, and the words OBML's grammar reads other than a function's name: its
+# keywords and literals. Any other word is SQL syntax inside a call
+# (``EXTRACT(DAYOFWEEK FROM x)``, ``TRIM(BOTH ' ' FROM s)``) or a bare keyword
+# (``INTERVAL '1' DAY``, ``CURRENT_DATE``), which OBML refuses or reads as text.
+_WORD = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
+_OBML_WORDS = frozenset(
+    {"AND", "OR", "NOT", "CASE", "WHEN", "THEN", "ELSE", "END", "IS", "IN", "BETWEEN"}
+    | {"LIKE", "NULL", "TRUE", "FALSE", "DATE", "TIMESTAMP", "TIME"}
+)
+# An expression's tokens as OBML's call scanner sees them: a string literal or a
+# reference whole, a word, or one character.
+_TOKEN = re.compile(r"'(?:[^']|'')*'|\{[^}]*\}|[A-Za-z_]\w*|\S")
+_FUNCTION_TABLE = Path(__file__).resolve().parent / "schemas" / "obml-functions.json"
+
+
+@cache
+def _obml_functions() -> dict[str, dict[str, Any]]:
+    """OBML's catalog functions: arity, and for a date/time function its units.
+
+    Written from OrionBelt's catalog by ``scripts/refresh_osi_function_table.py``
+    and kept in sync by a drift-guard test, as the OBML schema is.
+    """
+    table: dict[str, dict[str, Any]] = json.loads(_FUNCTION_TABLE.read_text())
+    return table
+
+
+def _calls(expression: str) -> list[tuple[str, list[str]]]:
+    """Each function call in *expression*, with the text of each argument."""
+    tokens = _TOKEN.findall(expression)
+    calls: list[tuple[str, list[str]]] = []
+    frames: list[tuple[str | None, list[list[str]]]] = []
+    for index, token in enumerate(tokens):
+        if token == "(":
+            before = tokens[index - 1] if index else ""
+            called = _WORD.fullmatch(before) and before.upper() not in _OBML_WORDS
+            frames.append((before if called else None, [[]]))
+            continue
+        if token == ")" and frames:
+            name, arguments = frames.pop()
+            if name is not None:
+                texts = [" ".join(argument) for argument in arguments]
+                calls.append((name, texts if any(texts) else []))
+        elif token == "," and frames:
+            frames[-1][1].append([])
+            continue
+        if frames:
+            frames[-1][1][-1].append(token)
+    return calls
+
+
+def _unit(argument: str) -> str | None:
+    """The unit a quoted literal names, lower case, as OBML reads it; else ``None``."""
+    quoted = len(argument) >= 2 and argument.startswith("'") and argument.endswith("'")
+    return argument[1:-1].lower() if quoted else None
+
+
+def _catalog_misuse(expression: str) -> str | None:
+    """A call OBML's catalog refuses: a wrong argument count, or an unknown unit."""
+    for name, arguments in _calls(expression):
+        spec = _obml_functions().get(name.lower())
+        if spec is None:
+            continue
+        low, high = spec["args"]
+        if len(arguments) < low or (high is not None and len(arguments) > high):
+            return f"{name} with {len(arguments)} arguments"
+        unit = spec.get("unit")
+        if unit is not None and _unit(arguments[unit]) not in spec["units"]:
+            return f"{name} with unit {arguments[unit]}"
+    return None
 
 
 def is_sibling_name(name: str) -> bool:
@@ -226,10 +322,17 @@ def obml_unreadable_text(expression: str) -> str | None:
     that loaded must not stop loading because of a field no query reads.
     """
     text = SQL_STRING_LITERAL.sub("''", expression)
-    text = QUALIFIED_REF.sub("x", text)
-    text = SIBLING_REF.sub("x", text)
+    text = QUALIFIED_REF.sub("0", text)
+    text = SIBLING_REF.sub("0", text)
     if _NUMBER_THEN_WORD.search(text):
         return "a number OBML reads as two tokens"
+    for word in _WORD.finditer(text):
+        call = text[word.end() :].lstrip().startswith("(")
+        if not call and word.group(0).upper() not in _OBML_WORDS:
+            return f"a word OBML does not read: {word.group(0)}"
+    misuse = _catalog_misuse(expression)
+    if misuse:
+        return f"a call OBML's function catalog refuses: {misuse}"
     stray = sorted(set(_OBML_CHARACTERS.sub("", text.replace("''", ""))))
     if stray:
         return f"characters OBML does not read: {' '.join(stray)}"
