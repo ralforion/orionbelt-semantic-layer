@@ -66,6 +66,8 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ### Docs
 
+- **pgwire TLS: which certificate to deploy, and *certificate verify failed* with `require`.** The BI tools guide says which server certificate asks what of the users (one from a public CA for the name they connect to asks nothing; a company CA's or a self-signed one has to reach every client as `sslrootcert`), how to connect with `sslmode=verify-full`, and why `require` fails with "certificate verify failed" for a user who keeps a `~/.postgresql/root.crt` for another database: libpq then checks the server against it, as `verify-ca` would. Its DBeaver and Metabase steps still said OrionBelt ships no TLS and to turn SSL off.
+
 - **DuckDB Workers: when they pay off, and how to size them.** Measured on one host with 10 CPUs and 5 GB for OrionBelt and its workers: one OrionBelt process answers 250 to 290 small queries a second over REST whether DuckDB runs inside it or on 1, 2 or 4 workers, so on one host workers add no throughput, and two OrionBelt processes answered the most (478 lookups a second against 291). The guide now says what workers are for (keeping DuckDB's memory apart from OrionBelt's, sharing one DuckDB between OrionBelt processes, more CPU than one host has), and how to size them: 2 or more, 2 CPUs or more each, about 150 MB of DuckDB memory per statement a worker runs at once, a worker's statement limit that covers the connections of every source and OrionBelt process using it, and `DB_<NAME>_MAX_CONNECTIONS`, whose default of 10 also limits a source on workers.
 
 ## [3.0.0] - 2026-11-11
