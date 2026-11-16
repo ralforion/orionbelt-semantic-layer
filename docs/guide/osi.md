@@ -26,6 +26,8 @@ What 0.3.0.dev0 changed, and how OBSL reads and writes it:
 | `AGG(dataset.metric)` in a model-level metric | Reads the measure the dataset metric became | Not written |
 | `nonportable_extensions`, data a JSON object (was `custom_extensions`, data a JSON string) | Read; `custom_extensions` still read | Written; data that is not a JSON object is wrapped as `{"value": ...}` with a warning |
 
+A field computed by an expression (`amount_cents / 100.0`, a `CASE`) becomes an OBML computed column, `{amount_cents} / 100.0`, since OBML's `code` is a column name. Each column the expression reads is a sibling whose `code` is that column: a field that computes exactly that column, or else a column the import adds for it (with a warning; the export leaves it out unless the model uses it). A SQL `CAST(x AS DOUBLE)` becomes `cast(x, 'double')`. An expression OBML's grammar does not read (`||`, `EXTRACT(... FROM ...)`, a subquery) is kept as the column's `code` with a `LOSSY` warning, and a query reading that column fails. The export writes the field's SQL back as written, or, after the computed column was edited, the computed column with each sibling written as its column.
+
 A relationship from a dataset to itself (an employee's manager) has no OBML join, since OBML refuses a join cycle. It is left out with a `LOSSY` warning and written back on export. To query it, add a second data object over the same table and join to that.
 
 **Breaking change vs. OBSL v2.5** — the previous release emitted OSI v0.1.1. Downstream consumers pinning to v0.1 will reject v2.6 output. The converter still **reads** v0.1.x inputs via the legacy shim `_normalize_legacy_v01()`, which promotes pre-v0.2 `custom_extensions` payloads (`obml_primary_key`, `obml_unique_keys`) into the v0.2 first-class fields before parsing.
@@ -87,6 +89,8 @@ An Apache Ossie document holds one semantic model, its properties (`name`, `data
 ## Querying an Ossie model
 
 Apache Ossie drafts two ways to query a model: SQL with `AGG()` (the [relational interface](https://github.com/apache/ossie/blob/main/core-spec/relational_semantics.md), "Layer 2") and a request naming metrics, dimensions and a filter (the [wide-table interface](https://github.com/apache/ossie/blob/main/core-spec/wide_table_semantics.md), "Layer 3"). OBSL implements neither yet. An imported Ossie model is queried like any OBML model, with dimensions, measures and `where`.
+
+Every field of the model is a dimension, named as the field: `region`, `deptno`. Fields marked `dimension` are named first. A field whose name a field of another dataset already has is named with its dataset, `returns amount`, and so is a field named like a metric, since a dimension and a measure cannot share a name in OBML. The import lists each renamed field in its warnings. A field OBML cannot read (reported `LOSSY`) is a dimension only when marked.
 
 Most answers agree with the Ossie compliance cases. Where Ossie refuses a query, or returns other rows, OBSL answers as follows:
 

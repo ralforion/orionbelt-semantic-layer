@@ -11,7 +11,7 @@
 | **Column identifiers** | `fields[].name`, with the SQL in `fields[].expression` | Column name as dict key, with the SQL in `columns{}.code` |
 | **Expressions** | `expression.sql` (portable `OSSIE_SQL_2026`) and/or `expression.dialects[]` per field (multi-dialect) | Single SQL expression via `code` (single dialect) |
 | **Joins / Relationships** | `relationships[]` (global, separate section) | `joins[]` (inline on each data object) |
-| **Dimensions** | `field.dimension.is_time` (inline flag on fields) | `dimensions{}` (separate top-level section) |
+| **Dimensions** | Every field can group; `field.dimension.is_time` marks a time dimension | `dimensions{}` (separate top-level section) |
 | **Measures** | N/A (merged into metrics) | `measures{}` (explicit aggregation definitions) |
 | **Metrics** | `metrics[]` with full SQL expressions | `metrics{}` with `{[Measure]}` references |
 | **AI Context** | `ai_context` on every entity | `customExtensions` with `vendor: "OSI"` |
@@ -151,10 +151,10 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 ### 3.1 OSI → OBML
 
 1. Parse `source` string to extract `database`, `schema`, and `table`
-2. Convert fields to columns, mapping the Ossie `datatype` to `abstractType` when present, else inferring it from the name heuristic
+2. Convert fields to columns, mapping the Ossie `datatype` to `abstractType` when present, else inferring it from the name heuristic; a field computed by an expression becomes a computed column over sibling columns (`{amount_cents} / 100.0`), adding a column for a source column no field computes as is
 3. Restructure global relationships into inline joins on data objects
 4. Decompose metric SQL expressions into OBML measures + metrics
-5. Extract dimension-flagged fields into the top-level `dimensions` section, join keys included
+5. Make every field a dimension in the top-level `dimensions` section, join keys included: marked fields first, a name already taken (another dataset's field, a measure, a metric, a count) qualified by the dataset; a field OBML cannot read only when marked, and a field an OBML export wrote only where the OBML model had a dimension
 6. Preserve `ai_context` losslessly via `customExtensions` (vendor: `"OSI"`)
 
 ### 3.2 OBML → OSI
@@ -165,7 +165,7 @@ These OBML features have no direct OSI equivalent. Where possible, metadata is p
 4. Convert measures to OSI metrics with SQL expressions that compute what OrionBelt computes (filters, totals, defaults spelled out)
 5. Expand metric templates by substituting measure, synthesized-count and metric SQL into `{[Name]}` references
 6. Leave out what has no faithful expression, with a warning; each exported measure or metric also carries its full OBML definition (`obml_definition`), which the reverse trip restores instead of re-parsing the SQL
-7. Map OBML dimension metadata into `field.dimension.is_time` flags
+7. Map OBML dimension metadata into `field.dimension.is_time` flags; a field that had no marker gets none
 8. Preserve secondary join info in relationship `ai_context`
 9. Store OBML-specific type info in `nonportable_extensions` with `vendor_name: "ORIONBELT"`
 
@@ -247,7 +247,7 @@ The converter is validated against the official [TPC-DS example](https://github.
 The TPC-DS OSI model with 5 datasets, 4 relationships, and 5 metrics converts cleanly to OBML:
 
 - 5 data objects with inline joins
-- 16 dimensions (FK/PK join keys excluded)
+- 31 dimensions, one per field
 - 5 measures (3 direct + 2 auto-generated for metric decomposition)
 - 2 metrics (composite expressions referencing measures)
 - All `ai_context` synonyms preserved via `customExtensions`

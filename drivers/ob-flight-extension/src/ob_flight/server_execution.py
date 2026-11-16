@@ -87,37 +87,6 @@ _CATALOG_SCALAR_PROBES = {
 }
 
 
-def rewrite_table_names(server: OBFlightServer, sql: str, model: Any) -> str:
-    """Rewrite compiled SQL for execution on the actual database.
-
-    Two rewrites:
-    1. Quoted label → physical code (DBeaver sends "Sales", DB has sales)
-    2. Strip OBML schema prefix — the connection's search_path handles
-       schema resolution, so PUBLIC.sales → sales avoids mismatches
-       between the OBML model's schema field and the actual DB schema.
-    """
-    if not hasattr(model, "data_objects") or not model.data_objects:
-        return sql
-    for obj_name, obj in model.data_objects.items():
-        label = getattr(obj, "label", obj_name) or obj_name
-        code = getattr(obj, "code", None)
-        if not code:
-            continue
-        # Replace quoted "Label" → code (DBeaver-generated SQL)
-        if label != code:
-            sql = sql.replace(f'"{label}"', code)
-        # Strip schema/database prefix — connection context handles resolution
-        # 3-part: ANALYTICS.PUBLIC.sales → sales (BigQuery, Snowflake, Databricks)
-        # 2-part: PUBLIC.sales → sales (Postgres, MySQL, ClickHouse, DuckDB)
-        database = getattr(obj, "database", None)
-        schema_name = getattr(obj, "schema_name", None)
-        if database and schema_name:
-            sql = sql.replace(f"{database}.{schema_name}.{code}", code)
-        if schema_name:
-            sql = sql.replace(f"{schema_name}.{code}", code)
-    return sql
-
-
 # SHOW / DESCRIBE: the dispatcher answers every such statement from the
 # connection's model, whatever follows its opening words.
 _RE_SHOW_DESCRIBE = re.compile(
@@ -485,7 +454,7 @@ def prepare_sql(
         dialect = _compiled_dialect(compiled, dialect)
         if getattr(compiled, "federation", None) is not None:
             return _federated(server, compiled, model, query, dialect, context)
-        sql = server._rewrite_table_names(compiled.sql, model)
+        sql = compiled.sql
         logger.info("Compiled SQL:\n%s", sql)
         # OBML compiles to deterministic SQL like OBSQL; share the cache.
         cache_meta = server._build_cache_meta(
@@ -527,7 +496,7 @@ def prepare_sql(
         dialect = _compiled_dialect(compiled, dialect)
         if getattr(compiled, "federation", None) is not None:
             return _federated(server, compiled, model, query, dialect, context)
-        sql = server._rewrite_table_names(compiled.sql, model)
+        sql = compiled.sql
         logger.info("Compiled SQL:\n%s", sql)
         schema_hint = server._semantic_result_schema(query, model)
         cache_meta = server._build_cache_meta(
@@ -540,8 +509,8 @@ def prepare_sql(
         return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
 
     if mode == _MODE_CATALOG:
-        # Don't compile or rewrite — the caller routes the original SQL
-        # to a model-backed catalog handler. Schema is computed there.
+        # Not compiled: the caller routes the original SQL to a model-backed
+        # catalog handler, which computes the schema.
         return sql, dialect, model, None, _MODE_CATALOG, None
 
     # _MODE_REJECTED — no escape hatch.

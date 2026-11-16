@@ -4,12 +4,14 @@ The two models of Ossie's query compliance suites (``compliance/wide_table``
 retail and ``compliance/query`` SCOTT) are written in spec 0.3.0.dev0. Before the
 converter read that shape they converted to a model with no measures, and the
 SCOTT model did not load at all (a self-relationship). Values are the suites'
-own expected results, for the requests an OBML query states directly: these
-models mark no field as a dimension, so the grouped cases are not reachable.
+own expected results, for the requests an OBML query states directly. These
+models mark no field as a dimension; every field is one, so they group by any.
 """
 
 from __future__ import annotations
 
+import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +88,48 @@ def test_retail_rejected_metrics_are_not_queryable(retail: SemanticModel) -> Non
     assert not {"amount_less_order", "running_revenue", "row_count"} & names
 
 
+def test_retail_groups_come_from_the_metric_dataset(retail: SemanticModel) -> None:
+    # wide_table a05: NORTH has no orders, so it is not a group.
+    query = {"select": {"dimensions": ["region"], "measures": ["total_revenue"]}}
+    assert sorted(_run(retail, "retail.sql", query)) == [("EAST", 350), ("WEST", 300)]
+
+
+def test_retail_dimension_only(retail: SemanticModel) -> None:
+    # wide_table a07: the distinct regions of customers.
+    query = {"select": {"dimensions": ["region"]}}
+    assert sorted(_run(retail, "retail.sql", query)) == [("EAST",), ("NORTH",), ("WEST",)]
+
+
+def test_retail_two_metrics_share_a_dimension(retail: SemanticModel) -> None:
+    # wide_table a01: a region missing from a branch takes SUM's empty value, NULL.
+    query = {"select": {"dimensions": ["region"], "measures": ["total_revenue", "total_returns"]}}
+    assert sorted(_run(retail, "retail.sql", query)) == [
+        ("EAST", 350, 25),
+        ("NORTH", None, 10),
+        ("WEST", 300, None),
+    ]
+
+
+def test_scott_measure_per_group(scott: SemanticModel) -> None:
+    # query a02: SELECT deptno, AGG(sum_sal), AGG(emp_count) ... GROUP BY deptno
+    query = {
+        "select": {"dimensions": ["deptno"], "measures": ["sum_sal", "emp_count"]},
+        "orderBy": [{"field": "deptno"}],
+    }
+    assert _run(scott, "scott.sql", query) == [(10, 8750, 3), (20, 10875, 5), (30, 9400, 6)]
+
+
+def test_a_field_named_like_a_metric_loads() -> None:
+    # OBML refuses a model whose dimension and measure share a name.
+    doc = copy.deepcopy(_COMPUTED_DOC)
+    doc["datasets"][0]["fields"].append({"name": "paid", "expression": {"sql": "status"}})
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    assert model.dimensions["orders paid"].column == "paid"
+    assert "paid" in model.effective_measures
+
+
 def test_scott_grand_total(scott: SemanticModel) -> None:
     # query a01: SELECT AGG(sum_sal), AGG(emp_count) FROM scott_model.emp
     rows = _run(scott, "scott.sql", {"select": {"measures": ["sum_sal", "emp_count"]}})
@@ -130,3 +174,86 @@ def test_a_quoted_source_column_runs() -> None:
         'CREATE TABLE orders AS SELECT * FROM (VALUES (1, 10), (2, 15)) t(order_id, "Order Total")'
     )
     assert con.execute(sql).fetchall() == [(25,)]
+
+
+_COMPUTED_DOC: dict[str, Any] = {
+    "version": "0.3.0.dev0",
+    "name": "computed",
+    "datasets": [
+        {
+            "name": "orders",
+            "source": "main.orders",
+            "primary_key": ["order_id"],
+            "fields": [
+                {"name": "order_id", "expression": {"sql": "order_id"}},
+                {
+                    "name": "amount",
+                    "expression": {
+                        "sql": "CASE WHEN status = 'paid' THEN amount_cents / 100.0 ELSE 0 END"
+                    },
+                },
+            ],
+            "metrics": [{"name": "paid", "expression": {"sql": "SUM(amount)"}}],
+        }
+    ],
+}
+# Each quoted identifier in compiled SQL, read left to right.
+_QUOTED_IDENTIFIER = re.compile(r'"([^"]*)"|`([^`]*)`')
+
+
+def _compile_computed(dialect: str) -> str:
+    obml = osi_orionbelt.OSItoOBML(copy.deepcopy(_COMPUTED_DOC)).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(select={"measures": ["paid"]})
+    return CompilationPipeline().compile(query, model, dialect).sql
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    ["bigquery", "clickhouse", "databricks", "dremio", "duckdb", "mysql", "postgres", "snowflake"],
+)
+def test_a_field_computed_by_an_expression_compiles_as_an_expression(dialect: str) -> None:
+    sql = _compile_computed(dialect)
+    names = [a or b for a, b in _QUOTED_IDENTIFIER.findall(sql)]
+    assert "amount_cents" in names
+    # Compiled as one name, the expression was a quoted identifier holding "/".
+    assert not [name for name in names if "/" in name or "=" in name], sql
+
+
+def test_a_field_computed_by_an_expression_runs() -> None:
+    # The field's SQL used to become the column's code, compiled as one name:
+    # "orders"."amount_cents / 100.0". It is a computed column over amount_cents.
+    sql = _compile_computed("duckdb")
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 1050, 'paid'), (2, 990, 'open'),"
+        " (3, 250, 'paid')) t(order_id, amount_cents, status)"
+    )
+    assert con.execute(sql).fetchall() == [(pytest.approx(13.0),)]
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("amount_cents / 1e2", 30.0),
+        ('"$amount" * 2', 60.0),
+        ('"Amount [USD]" * 2', 60.0),
+        ('"amount " * 2', 60.0),
+    ],
+    ids=["scientific notation", "name no placeholder holds", "bracket", "trailing space"],
+)
+def test_a_field_obml_writes_differently_still_runs(sql: str, expected: float) -> None:
+    doc = copy.deepcopy(_COMPUTED_DOC)
+    doc["datasets"][0]["fields"][1]["expression"] = {"sql": sql}
+    obml = osi_orionbelt.OSItoOBML(doc).convert()
+    store = ModelStore()
+    model = store.get_model(store.load_model(yaml.safe_dump(obml), dedup=False).model_id)
+    query = QueryObject(select={"measures": ["paid"]})
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 1000, 10, 10, 10), (2, 2000, 20, 20, 20))"
+        ' t(order_id, amount_cents, "$amount", "Amount [USD]", "amount ")'
+    )
+    rows = con.execute(CompilationPipeline().compile(query, model, "duckdb").sql).fetchall()
+    assert rows == [(pytest.approx(expected),)]
