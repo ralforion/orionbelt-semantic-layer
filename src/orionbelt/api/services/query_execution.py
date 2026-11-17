@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from fastapi import HTTPException, Response
@@ -22,6 +23,7 @@ from orionbelt.api.query_cache import (
 from orionbelt.api.schemas import (
     ColumnMetadata,
     ExplainPlanResponse,
+    FederationResponse,
     QueryExecuteResponse,
     ResolvedInfoResponse,
     StructuredWarning,
@@ -88,6 +90,59 @@ def negotiate_execute_format(format_param: ExecuteFormat, accept: str | None) ->
     return "json"
 
 
+@dataclass(frozen=True)
+class _Provenance:
+    """Where a result came from: the federated legs, and the cache TTL it was
+    stored or served with, or why it was not stored.
+
+    Worked out before the response is built, so the JSON body and the Arrow
+    envelope carry the same fields.
+    """
+
+    federation: FederationResponse | None = None
+    ttl_seconds: int | None = None
+    ttl_source: str | None = None
+    ttl_limiting_table: str | None = None
+
+    def fields(self) -> dict[str, Any]:
+        """As ``QueryExecuteResponse`` keyword arguments."""
+        return {
+            "federation": self.federation,
+            "ttl_seconds": self.ttl_seconds,
+            "ttl_source": self.ttl_source,
+            "ttl_limiting_table": self.ttl_limiting_table,
+        }
+
+
+def _provenance(compile_result: Any, ttl_outcome: Any, *, report_no_cache: bool) -> _Provenance:
+    """The provenance of one response.
+
+    *ttl_outcome* is ``None`` where the cache was not consulted. The reason a
+    result was not stored is reported for a fresh run only: a hit was stored.
+    """
+    federation = federation_response(compile_result)
+    if ttl_outcome is None:
+        return _Provenance(federation=federation)
+    ttl = ttl_outcome.ttl
+    if ttl is not None:
+        return _Provenance(
+            federation=federation,
+            ttl_seconds=ttl.seconds,
+            ttl_source=ttl.source,
+            ttl_limiting_table=ttl.limiting_table,
+        )
+    reason = ttl_outcome.no_cache_reason
+    if not report_no_cache or reason is None:
+        return _Provenance(federation=federation)
+    return _Provenance(
+        federation=federation,
+        ttl_source="no_cache"
+        if reason.value == "unknown_freshness"
+        else f"no_cache:{reason.value}",
+        ttl_limiting_table=ttl_outcome.no_cache_table,
+    )
+
+
 def _arrow_envelope_dict(
     *,
     columns_meta: list[ColumnMetadata],
@@ -103,13 +158,16 @@ def _arrow_envelope_dict(
     row_count: int,
     cached: bool,
     cached_at: str | None,
+    provenance: _Provenance,
 ) -> dict[str, Any]:
     """Assemble the JSON metadata envelope prepended to the Arrow data frame.
 
     Mirrors the JSON ``QueryExecuteResponse`` fields minus ``rows`` (which ride
-    in the Arrow data sub-part). Built fresh every request from the compile
-    result + per-request timing, so it is never cached.
+    in the Arrow data sub-part); a test holds the two to the same fields. Built
+    fresh every request from the compile result + per-request timing, so it is
+    never cached.
     """
+    federation = provenance.federation
     return {
         "columns": [c.model_dump() for c in columns_meta],
         "sql": sql,
@@ -124,6 +182,10 @@ def _arrow_envelope_dict(
         "row_count": row_count,
         "cached": cached,
         "cached_at": cached_at,
+        "ttl_seconds": provenance.ttl_seconds,
+        "ttl_source": provenance.ttl_source,
+        "ttl_limiting_table": provenance.ttl_limiting_table,
+        "federation": federation.model_dump() if federation is not None else None,
     }
 
 
@@ -181,6 +243,7 @@ def _render_response(
     cached: bool = False,
     cached_at: str | None = None,
     arrow_table: Any = None,
+    provenance: _Provenance | None = None,
 ) -> QueryExecuteResponse | Response:
     """Render already-resolved columns + RAW rows into the requested surface.
 
@@ -193,6 +256,7 @@ def _render_response(
     locale-aware display strings into the Arrow data.
     """
     column_names = [c.name for c in columns_meta]
+    provenance = provenance or _Provenance()
 
     if response_format == "arrow":
         from orionbelt.cache import result_codec
@@ -246,6 +310,7 @@ def _render_response(
             row_count=row_count,
             cached=cached,
             cached_at=cached_at,
+            provenance=provenance,
         )
         return _frame_result(meta, gzipped_data)
 
@@ -297,6 +362,7 @@ def _render_response(
         physical_tables=list(physical_tables),
         cached=cached,
         cached_at=cached_at,
+        **provenance.fields(),
     )
 
 
@@ -373,6 +439,7 @@ def _build_execute_response(
     cached_at: str | None = None,
     declared_skips: list[tuple[str, str]] | None = None,
     query: Any = None,
+    provenance: _Provenance | None = None,
 ) -> QueryExecuteResponse | Response:
     """Build the JSON QueryExecuteResponse, or a TSV / Arrow Response.
 
@@ -449,6 +516,7 @@ def _build_execute_response(
         timezone=exec_result.timezone,
         cached=cached,
         cached_at=cached_at,
+        provenance=provenance,
     )
 
 
@@ -602,6 +670,7 @@ async def _run_with_cache(
                 row_count=row_count,
                 cached=True,
                 cached_at=cached.cached_at_iso,
+                provenance=_provenance(compile_result, cached.ttl_outcome, report_no_cache=False),
             )
             return _frame_result(meta, cached.payload_blob)
 
@@ -628,7 +697,7 @@ async def _run_with_cache(
             tz=cached.timezone,
             columns=cached.hit_columns,
         )
-        response = _build_execute_response(
+        return _build_execute_response(
             compile_result=compile_result,
             exec_result=hit_exec_result,
             model=model,
@@ -640,18 +709,12 @@ async def _run_with_cache(
             accept_encoding=accept_encoding,
             cached=True,
             cached_at=cached.cached_at_iso,
+            provenance=_provenance(compile_result, cached.ttl_outcome, report_no_cache=False),
         )
-        if isinstance(response, QueryExecuteResponse):
-            response.federation = federation_response(compile_result)
-        if (
-            isinstance(response, QueryExecuteResponse)
-            and cached.ttl_outcome is not None
-            and cached.ttl_outcome.ttl is not None
-        ):
-            _apply_ttl_metadata(response, cached.ttl_outcome)
-        return response
 
-    response = _build_execute_response(
+    # A fresh run reports its TTL, or why it was not stored, only where a cache
+    # was consulted at all.
+    return _build_execute_response(
         compile_result=compile_result,
         exec_result=cached.exec_result,
         model=model,
@@ -660,38 +723,7 @@ async def _run_with_cache(
         locale=effective_locale,
         accept_encoding=accept_encoding,
         declared_skips=cached.declared_skips,
+        provenance=_provenance(
+            compile_result, cached.ttl_outcome if cacheable else None, report_no_cache=True
+        ),
     )
-    if isinstance(response, QueryExecuteResponse):
-        response.federation = federation_response(compile_result)
-    ttl_outcome = cached.ttl_outcome
-    if (
-        cacheable
-        and ttl_outcome is not None
-        and ttl_outcome.ttl is not None
-        and isinstance(response, QueryExecuteResponse)
-    ):
-        _apply_ttl_metadata(response, ttl_outcome)
-    elif cacheable and ttl_outcome is not None and isinstance(response, QueryExecuteResponse):
-        _apply_no_cache_metadata(response, ttl_outcome)
-    return response
-
-
-def _apply_ttl_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
-    """Surface TTL fields on a fresh (non-cached) response."""
-    ttl = ttl_outcome.ttl
-    if ttl is None:
-        return
-    response.ttl_seconds = ttl.seconds
-    response.ttl_source = ttl.source
-    response.ttl_limiting_table = ttl.limiting_table
-
-
-def _apply_no_cache_metadata(response: QueryExecuteResponse, ttl_outcome: Any) -> None:
-    """Document why a response was not cached."""
-    reason = ttl_outcome.no_cache_reason
-    if reason is None:
-        return
-    response.ttl_source = (
-        "no_cache" if reason.value == "unknown_freshness" else f"no_cache:{reason.value}"
-    )
-    response.ttl_limiting_table = ttl_outcome.no_cache_table
