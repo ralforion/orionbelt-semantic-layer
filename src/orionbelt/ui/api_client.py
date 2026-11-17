@@ -10,7 +10,6 @@ module.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import time
 from typing import Any
@@ -514,8 +513,9 @@ def _ensure_session_and_model(
     Returns ``(client, session_id, model_id, session_state, model_state)``.
     Creates a new session when *session_state* is ``None`` or the API URL
     changed.  Uploads the model when *model_state* is ``None`` or the model
-    YAML changed (detected via MD5 hash).  Auto-recovers from expired
-    sessions (HTTP 404).
+    YAML changed (detected via MD5 hash).  Continues in a new session when
+    the current one has expired (HTTP 404) or holds the most models a
+    session may (HTTP 429).
     """
     api_url = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
     model_hash = hashlib.md5(model_yaml.encode()).hexdigest()
@@ -555,8 +555,11 @@ def _ensure_session_and_model(
             f"/v1/sessions/{session_id}/models",
             json={"model_yaml": model_yaml},
         )
-        # Auto-recover from expired session (404)
-        if resp.status_code == 404:
+        # Continue in a new session when this one has expired (404) or is
+        # full (429: each edit adds a model, up to MAX_MODELS_PER_SESSION).
+        # The full session is left to expire, never emptied: a concurrent
+        # action may still be using any of its models.
+        if resp.status_code in (404, 429):
             resp = client.post("/v1/sessions")
             resp.raise_for_status()
             session_id = resp.json()["session_id"]
@@ -570,31 +573,11 @@ def _ensure_session_and_model(
         resp.raise_for_status()
         model_id = resp.json()["model_id"]
         model_state = {"model_id": model_id, "model_hash": model_hash}
-        _drop_other_models(client, session_id, keep=model_id)
     else:
         assert model_state is not None  # for type narrowing
         model_id = model_state["model_id"]
 
     return client, session_id, model_id, session_state, model_state
-
-
-def _drop_other_models(client: httpx.Client, session_id: str, keep: str) -> None:
-    """Remove every model in the UI's session except *keep*.
-
-    The UI owns its session and works on one model at a time, but each edit
-    uploads the YAML as a new model. Without this, earlier versions pile up
-    until the session hits ``MAX_MODELS_PER_SESSION`` and every further
-    upload is refused with 429. Listing the session instead of deleting only
-    the previous id keeps this correct when the caller's ``model_state`` is
-    stale. Best effort: a failed cleanup leaves an extra model, never breaks
-    the call that uploaded.
-    """
-    with contextlib.suppress(httpx.HTTPError):
-        resp = client.get(f"/v1/sessions/{session_id}/models")
-        resp.raise_for_status()
-        for model in resp.json():
-            if model["model_id"] != keep:
-                client.delete(f"/v1/sessions/{session_id}/models/{model['model_id']}")
 
 
 class _ModelValidationError(Exception):

@@ -1,15 +1,17 @@
-"""The UI keeps one model in its API session, however often the model is edited.
+"""The UI keeps working however often the model is edited, and its actions
+never take a model from each other.
 
-Each edit in the model editor uploads the YAML as a new model. Before the fix
-the previous versions stayed in the session, so the edit after
-``MAX_MODELS_PER_SESSION`` was refused with 429 and the UI was stuck until a
-page reload. These tests drive the UI's real client helper against the real
-API (in process) with a small cap, so the bug shows on the third edit.
+Each edit in the model editor uploads the YAML as a new model into the UI's
+API session. Once the session held ``MAX_MODELS_PER_SESSION`` models, every
+further upload was refused with 429 and the UI was stuck until a page reload.
+These tests drive the UI's real client helper against the API in process.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -24,22 +26,25 @@ from orionbelt.settings import Settings
 from orionbelt.ui import api_client
 from tests.conftest import SAMPLE_MODEL_YAML
 
-_CAP = 2
 _API_URL = "http://testserver"
 
 
 @pytest.fixture
-def app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
-    app = create_app(settings=Settings(session_cleanup_interval=9999))
-    mgr = SessionManager(max_models_per_session=_CAP, cleanup_interval=9999)
-    init_session_manager(mgr)
+def serve(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[int], FastAPI]]:
+    """Start the API with a given per-session model cap; route the UI to it."""
 
-    # The helper builds its own httpx.Client; route it into the app instead.
-    def in_process_client(*, base_url: str, headers: Any, **_: Any) -> httpx.Client:
-        return TestClient(app, base_url=base_url, headers=headers)
+    def start(cap: int) -> FastAPI:
+        app = create_app(settings=Settings(session_cleanup_interval=9999))
+        init_session_manager(SessionManager(max_models_per_session=cap, cleanup_interval=9999))
 
-    monkeypatch.setattr(api_client.httpx, "Client", in_process_client)
-    yield app
+        # The helper builds its own httpx.Client; send it into the app instead.
+        def in_process_client(*, base_url: str, headers: Any, **_: Any) -> httpx.Client:
+            return TestClient(app, base_url=base_url, headers=headers)
+
+        monkeypatch.setattr(api_client.httpx, "Client", in_process_client)
+        return app
+
+    yield start
     reset_session_manager()
 
 
@@ -50,32 +55,51 @@ def _edit(n: int) -> str:
     return edited
 
 
-def _session_models(app: FastAPI, session_id: str) -> list[str]:
-    resp = TestClient(app).get(f"/v1/sessions/{session_id}/models")
-    resp.raise_for_status()
-    return [m["model_id"] for m in resp.json()]
+def _model_status(app: FastAPI, session_id: str, model_id: str) -> int:
+    return TestClient(app).get(f"/v1/sessions/{session_id}/models/{model_id}").status_code
 
 
-def test_repeated_edits_stay_under_the_session_model_cap(app: FastAPI) -> None:
+def test_edits_past_the_cap_continue_in_a_new_session(
+    serve: Callable[[int], FastAPI],
+) -> None:
+    app = serve(2)
     session_state = model_state = None
-    for n in range(_CAP + 3):
+    used: list[tuple[str, str]] = []
+    for n in range(5):
         _, session_id, model_id, session_state, model_state = api_client._ensure_session_and_model(
             _edit(n), _API_URL, session_state, model_state
         )
-        assert _session_models(app, session_id) == [model_id]
+        assert _model_status(app, session_id, model_id) == 200
+        used.append((session_id, model_id))
+
+    # Two versions per session: edits 0-1, 2-3, 4.
+    assert len({sid for sid, _ in used}) == 3
+    # A full session is left as it is, so an action still using one of its
+    # models keeps working.
+    for session_id, model_id in used:
+        assert _model_status(app, session_id, model_id) == 200
 
 
-def test_returning_to_an_earlier_version_reuploads_it(app: FastAPI) -> None:
-    _, session_id, first_id, session_state, model_state = api_client._ensure_session_and_model(
+def test_concurrent_actions_keep_their_models(serve: Callable[[int], FastAPI]) -> None:
+    """Two actions start from the same state with different versions of the
+    model, as Gradio callbacks in separate concurrency groups do after an edit.
+    Both upload before either uses its model; each must still find its own."""
+    app = serve(10)
+    _, _, start_id, session_state, model_state = api_client._ensure_session_and_model(
         _edit(0), _API_URL, None, None
     )
-    _, _, _, session_state, model_state = api_client._ensure_session_and_model(
-        _edit(1), _API_URL, session_state, model_state
-    )
-    _, same_session, back_id, _, _ = api_client._ensure_session_and_model(
-        _edit(0), _API_URL, session_state, model_state
-    )
-    assert same_session == session_id
-    assert _session_models(app, session_id) == [back_id]
-    # Model ids are content-derived, so the same YAML maps to the same id.
-    assert back_id == first_id
+    both_uploaded = threading.Barrier(2, timeout=30)
+
+    def action(n: int) -> int:
+        _, session_id, model_id, _, _ = api_client._ensure_session_and_model(
+            _edit(n), _API_URL, session_state, model_state
+        )
+        both_uploaded.wait()
+        return _model_status(app, session_id, model_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = list(pool.map(action, [1, 2]))
+
+    assert statuses == [200, 200]
+    # An action still holding the state from before the edits finds its model too.
+    assert _model_status(app, session_state["session_id"], start_id) == 200
