@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The UI no longer stops working after ten model edits.** Each edit in the model editor uploads the YAML as a new model, and the earlier versions stayed in the UI's API session. The eleventh version in one session was refused with `429 Maximum models per session reached (10)` and every action failed until the page was reloaded. After an upload the UI now removes the session's other models, so its session holds the one model the editor shows. `tests/integration/test_ui_session_models.py` drives the UI's client against the API with a cap of two.
+
 ## [3.1.0] - 2026-11-17
 
 ### Upgrading from 3.0

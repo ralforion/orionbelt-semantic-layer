@@ -10,6 +10,7 @@ module.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import time
 from typing import Any
@@ -569,11 +570,31 @@ def _ensure_session_and_model(
         resp.raise_for_status()
         model_id = resp.json()["model_id"]
         model_state = {"model_id": model_id, "model_hash": model_hash}
+        _drop_other_models(client, session_id, keep=model_id)
     else:
         assert model_state is not None  # for type narrowing
         model_id = model_state["model_id"]
 
     return client, session_id, model_id, session_state, model_state
+
+
+def _drop_other_models(client: httpx.Client, session_id: str, keep: str) -> None:
+    """Remove every model in the UI's session except *keep*.
+
+    The UI owns its session and works on one model at a time, but each edit
+    uploads the YAML as a new model. Without this, earlier versions pile up
+    until the session hits ``MAX_MODELS_PER_SESSION`` and every further
+    upload is refused with 429. Listing the session instead of deleting only
+    the previous id keeps this correct when the caller's ``model_state`` is
+    stale. Best effort: a failed cleanup leaves an extra model, never breaks
+    the call that uploaded.
+    """
+    with contextlib.suppress(httpx.HTTPError):
+        resp = client.get(f"/v1/sessions/{session_id}/models")
+        resp.raise_for_status()
+        for model in resp.json():
+            if model["model_id"] != keep:
+                client.delete(f"/v1/sessions/{session_id}/models/{model['model_id']}")
 
 
 class _ModelValidationError(Exception):
