@@ -181,8 +181,8 @@ def _fetch_obsl_turtle(
             resp = client.get(f"/v1/sessions/{session_id}/models/{model_id}/graph")
         resp.raise_for_status()
         return resp.text, session_state, model_state
-    except _ModelValidationError:
-        return "", session_state, model_state
+    except _ModelValidationError as exc:
+        return "", exc.session_state, exc.model_state
     except httpx.ConnectError:
         # API not available — fall back to local generation
         try:
@@ -246,7 +246,7 @@ def _run_sparql(
         resp.raise_for_status()
         return resp.json(), "", session_state, model_state
     except _ModelValidationError as exc:
-        return None, _format_api_errors(exc.detail), session_state, model_state
+        return None, _format_api_errors(exc.detail), exc.session_state, exc.model_state
     except httpx.ConnectError:
         # API not available: export and query the graph in-process. The same
         # refusals apply (update operations, syntax), reported the same way.
@@ -298,7 +298,7 @@ def _rules_request(
             return None, _format_api_errors(detail), session_state, model_state
         return resp.json(), "", session_state, model_state
     except _ModelValidationError as exc:
-        return None, _format_api_errors(exc.detail), session_state, model_state
+        return None, _format_api_errors(exc.detail), exc.session_state, exc.model_state
     except httpx.ConnectError:
         return None, f"API unreachable at {api_url}.", session_state, model_state
     except Exception as exc:  # noqa: BLE001 - surfaced to the user, never raised into Gradio
@@ -349,7 +349,7 @@ def _model_request(
             return None, _format_api_errors(detail), session_state, model_state
         return (resp.text if text else resp.json()), "", session_state, model_state
     except _ModelValidationError as exc:
-        return None, _format_api_errors(exc.detail), session_state, model_state
+        return None, _format_api_errors(exc.detail), exc.session_state, exc.model_state
     except httpx.ConnectError:
         return None, f"API unreachable at {api_url}.", session_state, model_state
     except Exception as exc:  # noqa: BLE001 - surfaced to the user, never raised into Gradio
@@ -423,7 +423,7 @@ def _fetch_diagram_er(
         return f"```mermaid\n{mermaid}\n```", mermaid, session_state, model_state
 
     except _ModelValidationError as exc:
-        return f"**Model validation failed:** {exc}", "", session_state, model_state
+        return f"**Model validation failed:** {exc}", "", exc.session_state, exc.model_state
     except httpx.ConnectError:
         # API not available — fall back to local generation
         from orionbelt.ui.rendering import _generate_mermaid_er_local
@@ -564,12 +564,15 @@ def _ensure_session_and_model(
             resp.raise_for_status()
             session_id = resp.json()["session_id"]
             session_state = {"session_id": session_id, "api_url": api_url}
+            model_state = None  # the new session holds no model yet
             resp = client.post(
                 f"/v1/sessions/{session_id}/models",
                 json={"model_yaml": model_yaml},
             )
         if resp.status_code == 422:
-            raise _ModelValidationError(resp.json().get("detail", resp.text))
+            raise _ModelValidationError(
+                resp.json().get("detail", resp.text), session_state, model_state
+            )
         resp.raise_for_status()
         model_id = resp.json()["model_id"]
         model_state = {"model_id": model_id, "model_hash": model_hash}
@@ -581,8 +584,21 @@ def _ensure_session_and_model(
 
 
 class _ModelValidationError(Exception):
-    """Raised when the API rejects a model with HTTP 422."""
+    """Raised when the API rejects a model with HTTP 422.
 
-    def __init__(self, detail: Any) -> None:
+    Carries the state the caller returns instead of the one it passed in:
+    the upload may have gone to a session created on the way (first use, an
+    expired or a full session). Dropping that session would make every retry
+    create another one, until the session-creation rate limit refuses them.
+    """
+
+    def __init__(
+        self,
+        detail: Any,
+        session_state: dict[str, str],
+        model_state: dict[str, str] | None,
+    ) -> None:
         self.detail = detail
+        self.session_state = session_state
+        self.model_state = model_state
         super().__init__(str(detail))

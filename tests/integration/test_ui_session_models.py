@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from orionbelt.api.app import create_app
-from orionbelt.api.deps import init_session_manager, reset_session_manager
+from orionbelt.api.deps import get_session_manager, init_session_manager, reset_session_manager
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
 from orionbelt.ui import api_client
@@ -103,3 +103,39 @@ def test_concurrent_actions_keep_their_models(serve: Callable[[int], FastAPI]) -
     assert statuses == [200, 200]
     # An action still holding the state from before the edits finds its model too.
     assert _model_status(app, session_state["session_id"], start_id) == 200
+
+
+@pytest.mark.parametrize("prior_edits", [0, 2], ids=["new-page", "full-session"])
+def test_a_rejected_model_keeps_the_session_it_was_sent_to(
+    serve: Callable[[int], FastAPI], prior_edits: int
+) -> None:
+    """A model the API rejects (422) is retried until the user fixes it. The
+    session created for the first attempt (on a new page, or because the
+    session was full) must carry every later attempt; otherwise each retry
+    creates another, and the session-creation rate limit (10 a minute by
+    default) refuses the corrected model."""
+    serve(2)
+    mgr = get_session_manager()
+    session_state = model_state = None
+    for n in range(prior_edits):
+        _, _, _, session_state, model_state = api_client._ensure_session_and_model(
+            _edit(n), _API_URL, session_state, model_state
+        )
+    sessions_before = mgr.active_count
+    path = "/v1/sessions/{session_id}/models/{model_id}"
+
+    broken = _edit(9).replace("column: Country", "column: Nowhere", 1)
+    assert broken != _edit(9)
+    for _ in range(12):
+        body, error, session_state, model_state = api_client._model_request(
+            broken, _API_URL, session_state, model_state, "GET", path
+        )
+        assert body is None
+        assert "Nowhere" in error
+
+    body, error, session_state, model_state = api_client._model_request(
+        _edit(9), _API_URL, session_state, model_state, "GET", path
+    )
+    assert error == ""
+    assert body["model_id"] == model_state["model_id"]
+    assert mgr.active_count == sessions_before + 1
