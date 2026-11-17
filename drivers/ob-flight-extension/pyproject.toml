@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ob-flight-extension"
-version = "3.0.0"
+version = "3.1.0"
 description = "Arrow Flight SQL server extension for orionbelt-api (DBeaver, Tableau, Power BI)"
 license = "BUSL-1.1"
 license-files = ["LICENSE"]
@@ -19,14 +19,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-duckdb      = ["ob-duckdb>=3.0.0"]
+duckdb      = ["ob-duckdb>=3.1.0"]
 snowflake   = ["ob-snowflake>=3.0.0"]
 postgres    = ["ob-postgres>=3.0.0"]
 clickhouse  = ["ob-clickhouse>=3.0.0"]
 dremio      = ["ob-dremio>=3.0.0"]
 databricks  = ["ob-databricks>=3.0.0"]
 all = [
-    "ob-duckdb>=3.0.0",
+    "ob-duckdb>=3.1.0",
     "ob-snowflake>=3.0.0",
     "ob-postgres>=3.0.0",
     "ob-clickhouse>=3.0.0",

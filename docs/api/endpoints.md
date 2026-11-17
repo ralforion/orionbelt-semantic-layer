@@ -17,7 +17,7 @@ Returns the service status and version.
 ```json
 {
  "status": "ok",
- "version": "3.0.0"
+ "version": "3.1.0"
 }
 ```
 
@@ -1792,7 +1792,7 @@ Return public configuration for API clients (UI, MCP, etc.).
 
 ```json
 {
- "version": "3.0.0",
+ "version": "3.1.0",
  "api_version": "v1",
  "single_model_mode": false,
  "session_ttl_seconds": 1800,
@@ -1811,7 +1811,7 @@ Return public configuration for API clients (UI, MCP, etc.).
 
 ```json
 {
- "version": "3.0.0",
+ "version": "3.1.0",
  "api_version": "v1",
  "single_model_mode": true,
  "model_yaml": null,
