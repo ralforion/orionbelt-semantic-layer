@@ -31,6 +31,7 @@ from orionbelt.ui.api_client import (
     _format_api_errors,
     _model_request,
     _ModelValidationError,
+    _session_gone,
 )
 from orionbelt.ui.rendering import _format_sql
 
@@ -141,8 +142,7 @@ def compile_sql(
             f"/v1/sessions/{session_id}/query/sql",
             json={"model_id": model_id, "query": query_dict, "dialect": dialect},
         )
-        # Auto-recover from expired session on compile (404)
-        if resp.status_code == 404:
+        if _session_gone(resp):
             client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
                 model_yaml, api_url, None, None
             )
@@ -870,7 +870,7 @@ def _execute_query(
             headers=exec_headers,
             timeout=120,
         )
-        if resp.status_code == 404:
+        if _session_gone(resp):
             client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
                 model_yaml, api_url, None, None
             )

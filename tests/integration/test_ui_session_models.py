@@ -1,15 +1,19 @@
-"""The UI keeps working however often the model is edited, and its actions
-never take a model from each other.
+"""The UI keeps working however often the model is edited, after its API
+session expired, and its actions never take a model from each other.
 
 Each edit in the model editor uploads the YAML as a new model into the UI's
 API session. Once the session held ``MAX_MODELS_PER_SESSION`` models, every
 further upload was refused with 429 and the UI was stuck until a page reload.
-These tests drive the UI's real client helper against the API in process.
+An expired session answers its first request with 410 (and is dropped then),
+which every UI action reported as an error instead of continuing in a new
+session. These tests drive the UI's real client helpers against the API in
+process.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -21,21 +25,27 @@ from fastapi.testclient import TestClient
 
 from orionbelt.api.app import create_app
 from orionbelt.api.deps import get_session_manager, init_session_manager, reset_session_manager
+from orionbelt.service import session_manager
 from orionbelt.service.session_manager import SessionManager
 from orionbelt.settings import Settings
-from orionbelt.ui import api_client
+from orionbelt.ui import api_client, handlers
 from tests.conftest import SAMPLE_MODEL_YAML
 
 _API_URL = "http://testserver"
+_QUERY_YAML = "select:\n  dimensions: [Customer Country]\n  measures: [Total Revenue]\n"
 
 
 @pytest.fixture
-def serve(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[int], FastAPI]]:
-    """Start the API with a given per-session model cap; route the UI to it."""
+def serve(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., FastAPI]]:
+    """Start the API with a given per-session model cap (and query execution
+    on an empty in-memory DuckDB, with *execute*); route the UI to it."""
 
-    def start(cap: int) -> FastAPI:
+    def start(cap: int, *, execute: bool = False) -> FastAPI:
         app = create_app(settings=Settings(session_cleanup_interval=9999))
-        init_session_manager(SessionManager(max_models_per_session=cap, cleanup_interval=9999))
+        init_session_manager(
+            SessionManager(max_models_per_session=cap, cleanup_interval=9999),
+            query_execute_enabled=execute,
+        )
 
         # The helper builds its own httpx.Client; send it into the app instead.
         def in_process_client(*, base_url: str, headers: Any, **_: Any) -> httpx.Client:
@@ -139,3 +149,135 @@ def test_a_rejected_model_keeps_the_session_it_was_sent_to(
     assert error == ""
     assert body["model_id"] == model_state["model_id"]
     assert mgr.active_count == sessions_before + 1
+
+
+@pytest.fixture
+def expire_sessions(monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
+    """Move the session manager's clock past the idle TTL of every session
+    that exists, as a pause of an hour would. Nothing purges them before
+    their next request (the cleanup sweep is off), as on Cloud Run, which by
+    default gives an instance CPU only while it handles a request."""
+    offset = 0.0
+
+    class _Clock:  # the session manager reads only time.monotonic()
+        @staticmethod
+        def monotonic() -> float:
+            return time.monotonic() + offset
+
+    monkeypatch.setattr(session_manager, "time", _Clock)
+
+    def expire() -> None:
+        nonlocal offset
+        offset += 3600  # the TTL is 1800 seconds, the max age a day
+
+    return expire
+
+
+_State = dict[str, str] | None
+
+
+def _compile(model_yaml: str, ss: _State, ms: _State) -> tuple[str, _State]:
+    sql, _, ss, ms = handlers.compile_sql(model_yaml, _QUERY_YAML, "postgres", _API_URL, ss, ms)
+    return ("" if '"CUSTOMERS"' in sql else sql), ss
+
+
+def _graph(model_yaml: str, ss: _State, ms: _State) -> tuple[str, _State]:
+    turtle, ss, ms = api_client._fetch_obsl_turtle(model_yaml, _API_URL, ss, ms)
+    return ("" if "@prefix" in turtle else turtle or "no graph"), ss
+
+
+def _sparql(model_yaml: str, ss: _State, ms: _State) -> tuple[str, _State]:
+    _, error, ss, ms = api_client._run_sparql(model_yaml, _API_URL, "ASK { ?s ?p ?o }", ss, ms)
+    return error, ss
+
+
+def _rules(model_yaml: str, ss: _State, ms: _State) -> tuple[str, _State]:
+    _, error, ss, ms = api_client._rules_request(model_yaml, _API_URL, ss, ms, "GET", "")
+    return error, ss
+
+
+def _model(model_yaml: str, ss: _State, ms: _State) -> tuple[str, _State]:
+    path = "/v1/sessions/{session_id}/models/{model_id}"
+    _, error, ss, ms = api_client._model_request(model_yaml, _API_URL, ss, ms, "GET", path)
+    return error, ss
+
+
+def _diagram(model_yaml: str, ss: _State, ms: _State) -> tuple[str, _State]:
+    md, _, ss, ms = api_client._fetch_diagram_er(model_yaml, True, _API_URL, ss, ms)
+    return ("" if md.startswith("```mermaid") else md), ss
+
+
+def _edit_then_act(model_yaml: str, ss: _State, ms: _State) -> tuple[str, _State]:
+    """An edit after the pause: the upload is the first request."""
+    _, _, _, ss, ms = api_client._ensure_session_and_model(_edit(1), _API_URL, ss, ms)
+    return "", ss
+
+
+@pytest.mark.parametrize(
+    "action",
+    [_compile, _graph, _sparql, _rules, _model, _diagram, _edit_then_act],
+    ids=lambda action: action.__name__.strip("_"),
+)
+def test_an_expired_session_continues_in_a_new_one(
+    serve: Callable[[int], FastAPI],
+    expire_sessions: Callable[[], None],
+    action: Callable[[str, _State, _State], tuple[str, _State]],
+) -> None:
+    serve(10)
+    model_yaml = _edit(0)
+    _, session_id, _, session_state, model_state = api_client._ensure_session_and_model(
+        model_yaml, _API_URL, None, None
+    )
+    expire_sessions()
+
+    error, session_state = action(model_yaml, session_state, model_state)
+
+    assert error == ""
+    assert session_state is not None
+    assert session_state["session_id"] != session_id
+
+
+def test_execute_after_a_pause_runs_in_a_new_session(
+    serve: Callable[..., FastAPI], expire_sessions: Callable[[], None]
+) -> None:
+    """The sample model's tables are not in the empty database, so the query
+    itself fails; it must fail in a new session, not on the expired one."""
+    serve(10, execute=True)
+    model_yaml = _edit(0)
+    _, session_id, _, session_state, model_state = api_client._ensure_session_and_model(
+        model_yaml, _API_URL, None, None
+    )
+    expire_sessions()
+
+    result = handlers._execute_query(
+        model_yaml, _QUERY_YAML, "duckdb", _API_URL, session_state, model_state
+    )
+
+    assert "Database execution failed" in result[0]  # it reached the database
+    assert result[2] is not None
+    assert result[2]["session_id"] != session_id
+
+
+@pytest.mark.parametrize(
+    ("status", "detail", "gone"),
+    [
+        (410, "Session 'abc' has expired", True),
+        (404, "Session 'abc' not found", True),
+        (404, "Session not found: abc", True),
+        (404, "Model 'abc' not found", True),
+        (404, "Rule 'Big Orders' not found", False),
+        (404, "'Revenue' not found in model", False),
+        (410, "The OSI ontology emit has been removed. Omit 'include_ontology'.", False),
+        (500, "Session store failed", False),
+    ],
+)
+def test_only_a_lost_session_or_model_starts_a_new_session(
+    status: int, detail: str, gone: bool
+) -> None:
+    """An unknown rule or artefact is the user's to see, not a reason to
+    create a session (which the session-creation rate limit counts)."""
+    assert api_client._session_gone(httpx.Response(status, json={"detail": detail})) is gone
+
+
+def test_a_response_without_json_is_not_a_lost_session() -> None:
+    assert not api_client._session_gone(httpx.Response(404, text="Not Found"))

@@ -38,6 +38,7 @@ from orionbelt.ui.api_client import (
     _format_api_errors,
     _import_osi,
     _ModelValidationError,
+    _session_gone,
     _warn_if_auth_required_without_key,
     set_api_credentials,
 )
@@ -3240,6 +3241,9 @@ def create_blocks(
                             timeout=5,
                             headers=_API_HEADERS,
                         )
+                        if params and _session_gone(resp):
+                            # The session expired: show the API's settings.
+                            resp = httpx.get(f"{url}/v1/settings", timeout=5, headers=_API_HEADERS)
                         resp.raise_for_status()
                         data = resp.json()
                     except httpx.ConnectError:

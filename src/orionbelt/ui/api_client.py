@@ -68,6 +68,27 @@ def _warn_if_auth_required_without_key(api_base: str, api_key: str | None) -> No
         )
 
 
+def _session_gone(resp: httpx.Response) -> bool:
+    """Whether *resp* says the UI's API session, or its model, is gone, so
+    the call is worth repeating in a new session.
+
+    An expired session answers its first request with 410 and is dropped
+    then; it answers 404 afterwards, once the cleanup sweep has dropped it,
+    or after an API restart. By default Cloud Run gives an instance CPU only
+    while it handles a request, so the sweep rarely runs first there: the
+    first click after a pause got the 410. Other 404s (an unknown rule,
+    measure or example) and the 410 for a removed request option are the
+    caller's to report.
+    """
+    if resp.status_code not in (404, 410):
+        return False
+    try:
+        detail = resp.json().get("detail")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(detail, str) and detail.startswith(("Session", "Model"))
+
+
 def _format_api_errors(detail: Any) -> str:
     """Format API error detail into readable lines."""
     if isinstance(detail, dict):
@@ -174,7 +195,7 @@ def _fetch_obsl_turtle(
             model_yaml, api_url, session_state, model_state
         )
         resp = client.get(f"/v1/sessions/{session_id}/models/{model_id}/graph")
-        if resp.status_code == 404:
+        if _session_gone(resp):
             client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
                 model_yaml, api_url, None, None
             )
@@ -233,7 +254,7 @@ def _run_sparql(
         )
         path = f"/v1/sessions/{session_id}/models/{model_id}/sparql"
         resp = client.post(path, json={"query": query})
-        if resp.status_code == 404:
+        if _session_gone(resp):
             client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
                 model_yaml, api_url, None, None
             )
@@ -284,7 +305,7 @@ def _rules_request(
         )
         path = f"/v1/sessions/{session_id}/models/{model_id}/rules{suffix}"
         resp = client.request(method, path, json=payload, timeout=300)
-        if resp.status_code == 404 and "not found" in resp.text.lower() and "Session" in resp.text:
+        if _session_gone(resp):
             client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
                 model_yaml, api_url, None, None
             )
@@ -339,7 +360,7 @@ def _model_request(
 
     try:
         resp, session_state, model_state = send(fresh=False)
-        if resp.status_code == 404 and "Session" in resp.text:
+        if _session_gone(resp):
             resp, session_state, model_state = send(fresh=True)
         if resp.status_code >= 400:
             try:
@@ -409,8 +430,7 @@ def _fetch_diagram_er(
             f"/v1/sessions/{session_id}/models/{model_id}/diagram/er",
             params={"show_columns": show_columns, "theme": theme},
         )
-        # Auto-recover from expired session (404)
-        if resp.status_code == 404:
+        if _session_gone(resp):
             client, session_id, model_id, session_state, model_state = _ensure_session_and_model(
                 model_yaml, api_url, None, None
             )
@@ -584,8 +604,8 @@ def _ensure_session_and_model(
     Creates a new session when *session_state* is ``None`` or the API URL
     changed.  Uploads the model when *model_state* is ``None`` or the model
     YAML changed (detected via MD5 hash).  Continues in a new session when
-    the current one has expired (HTTP 404) or holds the most models a
-    session may (HTTP 429).
+    the current one is gone (see :func:`_session_gone`) or holds the most
+    models a session may (HTTP 429).
     """
     api_url = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
     model_hash = hashlib.md5(model_yaml.encode()).hexdigest()
@@ -638,11 +658,11 @@ def _ensure_session_and_model(
             f"/v1/sessions/{session_id}/models",
             json={"model_yaml": model_yaml},
         )
-        # Continue in a new session when this one has expired (404) or is
-        # full (429: each edit adds a model, up to MAX_MODELS_PER_SESSION).
-        # The full session is left to expire, never emptied: a concurrent
-        # action may still be using any of its models.
-        if resp.status_code in (404, 429):
+        # Continue in a new session when this one is gone (expired: 410,
+        # then 404) or full (429: each edit adds a model, up to
+        # MAX_MODELS_PER_SESSION). The full session is left to expire, never
+        # emptied: a concurrent action may still be using any of its models.
+        if _session_gone(resp) or resp.status_code == 429:
             resp = client.post("/v1/sessions")
             resp.raise_for_status()
             session_id = resp.json()["session_id"]

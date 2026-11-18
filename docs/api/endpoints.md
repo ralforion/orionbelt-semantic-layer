@@ -81,7 +81,9 @@ Get info for a specific session. Also refreshes the session's last-accessed time
 
 **Response (200):** Same as single session in list response.
 
-**Error (404):** Session not found or expired.
+**Error (404):** Session not found.
+
+**Error (410):** Session expired. Answered once: the session is dropped then, and its ID gets 404 afterwards (see [Session-Based Workflow](overview.md#session-based-workflow)).
 
 ### `DELETE /v1/sessions/{session_id}`
 
