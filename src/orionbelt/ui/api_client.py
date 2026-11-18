@@ -520,8 +520,9 @@ def _curated_model(api_url: str, name: str) -> tuple[str, dict[str, str], dict[s
     which the API names after it, rather than in a per-user copy: model
     upload is refused in admin-curated mode, and the protected session never
     expires. ``curated`` in the session state tells
-    :func:`_ensure_session_and_model` to use it as it is. ``None`` when the
-    API cannot be reached or has no such model.
+    :func:`_ensure_session_and_model` to use it as it is; ``model_hash`` is
+    :func:`_editor_hash` of the model. ``None`` when the API cannot be
+    reached or has no such model.
     """
     url = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
     try:
@@ -532,8 +533,43 @@ def _curated_model(api_url: str, name: str) -> tuple[str, dict[str, str], dict[s
     except (httpx.HTTPError, ValueError, KeyError):
         return None
     session_state = {"session_id": name, "api_url": url, "curated": "true"}
-    model_state = {"model_id": model_id, "model_hash": hashlib.md5(model_yaml.encode()).hexdigest()}
+    model_state = {"model_id": model_id, "model_hash": _editor_hash(model_yaml)}
     return model_yaml, session_state, model_state
+
+
+def _editor_hash(model_yaml: str) -> str:
+    """MD5 of *model_yaml* as the model editor holds it: ``gr.Code`` strips
+    leading and trailing whitespace from the text it is given."""
+    return hashlib.md5(model_yaml.strip().encode()).hexdigest()
+
+
+def _curated_state(
+    model_yaml: str,
+    api_url: str,
+    session_state: dict[str, str],
+    model_state: dict[str, str] | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """The session and model state of the curated model in the editor.
+
+    Usually the state passed in. But an action still running when the user
+    picks another model writes back the state it started with, after the
+    pick, so the state can name the previous model. The editor's text
+    (*model_yaml*), which only a pick changes, decides then. Raises
+    :class:`_ModelValidationError` when no curated model has that text: the
+    API serves other models since the page was loaded.
+    """
+    model_hash = _editor_hash(model_yaml)
+    if model_state is not None and model_state.get("model_hash") == model_hash:
+        return session_state, model_state
+    for name in _fetch_curated_models(api_url):
+        picked = _curated_model(api_url, name)
+        if picked is not None and picked[2]["model_hash"] == model_hash:
+            return picked[1], picked[2]
+    raise _ModelValidationError(
+        "The model in the editor is no longer on the API. Reload the page.",
+        session_state,
+        model_state,
+    )
 
 
 def _ensure_session_and_model(
@@ -569,11 +605,20 @@ def _ensure_session_and_model(
         model_state = None  # force model re-upload on new session
     else:
         assert session_state is not None  # for type narrowing
-        session_id = session_state["session_id"]
         # An admin-curated model is used in its own session (see
         # _curated_model), which holds that model and takes no uploads.
-        if session_state.get("curated") and model_state is not None:
-            return client, session_id, model_state["model_id"], session_state, model_state
+        if session_state.get("curated"):
+            session_state, model_state = _curated_state(
+                model_yaml, api_url, session_state, model_state
+            )
+            return (
+                client,
+                session_state["session_id"],
+                model_state["model_id"],
+                session_state,
+                model_state,
+            )
+        session_id = session_state["session_id"]
 
     # Single-model mode: session already has a pre-loaded model
     if preloaded_model_count > 0 and model_state is None:
@@ -622,7 +667,8 @@ def _ensure_session_and_model(
 
 
 class _ModelValidationError(Exception):
-    """Raised when the API rejects a model with HTTP 422.
+    """Raised when the model in the editor cannot be used: the API rejects
+    it (HTTP 422), or it is a curated model the API no longer serves.
 
     Carries the state the caller returns instead of the one it passed in:
     the upload may have gone to a session created on the way (first use, an

@@ -1765,8 +1765,12 @@ def create_blocks(
         # (60% on desktop, 20% on phones) computed at load time.
         saved_zoom = gr.BrowserState(0, storage_key="ob_zoom")
         saved_sql = gr.BrowserState("", storage_key="ob_sql_output")
-        # The curated model picked in the "Model" dropdown (several MODEL_FILES).
+        # The curated model picked in the "Model" dropdown (several MODEL_FILES),
+        # and the one shown when saved_query was saved: the query is restored
+        # only for that model. BrowserState never stores a falsy value, so a
+        # pick cannot clear saved_query instead.
         saved_model_name = gr.BrowserState("", storage_key="ob_model_name")
+        saved_query_model = gr.BrowserState("", storage_key="ob_query_model")
         # Carries viewport width class into _restore (set by the load JS).
         is_mobile = gr.Number(value=0, visible=False)
 
@@ -3325,8 +3329,16 @@ def create_blocks(
 
         # ── Toggle: Python saves inputs → BrowserState, then JS redirects ──
         dark_btn.click(
-            fn=lambda m, q, a, d, z, s: (m, q, a, d, z, s),
-            inputs=[model_input, query_input, api_url, dialect, zoom_slider, sql_output],
+            fn=lambda m, q, a, d, z, s, n: (m, q, a, d, z, s, n),
+            inputs=[
+                model_input,
+                query_input,
+                api_url,
+                dialect,
+                zoom_slider,
+                sql_output,
+                saved_model_name,
+            ],
             outputs=[
                 saved_model,
                 saved_query,
@@ -3334,6 +3346,7 @@ def create_blocks(
                 saved_dialect,
                 saved_zoom,
                 saved_sql,
+                saved_query_model,
             ],
         ).then(
             fn=None,
@@ -3390,25 +3403,27 @@ def create_blocks(
             # others in the "Model" dropdown when there are several. The UI
             # works on each in its own protected session (see _curated_model).
             def _load_curated(
-                api_url_val: str, saved_name: str, saved_query_val: str
+                api_url_val: str, saved_name: str, saved_query_val: str, query_model: str
             ) -> tuple[Any, ...]:
                 names = _fetch_curated_models(api_url_val)
                 name = saved_name if saved_name in names else (names[0] if names else "")
                 picked = _curated_model(api_url_val, name) if name else None
                 if picked is None:  # API unreachable: leave the page as it is
-                    return (gr.update(),) * 7
+                    return (gr.update(),) * 8
                 model_yaml, sess, mdl = picked
                 several = len(names) > 1
-                # A first visit starts with the chosen model's own query; one
-                # curated model keeps the shipped default query, as before.
-                query = (
-                    starting_query(model_yaml) if several and not saved_query_val else gr.update()
-                )
+                # The saved query and SQL (the theme toggle saves both) are
+                # restored only for the model shown when they were saved.
+                # Otherwise (a first visit, a pick since) the chosen model's
+                # own query starts; one curated model keeps the shipped
+                # default query, as before.
+                fresh = several and (not saved_query_val or query_model != name)
                 return (
                     gr.update(visible=several),
                     gr.update(choices=names, value=name),
                     model_yaml,
-                    query,
+                    starting_query(model_yaml) if fresh else gr.update(),
+                    "" if fresh else gr.update(),
                     sess,
                     mdl,
                     name,
@@ -3425,12 +3440,13 @@ def create_blocks(
             # the pickers, the "Jump to" targets and the example queries.
             page_load = page_load.then(
                 fn=_load_curated,
-                inputs=[api_url, saved_model_name, saved_query],
+                inputs=[api_url, saved_model_name, saved_query, saved_query_model],
                 outputs=[
                     model_pair,
                     model_select,
                     model_input,
                     query_input,
+                    sql_output,
                     session_state,
                     model_state,
                     saved_model_name,

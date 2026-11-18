@@ -82,18 +82,24 @@ class TrackedLoader:
     """YAML loader that tracks source positions for error reporting.
 
     Uses ruamel.yaml which preserves line/column info on every parsed node.
+    One loader may serve several threads at once (a session's model store
+    does), so each load gets its own parser.
     """
 
-    def __init__(self) -> None:
-        self._yaml = YAML()
-        self._yaml.preserve_quotes = True
-        self._yaml.Constructor = _DigitKeepingConstructor
+    @staticmethod
+    def _parser() -> YAML:
+        """A new ruamel.yaml parser. A parser keeps the state of the document
+        it is reading, so two loads sharing one corrupt each other's result."""
+        parser = YAML()
+        parser.preserve_quotes = True
+        parser.Constructor = _DigitKeepingConstructor
         # Reject duplicate YAML keys (e.g. two columns with the same name).
         # Without this, ruamel.yaml silently keeps only the last value.
-        self._yaml.allow_duplicate_keys = False
+        parser.allow_duplicate_keys = False
         # Reject deeply nested structures (mitigates stack-based DoS).
         # ruamel.yaml raises an error when nesting exceeds this limit.
-        self._yaml.max_depth = _MAX_DEPTH
+        parser.max_depth = _MAX_DEPTH
+        return parser
 
     # -- safety checks -------------------------------------------------------
 
@@ -137,7 +143,7 @@ class TrackedLoader:
         with path.open("r", encoding="utf-8") as handle:
             content = handle.read()
         self._check_yaml_safety(content)
-        data = self._yaml.load(content)
+        data = self._parser().load(content)
         if data is None:
             return {}, SourceMap()
         self._check_node_count(data)
@@ -150,7 +156,7 @@ class TrackedLoader:
     ) -> tuple[dict[str, Any], SourceMap]:
         """Load YAML from a string."""
         self._check_yaml_safety(content)
-        data = self._yaml.load(content)
+        data = self._parser().load(content)
         if data is None:
             return {}, SourceMap()
         self._check_node_count(data)

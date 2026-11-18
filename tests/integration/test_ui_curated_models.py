@@ -29,10 +29,13 @@ _QUERY = {"select": {"dimensions": ["Customer Country"], "measures": ["Total Rev
 
 @pytest.fixture
 def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
-    """The API with two curated models, ``sales`` and ``returns``."""
+    """The API with two curated models, ``sales`` and ``returns``, reading
+    the same tables from different schemas (``SALES`` and ``RETURNS``)."""
     for name in ("sales", "returns"):
         (tmp_path / f"{name}.yaml").write_text(
-            SAMPLE_MODEL_YAML.replace("version: 1.0", f"version: 1.0\nname: {name}", 1)
+            SAMPLE_MODEL_YAML.replace("version: 1.0", f"version: 1.0\nname: {name}", 1).replace(
+                "schema: PUBLIC", f"schema: {name.upper()}"
+            )
         )
     settings = Settings(
         model_files=f"{tmp_path / 'sales.yaml'},{tmp_path / 'returns.yaml'}",
@@ -53,6 +56,22 @@ def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
         yield app
 
 
+def _compile(
+    model_yaml: str, session_state: dict[str, str], model_state: dict[str, str]
+) -> tuple[Any, str, dict[str, str] | None, dict[str, str] | None]:
+    """Compile a query from the model editor showing *model_yaml*. The editor
+    (``gr.Code``) strips the text it shows, and sends that back."""
+    return api_client._model_request(
+        model_yaml.strip(),
+        _API_URL,
+        session_state,
+        model_state,
+        "POST",
+        "/v1/sessions/{session_id}/query/sql",
+        payload={"model_id": None, "query": _QUERY},
+    )
+
+
 def test_the_curated_models_are_listed(app: FastAPI) -> None:
     assert api_client._fetch_curated_models(_API_URL) == ["sales", "returns"]
 
@@ -68,7 +87,8 @@ def test_a_curated_model_is_used_in_its_own_session(app: FastAPI) -> None:
 
 
 def test_actions_create_no_session_and_upload_nothing(app: FastAPI) -> None:
-    """Compiling goes to the curated session as it is. An upload would be
+    """Compiling goes to the curated session as it is, although the editor
+    sends the model back without its final newline. An upload would be
     refused (403); a new user session would hold no model."""
     picked = api_client._curated_model(_API_URL, "sales")
     assert picked is not None
@@ -76,33 +96,46 @@ def test_actions_create_no_session_and_upload_nothing(app: FastAPI) -> None:
     mgr = get_session_manager()
     sessions_before = mgr.active_count
 
-    body, error, session_state, model_state = api_client._model_request(
-        model_yaml,
-        _API_URL,
-        session_state,
-        model_state,
-        "POST",
-        "/v1/sessions/{session_id}/query/sql",
-        payload={"model_id": None, "query": _QUERY},
-    )
+    body, error, session_state, model_state = _compile(model_yaml, session_state, model_state)
 
     assert error == ""
-    assert "CUSTOMERS" in body["sql"]
+    assert '"SALES"."CUSTOMERS"' in body["sql"]
     assert session_state["session_id"] == "sales"
     assert mgr.active_count == sessions_before
     assert len(mgr.get_store("sales").list_models()) == 1
 
 
-def test_the_editor_text_is_not_compared(app: FastAPI) -> None:
-    """The model cannot change, so a difference in the text the editor sends
-    back (a line ending, a trailing newline) must not trigger an upload."""
+def test_a_state_left_by_the_previous_model_follows_the_editor(app: FastAPI) -> None:
+    """A compile still running when the user picks another model writes back
+    the state it started with. The next action must use the model the editor
+    shows, not the one that state names, and leave the state right again."""
+    sales = api_client._curated_model(_API_URL, "sales")
+    returns = api_client._curated_model(_API_URL, "returns")
+    assert sales is not None
+    assert returns is not None
+    _, stale_session, stale_model = sales
+    returns_yaml, _, returns_model = returns
+
+    body, error, session_state, model_state = _compile(returns_yaml, stale_session, stale_model)
+
+    assert error == ""
+    assert '"RETURNS"."CUSTOMERS"' in body["sql"]
+    assert session_state is not None
+    assert session_state["session_id"] == "returns"
+    assert model_state == returns_model
+
+
+def test_a_model_the_api_no_longer_serves_is_reported(app: FastAPI) -> None:
+    """The editor holds a curated model the API does not serve any more (it
+    was restarted with other MODEL_FILES): say so, never query another one."""
     picked = api_client._curated_model(_API_URL, "sales")
     assert picked is not None
     model_yaml, session_state, model_state = picked
-    _, session_id, model_id, _, _ = api_client._ensure_session_and_model(
-        model_yaml.replace("\n", "\r\n") + "\n", _API_URL, session_state, model_state
-    )
-    assert (session_id, model_id) == ("sales", model_state["model_id"])
+
+    body, error, _, _ = _compile(model_yaml.replace("SALES", "ARCHIVE"), session_state, model_state)
+
+    assert body is None
+    assert error == "The model in the editor is no longer on the API. Reload the page."
 
 
 def test_an_unknown_model_is_none(app: FastAPI) -> None:

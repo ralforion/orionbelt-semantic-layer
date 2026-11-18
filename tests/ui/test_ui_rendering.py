@@ -563,14 +563,19 @@ class TestTheSettingsRow:
 
 @pytest.fixture(scope="module")
 def curated_page(playwright: Any, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
-    """The embedded UI on an API with two curated models (``MODEL_FILES``)."""
+    """The embedded UI on an API with two curated models (``MODEL_FILES``),
+    reading the same tables from different schemas (``SALES``, ``RETURNS``)."""
     from tests.conftest import SAMPLE_MODEL_YAML
 
     folder = tmp_path_factory.mktemp("curated")
     paths = []
     for name in ("sales", "returns"):
         path = folder / f"{name}.yaml"
-        path.write_text(SAMPLE_MODEL_YAML.replace("version: 1.0", f"version: 1.0\nname: {name}", 1))
+        path.write_text(
+            SAMPLE_MODEL_YAML.replace("version: 1.0", f"version: 1.0\nname: {name}", 1).replace(
+                "schema: PUBLIC", f"schema: {name.upper()}"
+            )
+        )
         paths.append(str(path))
     served = _serve_embedded_ui(model_files=",".join(paths))
     url = next(served)
@@ -600,6 +605,21 @@ def _pick(page: Any, label: str, option: str) -> None:
     page.locator(f"input[aria-label='{label}']").blur()
 
 
+def _wait_for_model(page: Any, name: str) -> None:
+    """Wait until the model editor shows the curated model *name*."""
+    page.wait_for_function(
+        "name => document.querySelector('#ob-model .cm-content')"
+        ".innerText.includes('name: ' + name)",
+        arg=name,
+        timeout=30_000,
+    )
+
+
+def _wait_for_load(page: Any) -> None:
+    """Wait until a (re)loaded page has fetched its model."""
+    page.wait_for_selector("input[aria-label='Model']", state="visible", timeout=30_000)
+
+
 class TestTheModelDropdown:
     """Several curated models: pick one; the editor and the query follow.
 
@@ -623,21 +643,47 @@ class TestTheModelDropdown:
     def test_picking_a_model_loads_it_and_compiles_against_it(self, curated_page: Any) -> None:
         page = curated_page
         _pick(page, "Model", "returns")
-        page.wait_for_function(
-            "() => document.querySelector('#ob-model .cm-content')"
-            ".innerText.includes('name: returns')",
-            timeout=15_000,
-        )
+        _wait_for_model(page, "returns")
         # A model without examples starts with an empty select; fill it in.
         _pick(page, "Dimensions", "Customer Country")
         _pick(page, "Measures / Metrics", "Total Revenue")
         page.get_by_role("button", name="Compile SQL").click()
         page.wait_for_function(
             "() => [...document.querySelectorAll('.cm-content')]"
-            ".some(e => e.innerText.includes('\"CUSTOMERS\"'))",
+            '.some(e => e.innerText.includes(\'"RETURNS"."CUSTOMERS"\'))',
             timeout=15_000,
         )
 
     def test_nothing_runs_off_the_row(self, curated_page: Any) -> None:
         fit = curated_page.evaluate(_ROW_FIT_JS)
         assert fit["scroll"] <= fit["client"], fit
+
+    def test_a_reload_brings_back_no_query_of_another_model(self, curated_page: Any) -> None:
+        """The theme toggle saves the query for the reload it makes. Picking
+        another model afterwards, then reloading, must not restore the query
+        written for the first: it names fields the picked model may lack.
+        Runs last: it leaves the page in the other theme."""
+        from playwright.sync_api import expect
+
+        page = curated_page
+        _pick(page, "Model", "sales")
+        _wait_for_model(page, "sales")
+        _pick(page, "Dimensions", "Customer Country")
+        query = page.locator("#ob-query .cm-content")
+        expect(query).to_contain_text("Customer Country")
+        page.get_by_role("button", name="Light / Dark").click()
+        page.wait_for_url(lambda url: "__theme=" in url)
+        _wait_for_load(page)
+        _wait_for_model(page, "sales")
+        expect(query).to_contain_text("Customer Country")  # the toggle kept it
+
+        _pick(page, "Model", "returns")
+        _wait_for_model(page, "returns")
+        page.reload()
+        _wait_for_load(page)
+        _wait_for_model(page, "returns")
+        page.wait_for_function(
+            "() => { const q = document.querySelector('#ob-query .cm-content').innerText;"
+            " return q.includes('dimensions:') && !q.includes('Customer Country'); }",
+            timeout=10_000,
+        )
