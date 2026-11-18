@@ -70,7 +70,7 @@ Sessions expire after 30 minutes of inactivity (configurable via `SESSION_TTL_SE
 When the `MODEL_FILES` environment variable is set, the server runs in **admin-curated mode** — each preloaded model lives in its own *named protected session* whose id is the OBML `name:` field (falling back to the filename stem):
 
 1. **Discover** — `GET /v1/models` lists every preloaded model and its addressing name
-2. **List the model** — `GET /v1/sessions/<model_name>/models` to get the `model_id`
+2. **Get the model** — `GET /v1/models/<model_name>` returns its `model_id` and the YAML it was loaded from (`GET /v1/sessions/<model_name>/models` also lists the `model_id`)
 3. **Compile** — `POST /v1/sessions/<model_name>/query/sql` to compile OBML to SQL
 4. **Execute** — `POST /v1/sessions/<model_name>/query/execute` to compile and execute (requires `FLIGHT_ENABLED=true`)
 

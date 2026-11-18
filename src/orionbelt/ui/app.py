@@ -27,8 +27,10 @@ from orionbelt.ui.api_client import (
     _DEFAULT_API_KEY_HEADER,
     _DEFAULT_API_URL,
     _FALLBACK_DIALECTS,
+    _curated_model,
     _ensure_session_and_model,
     _export_to_osi,
+    _fetch_curated_models,
     _fetch_diagram_er,
     _fetch_dialects,
     _fetch_obsl_turtle,
@@ -69,6 +71,7 @@ from orionbelt.ui.handlers import (
     sort_and_execute,
     sort_state_str,
     sparql_example_query,
+    starting_query,
     validate_model,
 )
 from orionbelt.ui.rendering import (
@@ -91,10 +94,12 @@ __all__ = [
     "_ModelValidationError",
     "_build_explain_yaml",
     "_composable_sets",
+    "_curated_model",
     "_decorate_choices",
     "_ensure_session_and_model",
     "_export_to_osi",
     "_extract_model_items",
+    "_fetch_curated_models",
     "_fetch_diagram_er",
     "_fetch_dialects",
     "_fetch_obsl_turtle",
@@ -201,7 +206,9 @@ _CSS = """\
 .settings-row {
   min-height: 0 !important;
   align-items: center !important;
-  flex-wrap: nowrap !important;
+  /* What does not fit moves to a second line rather than off the page. */
+  flex-wrap: wrap !important;
+  row-gap: 8px !important;
 }
 .settings-pair {
   flex-wrap: nowrap !important;
@@ -235,8 +242,9 @@ _CSS = """\
   width: auto !important;
   min-width: 0 !important;
 }
-.settings-pair input,
-.settings-pair textarea {
+/* The API URL needs room; the dropdowns keep the min_width they are built with. */
+.settings-pair .api-url input,
+.settings-pair .api-url textarea {
   min-width: 360px !important;
   white-space: nowrap !important;
   overflow-x: auto !important;
@@ -686,7 +694,6 @@ _CSS = """\
 
 /* ── Responsive: narrower viewports ── */
 @media (max-width: 900px) {
-  .settings-row { flex-wrap: wrap !important; }
   .picker-row { flex-wrap: wrap !important; }
   .picker-row > div { flex-wrap: wrap !important; }
   .header-bar .header-links { gap: 8px; }
@@ -718,10 +725,11 @@ _CSS = """\
   }
 
   /* Settings: one control per row, full width (no 360px overflow) */
-  .settings-row { flex-wrap: wrap !important; }
   .settings-pair { width: 100% !important; flex-wrap: wrap !important; }
   .settings-pair input,
-  .settings-pair textarea { min-width: 0 !important; width: 100% !important; }
+  .settings-pair textarea,
+  .settings-pair .api-url input,
+  .settings-pair .api-url textarea { min-width: 0 !important; width: 100% !important; }
   .settings-pair .secondary-wrap,
   .settings-pair .options { min-width: 0 !important; width: 100% !important; }
   .settings-spacer { display: none !important; }
@@ -1734,6 +1742,11 @@ def create_blocks(
             "# Refresh this page once the API is healthy — the model\n"
             "# loaded into the API will appear here automatically.\n"
         )
+    elif single_model:
+        # Curated models (MODEL_FILES) whose YAML the settings do not carry:
+        # several of them, or the embedded UI, built before the API listens.
+        # The page load fetches the model; never show the starter meanwhile.
+        example_model = "# Loading the model from the API...\n"
     else:
         # Genuine self-service mode (API up, no MODEL_FILES set) —
         # seed the editor with a starter template.
@@ -1752,6 +1765,8 @@ def create_blocks(
         # (60% on desktop, 20% on phones) computed at load time.
         saved_zoom = gr.BrowserState(0, storage_key="ob_zoom")
         saved_sql = gr.BrowserState("", storage_key="ob_sql_output")
+        # The curated model picked in the "Model" dropdown (several MODEL_FILES).
+        saved_model_name = gr.BrowserState("", storage_key="ob_model_name")
         # Carries viewport width class into _restore (set by the load JS).
         is_mobile = gr.Number(value=0, visible=False)
 
@@ -1798,6 +1813,20 @@ def create_blocks(
         with gr.Tabs() as tabs:
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
+                    if single_model:
+                        # Shown by the page load when MODEL_FILES holds more
+                        # than one model.
+                        with gr.Row(elem_classes=["settings-pair"], visible=False) as model_pair:
+                            gr.HTML('<span class="settings-label">Model</span>', padding=False)
+                            model_select = gr.Dropdown(
+                                choices=[],
+                                value=None,
+                                label="Model",
+                                show_label=False,
+                                container=False,
+                                scale=0,
+                                min_width=200,
+                            )
                     with gr.Row(elem_classes=["settings-pair"]):
                         gr.HTML('<span class="settings-label">Jump to</span>', padding=False)
                         jump_dropdown = gr.Dropdown(
@@ -1825,7 +1854,10 @@ def create_blocks(
                             scale=0,
                             min_width=160,
                         )
-                    with gr.Row(elem_classes=["settings-pair"]):
+                    # Hidden for curated models: the UI works on each in its
+                    # own session on this API, so pointing it elsewhere would
+                    # break that. It still carries the URL every call uses.
+                    with gr.Row(elem_classes=["settings-pair"], visible=not single_model):
                         gr.HTML(
                             '<span class="settings-label">API Base URL</span>',
                             padding=False,
@@ -1840,6 +1872,7 @@ def create_blocks(
                             lines=1,
                             max_lines=1,
                             interactive=not cohosted,
+                            elem_classes=["api-url"],
                         )
                     gr.HTML("", elem_classes=["settings-spacer"], padding=True)
                     import_osi_btn = gr.Button(
@@ -3337,7 +3370,7 @@ def create_blocks(
                 "/* single-model mode: model upload disabled */",
             )
 
-        demo.load(
+        page_load = demo.load(
             fn=_restore,
             inputs=[
                 saved_model,
@@ -3350,7 +3383,75 @@ def create_blocks(
             ],
             outputs=[model_input, query_input, api_url, dialect, zoom_slider, sql_output],
             js=_restore_js,
-        ).then(
+        )
+
+        if single_model:
+            # Curated models (MODEL_FILES): show the chosen one, and offer the
+            # others in the "Model" dropdown when there are several. The UI
+            # works on each in its own protected session (see _curated_model).
+            def _load_curated(
+                api_url_val: str, saved_name: str, saved_query_val: str
+            ) -> tuple[Any, ...]:
+                names = _fetch_curated_models(api_url_val)
+                name = saved_name if saved_name in names else (names[0] if names else "")
+                picked = _curated_model(api_url_val, name) if name else None
+                if picked is None:  # API unreachable: leave the page as it is
+                    return (gr.update(),) * 7
+                model_yaml, sess, mdl = picked
+                several = len(names) > 1
+                # A first visit starts with the chosen model's own query; one
+                # curated model keeps the shipped default query, as before.
+                query = (
+                    starting_query(model_yaml) if several and not saved_query_val else gr.update()
+                )
+                return (
+                    gr.update(visible=several),
+                    gr.update(choices=names, value=name),
+                    model_yaml,
+                    query,
+                    sess,
+                    mdl,
+                    name,
+                )
+
+            def _choose_model(name: str | None, api_url_val: str) -> tuple[Any, ...]:
+                picked = _curated_model(api_url_val, name) if name else None
+                if picked is None:
+                    return (gr.update(),) * 6
+                model_yaml, sess, mdl = picked
+                return model_yaml, starting_query(model_yaml), "", sess, mdl, name
+
+            # A value set here fires model_input.change, whose handlers refill
+            # the pickers, the "Jump to" targets and the example queries.
+            page_load = page_load.then(
+                fn=_load_curated,
+                inputs=[api_url, saved_model_name, saved_query],
+                outputs=[
+                    model_pair,
+                    model_select,
+                    model_input,
+                    query_input,
+                    session_state,
+                    model_state,
+                    saved_model_name,
+                ],
+            )
+            # ``.select``, not ``.input``: measured, ``.input`` fired twice for
+            # one pick, fetching the model twice.
+            model_select.select(
+                fn=_choose_model,
+                inputs=[model_select, api_url],
+                outputs=[
+                    model_input,
+                    query_input,
+                    sql_output,
+                    session_state,
+                    model_state,
+                    saved_model_name,
+                ],
+            )
+
+        page_load.then(
             # Re-fetch settings against the restored api_url so the Execute
             # Query button and the dialect dropdown reflect the live API,
             # not the (possibly stale) values from process startup.

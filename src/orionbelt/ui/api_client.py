@@ -502,6 +502,40 @@ def _fetch_settings(api_url: str) -> dict[str, Any]:
     }
 
 
+def _fetch_curated_models(api_url: str) -> list[str]:
+    """Names of the admin-curated (``MODEL_FILES``) models; ``[]`` if unreachable."""
+    url = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
+    try:
+        resp = httpx.get(f"{url}/v1/models", timeout=10, headers=_API_HEADERS)
+        resp.raise_for_status()
+        return [m["name"] for m in resp.json().get("models", [])]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return []
+
+
+def _curated_model(api_url: str, name: str) -> tuple[str, dict[str, str], dict[str, str]] | None:
+    """``(model_yaml, session_state, model_state)`` for curated model *name*.
+
+    The UI works on a curated model in that model's own protected session,
+    which the API names after it, rather than in a per-user copy: model
+    upload is refused in admin-curated mode, and the protected session never
+    expires. ``curated`` in the session state tells
+    :func:`_ensure_session_and_model` to use it as it is. ``None`` when the
+    API cannot be reached or has no such model.
+    """
+    url = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
+    try:
+        resp = httpx.get(f"{url}/v1/models/{name}", timeout=10, headers=_API_HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+        model_yaml, model_id = data["model_yaml"], data["model_id"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
+    session_state = {"session_id": name, "api_url": url, "curated": "true"}
+    model_state = {"model_id": model_id, "model_hash": hashlib.md5(model_yaml.encode()).hexdigest()}
+    return model_yaml, session_state, model_state
+
+
 def _ensure_session_and_model(
     model_yaml: str,
     api_url: str,
@@ -536,6 +570,10 @@ def _ensure_session_and_model(
     else:
         assert session_state is not None  # for type narrowing
         session_id = session_state["session_id"]
+        # An admin-curated model is used in its own session (see
+        # _curated_model), which holds that model and takes no uploads.
+        if session_state.get("curated") and model_state is not None:
+            return client, session_id, model_state["model_id"], session_state, model_state
 
     # Single-model mode: session already has a pre-loaded model
     if preloaded_model_count > 0 and model_state is None:

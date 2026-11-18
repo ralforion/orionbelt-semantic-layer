@@ -647,6 +647,22 @@ def example_picker_update(model_yaml: str) -> object:
     return gr.update(choices=choices, value=None, visible=bool(choices))
 
 
+_EMPTY_QUERY = "select:\n  dimensions:\n  measures:\n"
+
+
+def starting_query(model_yaml: str) -> str:
+    """The query a newly chosen model starts with.
+
+    Its first example query when it declares one, else an empty ``select``
+    that the dimension and measure pickers fill in.
+    """
+    examples = _model_examples(model_yaml)
+    if not examples:
+        return _EMPTY_QUERY
+    first = next(iter(examples.values()))
+    return yaml.safe_dump(first, sort_keys=False, allow_unicode=True)
+
+
 def load_example_query(name: str | None, model_yaml: str, query_yaml: str) -> tuple[str, object]:
     """Replace the query box with the picked example, then clear the pick.
 

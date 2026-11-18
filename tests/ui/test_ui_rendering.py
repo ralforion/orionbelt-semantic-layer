@@ -131,6 +131,11 @@ def embedded_ui_url() -> Iterator[str]:
     here while passing there. Vendoring removed the CDN, and this makes the
     stricter of the two modes the one under test.
     """
+    yield from _serve_embedded_ui()
+
+
+def _serve_embedded_ui(**settings: Any) -> Iterator[str]:
+    """Serve the API with its ``/ui`` on a free port; yield the UI's URL."""
     pytest.importorskip("gradio", reason="gradio required for the UI suite")
     pytest.importorskip("playwright", reason="playwright required")
     uvicorn = pytest.importorskip("uvicorn", reason="uvicorn required")
@@ -143,7 +148,7 @@ def embedded_ui_url() -> Iterator[str]:
     # points its tabs at the default (or the .env) port, where a developer's
     # own server may be answering and this fixture's never is.
     port = _free_port()
-    app = create_app(settings=Settings(ui_enabled=True, port=port))
+    app = create_app(settings=Settings(ui_enabled=True, port=port, **settings))
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
     threading.Thread(target=server.run, daemon=True).start()
@@ -529,3 +534,110 @@ class TestTheBusinessRulesTab:
             timeout=60_000,
         )
         assert "High Return Rate" in label.inner_text()
+
+
+#: The window the playground is laid out for (see the fitter in ``ui/app.py``).
+_WINDOW = {"width": 1300, "height": 990}
+
+_ROW_FIT_JS = """() => {
+    const row = document.querySelector('.settings-row');
+    return {scroll: row.scrollWidth, client: row.clientWidth};
+}"""
+
+
+class TestTheSettingsRow:
+    """Every control of the SQL Compiler's settings row stays on the page.
+
+    Every input in the row had a 360px minimum, meant for the API URL, and
+    the row did not wrap: at 1300px the API URL was cut off and both export
+    buttons were off the page.
+    """
+
+    def test_nothing_runs_off_the_row(self, embedded_page: Any) -> None:
+        page = embedded_page
+        page.set_viewport_size(_WINDOW)
+        page.get_by_role("tab", name="SQL Compiler").click()
+        fit = page.evaluate(_ROW_FIT_JS)
+        assert fit["scroll"] <= fit["client"], fit
+
+
+@pytest.fixture(scope="module")
+def curated_page(playwright: Any, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
+    """The embedded UI on an API with two curated models (``MODEL_FILES``)."""
+    from tests.conftest import SAMPLE_MODEL_YAML
+
+    folder = tmp_path_factory.mktemp("curated")
+    paths = []
+    for name in ("sales", "returns"):
+        path = folder / f"{name}.yaml"
+        path.write_text(SAMPLE_MODEL_YAML.replace("version: 1.0", f"version: 1.0\nname: {name}", 1))
+        paths.append(str(path))
+    served = _serve_embedded_ui(model_files=",".join(paths))
+    url = next(served)
+    browser, page = _open_page(playwright, url, "SQL Compiler")
+    page.set_viewport_size(_WINDOW)
+    # The page load fetches the model; the dropdown shows once it has.
+    page.wait_for_selector("input[aria-label='Model']", state="visible", timeout=30_000)
+    try:
+        yield page
+    finally:
+        browser.close()
+        served.close()
+
+
+def _open_list(page: Any, label: str) -> Any:
+    """Open the dropdown *label*; return its list (a closed one stays, inert)."""
+    page.locator(f"input[aria-label='{label}']").click()
+    options = page.locator("ul[role='listbox']:not([inert])")
+    options.wait_for()
+    return options
+
+
+def _pick(page: Any, label: str, option: str) -> None:
+    """Pick *option* in the dropdown *label*, then leave it closed and unfocused."""
+    _open_list(page, label).get_by_role("option", name=option, exact=True).click()
+    page.keyboard.press("Escape")
+    page.locator(f"input[aria-label='{label}']").blur()
+
+
+class TestTheModelDropdown:
+    """Several curated models: pick one; the editor and the query follow.
+
+    Model upload is refused in this mode, and the UI used to show the bundled
+    starter and fail on every action.
+    """
+
+    def test_it_lists_the_models_and_shows_the_first(self, curated_page: Any) -> None:
+        page = curated_page
+        assert page.locator("input[aria-label='Model']").input_value() == "sales"
+        options = _open_list(page, "Model").get_by_role("option").all_inner_texts()
+        page.keyboard.press("Escape")
+        page.locator("input[aria-label='Model']").blur()
+        assert [o.replace("\u2713", "").strip() for o in options] == ["sales", "returns"]
+        assert "name: sales" in page.locator("#ob-model .cm-content").inner_text()
+
+    def test_the_api_url_is_not_offered(self, curated_page: Any) -> None:
+        """The UI works on each model in its own session on this API."""
+        assert not curated_page.locator(".settings-label", has_text="API Base URL").is_visible()
+
+    def test_picking_a_model_loads_it_and_compiles_against_it(self, curated_page: Any) -> None:
+        page = curated_page
+        _pick(page, "Model", "returns")
+        page.wait_for_function(
+            "() => document.querySelector('#ob-model .cm-content')"
+            ".innerText.includes('name: returns')",
+            timeout=15_000,
+        )
+        # A model without examples starts with an empty select; fill it in.
+        _pick(page, "Dimensions", "Customer Country")
+        _pick(page, "Measures / Metrics", "Total Revenue")
+        page.get_by_role("button", name="Compile SQL").click()
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('.cm-content')]"
+            ".some(e => e.innerText.includes('\"CUSTOMERS\"'))",
+            timeout=15_000,
+        )
+
+    def test_nothing_runs_off_the_row(self, curated_page: Any) -> None:
+        fit = curated_page.evaluate(_ROW_FIT_JS)
+        assert fit["scroll"] <= fit["client"], fit

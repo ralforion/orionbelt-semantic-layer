@@ -4,7 +4,8 @@
 so BI tools, MCP clients, and LLM agents can discover what's available
 without scraping the Flight catalog or the session-scoped routes. This
 is the recommended way to pick a model for the Flight ``database`` header
-/ pgwire ``database=`` URL parameter.
+/ pgwire ``database=`` URL parameter. ``GET /v1/models/{name}`` adds one
+model's id and the YAML it was loaded from (the UI's read-only editor).
 
 Dynamic (user-created) sessions are intentionally *not* listed — those
 are programmatic-only and have their own ``GET /v1/sessions`` surface.
@@ -12,10 +13,10 @@ are programmatic-only and have their own ``GET /v1/sessions`` surface.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from orionbelt.api.deps import get_session_manager
+from orionbelt.api.deps import get_curated_model_yaml, get_session_manager
 from orionbelt.service.session_manager import SessionManager
 
 # Prefix on the constructor keeps the root list route ("") at /v1/models with no
@@ -41,6 +42,21 @@ class ModelInfo(BaseModel):
     measures: int = 0
     metrics: int = 0
     data_objects: int = 0
+
+
+class ModelDetail(ModelInfo):
+    """One pre-loaded model with its id and the YAML it was loaded from."""
+
+    model_id: str = Field(
+        description=(
+            "The model's id in its session. With `name` as the session id, the "
+            "session-scoped REST paths address it, e.g. "
+            "GET /v1/sessions/<name>/models/<model_id>/diagram/er."
+        )
+    )
+    model_yaml: str = Field(
+        description="The OBML YAML the model was loaded from (its MODEL_FILES entry), as written."
+    )
 
 
 class ModelsResponse(BaseModel):
@@ -78,6 +94,25 @@ async def list_models(
             items.append(_to_info(session_id, model, ms))
 
     return ModelsResponse(models=items, count=len(items))
+
+
+@router.get("/{name}", response_model=ModelDetail)
+async def get_model(
+    name: str,
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> ModelDetail:
+    """One pre-loaded model: its summary, its id and the YAML it was loaded from.
+
+    *name* is an addressing name from ``GET /v1/models``. 404 for any other
+    name, including every user-created session.
+    """
+    model_yaml = get_curated_model_yaml(name)
+    if model_yaml is None:
+        raise HTTPException(status_code=404, detail=f"No pre-loaded model named '{name}'")
+    store = mgr.get_store(name)
+    summary = store.list_models()[0]
+    info = _to_info(name, store.get_model(summary.model_id), summary)
+    return ModelDetail(**info.model_dump(), model_id=summary.model_id, model_yaml=model_yaml)
 
 
 def _to_info(name: str, model: object, summary: object) -> ModelInfo:

@@ -1038,7 +1038,11 @@ def single_model_app(tmp_path):
     )
     store = mgr.get_or_create_named(SINGLE_MODEL_PROTECTED_NAME)
     store.load_model(yaml_with_name)
-    init_session_manager(mgr, admin_curated=True, preload_model_yaml=yaml_with_name)
+    init_session_manager(
+        mgr,
+        admin_curated=True,
+        curated_model_yamls={SINGLE_MODEL_PROTECTED_NAME: yaml_with_name},
+    )
     yield app
     reset_session_manager()
 
@@ -1539,6 +1543,29 @@ class TestModelsEndpoint:
         assert entry["name"] == SINGLE_MODEL_PROTECTED_NAME
         assert entry["dimensions"] > 0 or entry["measures"] > 0
 
+    async def test_one_model_with_its_yaml(self, single_model_client: AsyncClient) -> None:
+        """GET /v1/models/{name}: the summary, the model's id in its own
+        session, and the YAML it was loaded from."""
+        r = await single_model_client.get(f"/v1/models/{SINGLE_MODEL_PROTECTED_NAME}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["name"] == SINGLE_MODEL_PROTECTED_NAME
+        assert f"name: {SINGLE_MODEL_PROTECTED_NAME}" in data["model_yaml"]
+        listed = await single_model_client.get(f"/v1/sessions/{SINGLE_MODEL_PROTECTED_NAME}/models")
+        assert [m["model_id"] for m in listed.json()] == [data["model_id"]]
+
+    async def test_one_model_unknown_name_is_404(self, single_model_client: AsyncClient) -> None:
+        r = await single_model_client.get("/v1/models/nothing_here")
+        assert r.status_code == 404
+
+    async def test_one_model_never_serves_a_user_session(
+        self, single_model_client: AsyncClient
+    ) -> None:
+        """A user-created session is not a pre-loaded model, even by its id."""
+        session_id = (await single_model_client.post("/v1/sessions")).json()["session_id"]
+        r = await single_model_client.get(f"/v1/models/{session_id}")
+        assert r.status_code == 404
+
 
 class TestMultiModelMode:
     """MODEL_FILES=a.yaml,b.yaml — admin pre-loads N named models."""
@@ -1567,6 +1594,7 @@ class TestMultiModelMode:
             cleanup_interval=settings.session_cleanup_interval,
             is_single_model_mode=True,  # admin-curated
         )
+        yamls: dict[str, str] = {}
         for path in (path_a, path_b):
             yaml_str, resolved = _read_model_file(str(path))
             # Use the same name resolution as the real lifespan
@@ -1575,7 +1603,8 @@ class TestMultiModelMode:
             name = _resolve_model_name(yaml_str, resolved)
             store = mgr.get_or_create_named(name)
             store.load_model(yaml_str)
-        init_session_manager(mgr)
+            yamls[name] = yaml_str
+        init_session_manager(mgr, admin_curated=True, curated_model_yamls=yamls)
         yield app
         reset_session_manager()
 
@@ -1592,6 +1621,36 @@ class TestMultiModelMode:
         names = sorted(m["name"] for m in data["models"])
         assert names == ["returns", "sales"]
         assert data["count"] == 2
+
+    async def test_each_model_serves_its_own_yaml(self, multi_model_client: AsyncClient) -> None:
+        for name in ("sales", "returns"):
+            r = await multi_model_client.get(f"/v1/models/{name}")
+            assert r.status_code == 200
+            assert f"name: {name}" in r.json()["model_yaml"]
+
+    async def test_settings_carry_no_single_model_yaml(
+        self, multi_model_client: AsyncClient
+    ) -> None:
+        """With several models, /v1/settings.model_yaml stays empty and
+        GET /v1/models/{name} is the way to a model's YAML."""
+        r = await multi_model_client.get("/v1/settings")
+        assert r.json().get("model_yaml") is None
+
+    async def test_a_model_compiles_in_its_own_session(
+        self, multi_model_client: AsyncClient
+    ) -> None:
+        """The UI compiles against a curated model in the session named after
+        it, with the id GET /v1/models/{name} returns."""
+        model_id = (await multi_model_client.get("/v1/models/returns")).json()["model_id"]
+        r = await multi_model_client.post(
+            "/v1/sessions/returns/query/sql",
+            json={
+                "model_id": model_id,
+                "query": {"select": {"dimensions": ["Customer Country"], "measures": []}},
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert "CUSTOMERS" in r.json()["sql"]
 
 
 class TestModelFileRemovalWarning:
