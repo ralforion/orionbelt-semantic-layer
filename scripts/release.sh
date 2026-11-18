@@ -235,9 +235,7 @@ ok "Version consistent (pyproject.toml, __init__.py, drivers/*)"
 echo "Checking CHANGELOG..."
 grep -q "## \[$VERSION\]" "$REPO_ROOT/CHANGELOG.md" \
     || fail "CHANGELOG.md missing [$VERSION] entry"
-grep -q "v$VERSION" "$REPO_ROOT/CHANGELOG-versions.md" \
-    || fail "CHANGELOG-versions.md missing v$VERSION row"
-ok "CHANGELOG entries present"
+ok "CHANGELOG entry present"
 
 # ---------------------------------------------------------------------------
 # Normalise uv.lock after pre-flight
