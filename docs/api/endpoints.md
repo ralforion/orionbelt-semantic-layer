@@ -95,6 +95,51 @@ Close a session and release its resources.
 
 ---
 
+## Pre-loaded Models
+
+Models the server loads at startup from `MODEL_FILES`. Each one lives in its own session, whose id is the model's name. Use that name as the `{session_id}` in the session paths below.
+
+### `GET /v1/models`
+
+List the pre-loaded models. The list is empty when `MODEL_FILES` is not set.
+
+**Response (200):**
+
+```json
+{
+  "models": [
+    {"name": "sales", "description": "Sales analytics", "dimensions": 12, "measures": 8, "metrics": 3, "data_objects": 4},
+    {"name": "returns", "description": null, "dimensions": 9, "measures": 5, "metrics": 0, "data_objects": 3}
+  ],
+  "count": 2
+}
+```
+
+### `GET /v1/models/{name}`
+
+One pre-loaded model: its summary, its `model_id`, and the YAML it was loaded from. The UI uses it to show a model in its read-only editor.
+
+**Response (200):**
+
+```json
+{
+  "name": "sales",
+  "description": "Sales analytics",
+  "dimensions": 12,
+  "measures": 8,
+  "metrics": 3,
+  "data_objects": 4,
+  "model_id": "5947b71571b8e1c2",
+  "model_yaml": "version: 1.0\nname: sales\n..."
+}
+```
+
+With these, `POST /v1/sessions/sales/query/sql` and `{"model_id": "5947b71571b8e1c2", ...}` compile a query against the model.
+
+**Error (404):** No pre-loaded model has that name. A session you created yourself is never one.
+
+---
+
 ## Session Models
 
 ### `POST /v1/sessions/{session_id}/models`

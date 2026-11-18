@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from orionbelt.models.errors import SemanticError
@@ -50,6 +52,18 @@ class TestTrackedLoader:
         orders = raw["dataObjects"]["Orders"]
         assert "Order ID" in orders["columns"]
         assert orders["columns"]["Amount"]["abstractType"] == "float"
+
+    def test_one_loader_serves_several_threads(self, loader: TrackedLoader) -> None:
+        """A session's model store parses every upload with one loader, and
+        the API runs uploads in parallel. A shared parser mixed the documents
+        up and raised YAML parse errors on valid models."""
+        documents = [SAMPLE_MODEL_YAML, (SALES_MODEL_DIR / "model.yaml").read_text()]
+        expected = [loader.load_string(text)[0] for text in documents]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            parsed = list(pool.map(lambda n: loader.load_string(documents[n % 2])[0], range(64)))
+
+        assert parsed == [expected[n % 2] for n in range(64)]
 
 
 class TestReferenceResolver:

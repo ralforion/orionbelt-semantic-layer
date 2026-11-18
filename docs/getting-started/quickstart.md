@@ -264,7 +264,7 @@ curl -s -X POST "http://127.0.0.1:8000/v1/sessions/$MODEL_NAME/query/sql" \
   }" | jq .sql
 ```
 
-`GET /v1/models` lists every preloaded model + its addressing name. Model upload (`POST /v1/sessions/{id}/models`) and removal are blocked (403) while admin-curated mode is on. BI tools through Flight SQL or pgwire select the same model via the `database` header / URL parameter.
+`GET /v1/models` lists every preloaded model + its addressing name, and `GET /v1/models/<name>` returns one with its `model_id` and YAML. The UI shows the preloaded model read-only; with more than one, a **Model** dropdown picks which. Model upload (`POST /v1/sessions/{id}/models`) and removal are blocked (403) while admin-curated mode is on. BI tools through Flight SQL or pgwire select the same model via the `database` header / URL parameter.
 
 ## Next Steps
 

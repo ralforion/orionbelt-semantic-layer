@@ -242,6 +242,9 @@ curl http://localhost:8000/v1/models
 }
 ```
 
+`GET /v1/models/<name>` returns one of them with its `model_id` and the
+YAML it was loaded from.
+
 A connection that selects a model lists only that model in its schema
 tree. A connection without a selector lists every loaded model.
 

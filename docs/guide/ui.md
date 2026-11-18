@@ -40,6 +40,16 @@ The Business Rules tab lists the model's rules with statistics; click a row to s
 
 The SPARQL tab runs read-only queries over the model's OBSL graph, with a gallery of examples and an editor with SPARQL highlighting. See [OBSL Graph & SPARQL](obsl.md).
 
+## Pre-loaded Models (`MODEL_FILES`)
+
+When the server loads its models from `MODEL_FILES`, the UI shows them instead of the bundled example:
+
+- **One model** — the editor shows it, read-only.
+- **Several models** — a **Model** dropdown leads the settings row; picking one loads it into the editor and starts the query box with the model's first [example query](model-format.md#examples), or with an empty `select` the pickers fill in. Every tab follows the picked model. The browser remembers the choice until the server restarts.
+- **No API Base URL field** — the UI works on each model in its own session on this API, so it does not offer to point elsewhere.
+
+Uploading or importing a model is not offered: the API refuses it while `MODEL_FILES` is set.
+
 ## Local Development
 
 For local development, the Gradio UI is automatically mounted at `/ui` on the REST API server:

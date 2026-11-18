@@ -10,9 +10,11 @@ import yaml
 pytest.importorskip("gradio", reason="gradio required by the UI handlers")
 
 from orionbelt.ui.handlers import (  # noqa: E402
+    _insert_into_query,
     example_picker_update,
     load_example_query,
     model_example_choices,
+    starting_query,
 )
 
 _DEMO = Path(__file__).resolve().parents[2] / "examples" / "orionbelt_1_commerce.yaml"
@@ -95,3 +97,21 @@ def test_pick_outside_the_server_choices_reaches_the_handler() -> None:
     assert picker.preprocess("top_clients_by_sales_of_a_custom_model") == (
         "top_clients_by_sales_of_a_custom_model"
     )
+
+
+def test_a_chosen_model_starts_with_its_first_example() -> None:
+    """Picking a curated model in the "Model" dropdown replaces the query box."""
+    assert yaml.safe_load(starting_query(MODEL)) == {
+        "select": {"dimensions": ["Client Name"], "measures": ["Total Sales"]},
+        "limit": 10,
+    }
+
+
+def test_a_model_without_examples_starts_with_an_empty_select() -> None:
+    """One the dimension and measure pickers can fill in."""
+    query = starting_query("version: 1.0\ndimensions: {}\n")
+    query = _insert_into_query(query, "Customer Country", "dimensions")
+    query = _insert_into_query(query, "Revenue", "measures")
+    assert yaml.safe_load(query) == {
+        "select": {"dimensions": ["Customer Country"], "measures": ["Revenue"]}
+    }

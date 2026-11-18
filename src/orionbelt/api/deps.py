@@ -17,6 +17,7 @@ compatibility helper that resets the process runtime.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 
@@ -63,7 +64,7 @@ class AppRuntime:
     session_manager: SessionManager | None = None
     disable_session_list: bool = False
     admin_curated: bool = False
-    preload_model_yaml: str | None = None
+    curated_model_yamls: dict[str, str] = field(default_factory=dict)
     flight_info: dict[str, object] | None = None
     query_execute_enabled: bool = False
     db_vendor: str = "duckdb"
@@ -122,7 +123,7 @@ def init_session_manager(
     *,
     disable_session_list: bool = False,
     admin_curated: bool = False,
-    preload_model_yaml: str | None = None,
+    curated_model_yamls: Mapping[str, str] | None = None,
     flight_info: dict[str, object] | None = None,
     query_execute_enabled: bool = False,
     db_vendor: str = "duckdb",
@@ -142,18 +143,18 @@ def init_session_manager(
     Returns the constructed :class:`AppRuntime` so ``create_app`` can attach
     it to ``app.state.runtime``.
 
-    ``preload_model_yaml`` is the original YAML of the single protected
-    MODEL_FILES model — passed in only when admin-curated mode loaded exactly
-    one file. It is surfaced via ``/v1/settings.model_yaml`` so UI clients can
-    render the read-only model editor, and re-used by ``POST /v1/sessions`` to
-    seed each new user session with the protected model.
+    ``curated_model_yamls`` maps each MODEL_FILES model's addressing name to
+    the YAML it was loaded from. ``GET /v1/models/{name}`` serves it, so UI
+    clients can render the read-only model editor for any curated model. With
+    exactly one entry it is also ``/v1/settings.model_yaml`` and seeds each new
+    user session (``POST /v1/sessions``).
     """
     global _runtime  # noqa: PLW0603 — single process-level runtime handle
     _runtime = AppRuntime(
         session_manager=manager,
         disable_session_list=disable_session_list,
         admin_curated=admin_curated,
-        preload_model_yaml=preload_model_yaml,
+        curated_model_yamls=dict(curated_model_yamls or {}),
         flight_info=flight_info,
         query_execute_enabled=query_execute_enabled,
         db_vendor=db_vendor,
@@ -193,12 +194,17 @@ def is_session_list_disabled() -> bool:
 def get_preload_model_yaml() -> str | None:
     """Return the YAML of the single MODEL_FILES protected model, if any.
 
-    Populated at startup only when MODEL_FILES has exactly one entry — the
-    single-model-mode UX expects exactly one model to render in the read-only
-    editor. Multi-model deployments return ``None``; clients use
-    ``GET /v1/models`` for discovery instead.
+    ``None`` unless MODEL_FILES has exactly one entry. Multi-model
+    deployments use ``GET /v1/models`` for discovery and
+    :func:`get_curated_model_yaml` for one model's YAML.
     """
-    return _active_runtime().preload_model_yaml
+    yamls = _active_runtime().curated_model_yamls
+    return next(iter(yamls.values())) if len(yamls) == 1 else None
+
+
+def get_curated_model_yaml(name: str) -> str | None:
+    """Return the YAML the MODEL_FILES model *name* was loaded from, if any."""
+    return _active_runtime().curated_model_yamls.get(name)
 
 
 def is_single_model_mode() -> bool:
