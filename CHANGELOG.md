@@ -19,7 +19,7 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ### Docs
 
-- **CHANGELOG.md holds the releases from 3.0.0 on; earlier ones are in `CHANGELOG-archive.md`.** At 568 KB, GitHub showed CHANGELOG.md as plain source instead of formatting it. `CHANGELOG-versions.md`, a table with one row per release that nothing linked to, is removed: its rows for 0.1.0 to 0.8.0, which have no changelog entries, moved to the archive, and `scripts/release.sh` no longer asks for a row there.
+- **CHANGELOG.md holds the releases from 3.0.0 on; earlier ones are in `CHANGELOG-archive.md`.** GitHub formats a Markdown file only up to about 250 KB, so at 568 KB it showed CHANGELOG.md as source; CHANGELOG.md is now 165 KB, and the archive (409 KB) is shown as source. `CHANGELOG-versions.md`, a table with one row per release that nothing linked to, is removed: its rows for 0.1.0 to 0.8.0, which have no changelog entries, moved to the archive, and `scripts/release.sh` no longer asks for a row there.
 
 ## [3.1.0] - 2026-11-17
 
