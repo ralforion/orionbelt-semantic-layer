@@ -186,8 +186,8 @@ def compile_sql(
         return (
             f"Error: Model validation failed\n{_format_api_errors(exc.detail)}",
             "",
-            session_state,
-            model_state,
+            exc.session_state,
+            exc.model_state,
         )
     except httpx.ConnectError:
         api = api_url.rstrip("/") if api_url else _DEFAULT_API_URL
@@ -1040,8 +1040,8 @@ def _execute_query(
         return (
             f"Error: Model validation failed\n{_format_api_errors(exc.detail)}",
             "",
-            session_state,
-            model_state,
+            exc.session_state,
+            exc.model_state,
             empty_df,
             empty_df,
             "",
