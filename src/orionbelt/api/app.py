@@ -176,7 +176,7 @@ def _warn_if_legacy_model_file_set() -> None:
         logger.warning(
             "MODEL_FILE is set but was removed in v2.7.0 and is now ignored. "
             "Replace with MODEL_FILES=<same-path> (single-entry MODEL_FILES is "
-            "the direct equivalent). See CHANGELOG for the v2.7.0 entry."
+            "the direct equivalent). See the v2.7.0 entry in CHANGELOG-archive.md."
         )
 
 
