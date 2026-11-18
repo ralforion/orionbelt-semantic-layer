@@ -687,3 +687,47 @@ class TestTheModelDropdown:
             " return q.includes('dimensions:') && !q.includes('Customer Country'); }",
             timeout=10_000,
         )
+
+
+class TestAnExpiredSession:
+    """The UI's API session expires after 30 idle minutes and answers the
+    first request after that with 410. By default Cloud Run gives an instance
+    CPU only while it handles a request, so the cleanup sweep rarely drops
+    the session first: the first click after a pause showed the 410."""
+
+    def test_the_ui_continues_after_a_pause(
+        self, playwright: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from playwright.sync_api import expect
+
+        from orionbelt.service import session_manager
+
+        offset = 0.0
+
+        class _Clock:  # the session manager reads only time.monotonic()
+            @staticmethod
+            def monotonic() -> float:
+                return time.monotonic() + offset
+
+        monkeypatch.setattr(session_manager, "time", _Clock)
+        served = _serve_embedded_ui(session_cleanup_interval=9999)
+        browser, page = _open_page(playwright, next(served), "SQL Compiler")
+        try:
+            page.set_viewport_size(_WINDOW)
+            sql = page.locator("#ob-sql")
+            page.get_by_role("button", name="Compile SQL").click()
+            expect(sql).to_contain_text("SELECT", timeout=15_000)
+
+            offset += 3600  # an hour's pause; the TTL is 30 minutes
+            _pick(page, "SQL Dialect", "bigquery")
+            page.get_by_role("button", name="Compile SQL").click()
+            expect(sql).to_contain_text("`", timeout=15_000)  # BigQuery quotes with backticks
+
+            offset += 3600  # another pause, then the Settings tab
+            page.get_by_role("tab", name="Settings").click()
+            settings = page.locator(".block", has_text="API Settings").locator(".cm-content")
+            expect(settings).to_contain_text("dialect:", timeout=15_000)
+            expect(settings).not_to_contain_text("# Error")
+        finally:
+            browser.close()
+            served.close()

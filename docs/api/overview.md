@@ -63,7 +63,7 @@ For iterative model management and discovery, use sessions explicitly:
 4. **Execute** — `POST /v1/sessions/{id}/query/execute` to compile and execute against the database (requires `FLIGHT_ENABLED=true`)
 5. **Close** — `DELETE /v1/sessions/{id}` when done (or let TTL expire)
 
-Sessions expire after 30 minutes of inactivity (configurable via `SESSION_TTL_SECONDS`) or after an absolute maximum lifetime of 24 hours (`SESSION_MAX_AGE_SECONDS`). The server enforces a global concurrent session cap (`MAX_SESSIONS`, default 500) and a per-session model cap (`MAX_MODELS_PER_SESSION`, default 10). Session creation is rate-limited per IP (`SESSION_RATE_LIMIT`, default 10/min). When limits are exceeded, the API returns **429 Too Many Requests** with a `Retry-After` header. Expired sessions return **410 Gone** (not 404) so clients can distinguish expiry from unknown IDs.
+Sessions expire after 30 minutes of inactivity (configurable via `SESSION_TTL_SECONDS`) or after an absolute maximum lifetime of 24 hours (`SESSION_MAX_AGE_SECONDS`). The server enforces a global concurrent session cap (`MAX_SESSIONS`, default 500) and a per-session model cap (`MAX_MODELS_PER_SESSION`, default 10). Session creation is rate-limited per IP (`SESSION_RATE_LIMIT`, default 10/min). When limits are exceeded, the API returns **429 Too Many Requests** with a `Retry-After` header. An expired session answers its first request after expiry with **410 Gone** and is dropped then. After that, or once the cleanup sweep (every `SESSION_CLEANUP_INTERVAL` seconds, default 60) has dropped it, its ID is unknown and gets **404 Not Found**. A client that continues in a new session should do so on both: where the sweep does not run between requests (by default, Cloud Run gives an instance CPU only while it handles a request), the first request after a pause is usually the 410.
 
 ### Admin-Curated Mode
 
@@ -95,7 +95,8 @@ All errors follow a consistent format:
 | 204 | No Content | Session or model deleted |
 | 400 | Bad Request | Invalid YAML, unknown dialect, bad operator |
 | 403 | Forbidden | Model upload/removal in single-model mode |
-| 404 | Not Found | Session expired/missing, model not found |
+| 404 | Not Found | Session unknown (never created, closed, or expired and dropped), model not found |
+| 410 | Gone | Session expired: its first request after expiry, which drops it |
 | 422 | Unprocessable Entity | Model validation failure, resolution error |
 | 502 | Bad Gateway | Database execution failed (query/execute) |
 | 503 | Service Unavailable | Query execution not available (FLIGHT_ENABLED not set) |
