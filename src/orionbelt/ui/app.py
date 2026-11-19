@@ -44,6 +44,7 @@ from orionbelt.ui.api_client import (
     set_api_credentials,
 )
 from orionbelt.ui.handlers import (
+    QueryInsertError,
     _build_explain_yaml,
     _composable_sets,
     _decorate_choices,
@@ -2169,10 +2170,15 @@ def create_blocks(
 
                         if not val:
                             return query, gr.update(value=None)
-                        return (
-                            _insert_into_query(query, val, section),
-                            gr.update(value=None),
-                        )
+                        try:
+                            query = _insert_into_query(query, val, section)
+                        except QueryInsertError as exc:
+                            # Leave the query as it is: editing text that does
+                            # not parse only made it worse.
+                            gr.Warning(
+                                f"Could not add {val}: {exc}. Fix the query, then pick again."
+                            )
+                        return query, gr.update(value=None)
 
                     return _fn
 

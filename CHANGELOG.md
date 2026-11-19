@@ -10,6 +10,10 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 - **A filtered result column shows a filter icon in its header, with a `✕` that removes just that filter.** A click on a cell adds an `equals` filter (or `IS NULL`) for that column; until now the only ways out were clicking the value again or "Clear filters", which drops all of them. The icon's tooltip shows the filter (`Client Name = Kai Garcia`). The "Clear filters" chip stays, and now leads with the same filter icon. Filters written in the query itself (e.g. `Country Name in [...]`) get no icon or `✕`.
 - **A query that does not parse says so in the query editor's title.** The Dimensions and Measures / Metrics pickers mark (`✓`) what the query can still take, which needs a parsed query; with one that did not parse they silently showed no marks, which read as "nothing can be added". The editor's title now reads `Query (YAML) · does not parse at line 5` in orange until the query parses again, and the pickers show no marks meanwhile.
 
+### Fixed
+
+- **A pick from the UI's Dimensions, Measures / Metrics or Columns picker adds to the key the query already has.** The picker found that key by its text, exactly `  measures:` with list items four spaces in. A key at another indentation got a second `measures:` block, and after a click-to-filter or a sort in Query Results, which write list items at the key's own indentation, the next pick wrote a query that no longer parsed. The picker now edits the query as parsed YAML: it keeps the editor's indentation, comments and inline lists, and does not add an item the query already selects. A query that does not parse is left as it is, with a warning naming the line to fix.
+
 ## [3.1.1] - 2026-11-19
 
 ### Added
