@@ -136,9 +136,51 @@ def test_a_query_that_does_not_parse_is_refused_with_its_line() -> None:
         _insert_into_query(broken, "Average Sale", "measures")
 
 
-def test_a_bare_dash_line_is_refused_not_crashed_on() -> None:
-    """ruamel's indent guesser reads past the end of "  -" under a top-level key."""
-    with pytest.raises(QueryInsertError, match="does not parse"):
+def test_a_dash_on_its_own_line_is_read() -> None:
+    """Valid YAML whose "-" stands alone makes ruamel's indent guesser fail.
+
+    The guess is only a hint: the query still parses, and gets the starter layout.
+    """
+    query = (
+        "select: {measures: [Total Sales]}\n"
+        "where:\n"
+        "  -\n"
+        "    field: Country Name\n"
+        "    op: equals\n"
+        "    value: Germany\n"
+    )
+    out = _insert_into_query(query, "Average Sale", "measures")
+    assert yaml.safe_load(out) == {
+        "select": {"measures": ["Total Sales", "Average Sale"]},
+        "where": [{"field": "Country Name", "op": "equals", "value": "Germany"}],
+    }
+
+
+def test_an_impossible_indent_guess_falls_back_to_the_starter_layout() -> None:
+    """A comment deeper than the list makes the guesser report a negative offset."""
+    query = (
+        "select:\n"
+        "  measures: [Total Sales]\n"
+        "where:\n"
+        "    # Include these countries:\n"
+        "  - field: Country Name\n"
+        "    op: equals\n"
+        "    value: Germany\n"
+    )
+    out = _insert_into_query(query, "Region", "where")
+    assert yaml.safe_load(out) == {
+        "select": {"measures": ["Total Sales"]},
+        "where": [
+            {"field": "Country Name", "op": "equals", "value": "Germany"},
+            {"field": "Region", "op": "equals", "value": None},
+        ],
+    }
+    assert "# Include these countries:" in out
+
+
+def test_a_bare_dash_under_select_is_a_list_not_a_selection() -> None:
+    """Valid YAML (``select: [null]``), so the shape is what is refused."""
+    with pytest.raises(QueryInsertError, match="'select' is not a mapping"):
         _insert_into_query("select:\n  -\n", "Average Sale", "measures")
 
 

@@ -1264,20 +1264,34 @@ _DEFAULT_QUERY_INDENT = (2, 4, 2)
 _KEYS_AFTER_WHERE = ("having", "orderBy", "limit")
 
 
-def _query_indent(seq_indent: int | None, dash_offset: int | None) -> tuple[int, int, int]:
+def _query_indent(query: str) -> tuple[int, int, int]:
     """ruamel ``(mapping, sequence, offset)`` matching the editor's layout.
 
-    Takes the two numbers ``load_yaml_guess_indent`` reads off the text, both
-    relative to the parent key: where a list item's content starts and where
-    its dash sits.
+    Read with ruamel's ``load_yaml_guess_indent``, which reports where a list
+    item's content starts and where its dash sits, both relative to the parent
+    key. The guess is only a hint: it reads the text line by line, so a comment
+    or a dash on a line of its own can throw it off or make it fail. A failed
+    guess, or one that is not a layout ruamel can write, falls back to the
+    starter query's layout.
     """
+    from ruamel.yaml.error import YAMLError
+    from ruamel.yaml.util import load_yaml_guess_indent
+
+    try:
+        _, seq_indent, dash_offset = load_yaml_guess_indent(query)
+    except (YAMLError, IndexError):  # IndexError: a "-" alone on its line
+        return _DEFAULT_QUERY_INDENT
     if seq_indent is None:
         return _DEFAULT_QUERY_INDENT
     if dash_offset is None:  # nested mappings but no block list yet
-        return seq_indent, seq_indent + 2, seq_indent
-    if dash_offset == 0:  # "  measures:" / "  - x", as a filter or sort rewrite writes
-        return seq_indent, seq_indent, 0
-    return dash_offset, seq_indent, dash_offset
+        mapping, sequence, offset = seq_indent, seq_indent + 2, seq_indent
+    elif dash_offset == 0:  # "  measures:" / "  - x", as a filter or sort rewrite writes
+        mapping, sequence, offset = seq_indent, seq_indent, 0
+    else:
+        mapping, sequence, offset = dash_offset, seq_indent, dash_offset
+    if mapping < 1 or offset < 0 or sequence < offset + 2:
+        return _DEFAULT_QUERY_INDENT
+    return mapping, sequence, offset
 
 
 def _insert_into_query(query: str, value: str, section: str) -> str:
@@ -1299,15 +1313,13 @@ def _insert_into_query(query: str, value: str, section: str) -> str:
     from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from ruamel.yaml.error import YAMLError
-    from ruamel.yaml.util import load_yaml_guess_indent
 
     yaml_rt = YAML()
     yaml_rt.preserve_quotes = True
     yaml_rt.width = 4096  # never re-wrap a line the user wrote
     try:
-        root, seq_indent, dash_offset = load_yaml_guess_indent(query, yaml=yaml_rt)
-    except (YAMLError, IndexError) as exc:
-        # IndexError: the indent guesser reads past the end of a bare "-" line.
+        root = yaml_rt.load(query)
+    except YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         at = f" at line {mark.line + 1}" if mark is not None else ""
         raise QueryInsertError(f"the query YAML does not parse{at}") from None
@@ -1353,7 +1365,7 @@ def _insert_into_query(query: str, value: str, section: str) -> str:
             return query
         chosen.append(value)
 
-    mapping, sequence, offset = _query_indent(seq_indent, dash_offset)
+    mapping, sequence, offset = _query_indent(query)
     yaml_rt.indent(mapping=mapping, sequence=sequence, offset=offset)
     buf = StringIO()
     yaml_rt.dump(root, buf)
