@@ -996,6 +996,12 @@ measures:
     expression: "{[Sales].[Amount]} - {[Returns].[Refund]}"
     aggregation: sum
     resultType: float
+  Revenue:
+    columns: [{dataObject: Sales, column: Amount}]
+    aggregation: sum
+  Refunds:
+    columns: [{dataObject: Returns, column: Refund}]
+    aggregation: sum
 """
 
 
@@ -1006,6 +1012,121 @@ def test_a_via_dimension_beside_a_measure_over_two_objects_of_one_star() -> None
     assert "Purchase Channel" in resolve_composables_for_anchors(model, ["Net"]).dimensions
     assert "Net" in resolve_composables_for_anchors(model, ["Purchase Channel"]).measures
     assert _compiles(model, ["Purchase Channel"], ["Net"])
+
+
+def test_separate_measures_under_a_common_root_are_refused() -> None:
+    """Revenue and Refunds are measures of their own, planned as legs of
+    Sales and Returns, and neither leg reaches Purchases."""
+    model = _load(COMMON_ROOT_VIA_YAML)
+    assert not _compiles(model, ["Purchase Channel"], ["Revenue", "Refunds"])
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Composables sees the objects of an anchor, not which measure reads which, "
+        "so it cannot tell these two measures (legs of Sales and Returns) from Net "
+        "(a star from Purchases). It rules out a via dimension only where nothing "
+        "joined to the facts reaches the via object; the compiler refuses this one."
+    ),
+)
+def test_composables_does_not_offer_what_separate_legs_cannot_reach() -> None:
+    model = _load(COMMON_ROOT_VIA_YAML)
+    dims = resolve_composables_for_anchors(model, ["Revenue", "Refunds"]).dimensions
+    assert "Purchase Channel" not in dims
+
+
+# A leg may start from an object that reaches its fact: grouped by Supplier,
+# which Sales cannot reach, the Sales leg starts from Purchases (which reaches
+# Sales, Channels and Suppliers), and that start reaches the ``via`` object.
+ANCESTOR_LEG_VIA_YAML = """\
+version: 1.0
+
+dataObjects:
+  Channels:
+    code: channels
+    schema: main
+    columns:
+      Channel ID: {code: id, abstractType: string, primaryKey: true}
+      Channel Name: {code: name, abstractType: string}
+  Suppliers:
+    code: suppliers
+    schema: main
+    columns:
+      Supplier ID: {code: id, abstractType: string, primaryKey: true}
+      Supplier Name: {code: name, abstractType: string}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Channel ID: {code: channel_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Sale Channel ID]
+        columnsTo: [Channel ID]
+  Purchases:
+    code: purchases
+    schema: main
+    columns:
+      Purchase ID: {code: id, abstractType: string, primaryKey: true}
+      Purchase Channel ID: {code: channel_id, abstractType: string}
+      Purchase Sale ID: {code: sale_id, abstractType: string}
+      Purchase Supplier ID: {code: supplier_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Purchase Channel ID]
+        columnsTo: [Channel ID]
+      - joinType: many-to-one
+        joinTo: Sales
+        columnsFrom: [Purchase Sale ID]
+        columnsTo: [Sale ID]
+      - joinType: many-to-one
+        joinTo: Suppliers
+        columnsFrom: [Purchase Supplier ID]
+        columnsTo: [Supplier ID]
+  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Channel ID: {code: channel_id, abstractType: string}
+      Return Supplier ID: {code: supplier_id, abstractType: string}
+      Refund: {code: refund, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Return Channel ID]
+        columnsTo: [Channel ID]
+      - joinType: many-to-one
+        joinTo: Suppliers
+        columnsFrom: [Return Supplier ID]
+        columnsTo: [Supplier ID]
+
+dimensions:
+  Purchase Channel: {dataObject: Channels, column: Channel Name, resultType: string, via: Purchases}
+  Supplier: {dataObject: Suppliers, column: Supplier Name, resultType: string}
+
+measures:
+  Revenue:
+    columns: [{dataObject: Sales, column: Amount}]
+    aggregation: sum
+  Refunds:
+    columns: [{dataObject: Returns, column: Refund}]
+    aggregation: sum
+"""
+
+
+def test_a_via_dimension_a_leg_reaches_from_an_ancestor_of_its_fact() -> None:
+    """Offered in either order of picking, as the compiler plans it."""
+    model = _load(ANCESTOR_LEG_VIA_YAML)
+    assert _compiles(model, ["Purchase Channel", "Supplier"], ["Revenue", "Refunds"])
+    dims = resolve_composables_for_anchors(model, ["Revenue", "Refunds", "Supplier"]).dimensions
+    assert "Purchase Channel" in dims
+    assert "Refunds" in _offered(model, ["Revenue", "Purchase Channel", "Supplier"])
 
 
 def test_a_reaggregate_first_stage_over_one_fact_needs_the_via_object() -> None:

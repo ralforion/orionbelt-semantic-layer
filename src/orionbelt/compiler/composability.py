@@ -507,7 +507,7 @@ class ComposabilityResolver:
             )
             if status == "direct":
                 measures.append(name)
-            elif status == "cfl" and self._legs_reach(padded, sources | leg_facts):
+            elif status == "cfl" and self._a_leg_may_reach(padded, sources | leg_facts):
                 cfl_measures.append(name)
 
         metrics: list[str] = []
@@ -526,7 +526,7 @@ class ComposabilityResolver:
             )
             if status == "direct":
                 metrics.append(name)
-            elif status == "cfl" and self._legs_reach(padded, plan_sources | leg_facts):
+            elif status == "cfl" and self._a_leg_may_reach(padded, plan_sources | leg_facts):
                 cfl_metrics.append(name)
 
         return ComposablesResult(
@@ -569,17 +569,19 @@ class ComposabilityResolver:
         """
         return waypoints if len(plan_sources | leg_facts) > 1 else set()
 
-    def _legs_reach(self, waypoints: set[str], facts: set[str]) -> bool:
-        """Whether a CFL leg of one of *facts* reaches each of *waypoints*.
+    def _a_leg_may_reach(self, waypoints: set[str], facts: set[str]) -> bool:
+        """Whether some plan over *facts* may reach each of *waypoints*.
 
-        A leg that cannot reach a waypoint pads its dimension, which is fine
-        while another leg reaches it. One that no leg reaches is padded by every
-        leg, so the union has no value for its dimension and the planner refuses
-        the query. A leg joins without an unnest.
+        A CFL leg that cannot reach a waypoint pads its dimension, which is fine
+        while another leg reaches it. One that no leg reaches leaves the
+        dimension without a value, and the planner refuses the query. A leg
+        starts from its fact or from an object that reaches it (a common root of
+        the query's objects), and a star from a base that reaches every fact.
+        Which one is the planner's choice, made from what each measure reads,
+        which an anchor of objects does not carry. So only the certain case is
+        ruled out: nothing that reaches one of *facts* reaches the waypoint.
         """
-        return all(
-            any(w in self._reach_no_unnest.get(fact, set()) for fact in facts) for w in waypoints
-        )
+        return all(any(self._has_common_root({fact, w}) for fact in facts) for w in waypoints)
 
     def _metric_legs_reachable(
         self, name: str, spine: set[str], waypoints: set[str] | None = None
@@ -772,17 +774,12 @@ class ComposabilityResolver:
         # them wherever the dimension is projected — so they are as much a
         # requirement as the dimension's own object. So is a ``via`` object,
         # except on a CFL leg (independent leg facts), which projects NULL for
-        # the dimension when it cannot reach it. One leg at least has to reach
-        # it, though, unless a single base reaches everything and the query is
-        # a star that joins it.
+        # the dimension when it cannot reach it. Some leg has to be able to
+        # reach it, though, or no leg has a value for the dimension.
         needed = {obj} | (reads or set())
         if waypoint and len(leg_facts) <= 1:
             needed.add(waypoint)
-        elif (
-            waypoint
-            and not self._has_common_root(spine | leg_facts | needed | {waypoint})
-            and not self._legs_reach({waypoint}, leg_facts)
-        ):
+        elif waypoint and not self._a_leg_may_reach({waypoint}, leg_facts):
             return False
         if leg_facts:
             # Must be groupable across every existing measure leg.
