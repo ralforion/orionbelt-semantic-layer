@@ -4,6 +4,12 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ## [Unreleased]
 
+### Changed
+
+- **One sort icon per result column, which cycles through unsorted, ascending and descending.** Query Results headers showed `▲ ▼ ✕` on every column, and the always-visible `✕` (stop sorting by this column) read as "remove the column". Each header now has one icon of two stacked triangles: both dim while the column is not sorted, the active one orange; a click moves to the next state, and its tooltip says what the click will do.
+- **A filtered result column shows a filter icon in its header, with a `✕` that removes just that filter.** A click on a cell adds an `equals` filter (or `IS NULL`) for that column; until now the only ways out were clicking the value again or "Clear filters", which drops all of them. The icon's tooltip shows the filter (`Client Name = Kai Garcia`). The "Clear filters" chip stays, and now leads with the same filter icon. Filters written in the query itself (e.g. `Country Name in [...]`) get no icon or `✕`.
+- **A query that does not parse says so in the query editor's title.** The Dimensions and Measures / Metrics pickers mark (`✓`) what the query can still take, which needs a parsed query; with one that did not parse they silently showed no marks, which read as "nothing can be added". The editor's title now reads `Query (YAML) · does not parse at line 5` in orange until the query parses again, and the pickers show no marks meanwhile.
+
 ## [3.1.1] - 2026-11-19
 
 ### Added
