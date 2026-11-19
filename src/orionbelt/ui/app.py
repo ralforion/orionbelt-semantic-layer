@@ -27,6 +27,7 @@ from orionbelt.ui.api_client import (
     _DEFAULT_API_KEY_HEADER,
     _DEFAULT_API_URL,
     _FALLBACK_DIALECTS,
+    _STARTUP_API_WAIT,
     _curated_model,
     _ensure_session_and_model,
     _export_to_osi,
@@ -1107,6 +1108,8 @@ _INJECT_UPLOAD_JS = (
     function addUploadBtn(codeId, bridgeId) {
         const root = document.getElementById(codeId);
         if (!root || root.querySelector('.ob-upload-btn')) return;
+        /* A read-only editor (a curated model) takes no upload. */
+        if (root.querySelector('.cm-content[contenteditable="false"]')) return;
 
         /* Find the toolbar: locate an SVG-icon button (download/copy) */
         /* and use its parent as the toolbar container.               */
@@ -1703,8 +1706,13 @@ def create_blocks(
     api_base = default_api_url or _DEFAULT_API_URL
     dialects = _fetch_dialects(api_base) if not cohosted else _FALLBACK_DIALECTS
 
-    # In embedded mode use pre-supplied settings; standalone fetches via HTTP
-    api_settings = embedded_settings if embedded_settings is not None else _fetch_settings(api_base)
+    # In embedded mode use pre-supplied settings; standalone fetches via HTTP,
+    # waiting for an API that is still starting.
+    api_settings = (
+        embedded_settings
+        if embedded_settings is not None
+        else _fetch_settings(api_base, wait=_STARTUP_API_WAIT)
+    )
 
     # Pick the initial dialect from what the API will *actually* use, not
     # an alphabetical fallback: dialect.effective reflects the model's
@@ -1724,6 +1732,11 @@ def create_blocks(
     single_model = api_settings.get("single_model_mode", False)
     query_exec_enabled = api_settings.get("query_execute", False)
     api_unreachable = bool(api_settings.get("_unreachable"))
+    # The parts for curated models are built when the API serves them, and
+    # also when it did not answer: a page load then asks it again and turns
+    # the page curated if it does (see _recover).
+    curated_parts = single_model or api_unreachable
+    curated_label = "OBML Model (YAML) \u2014 read-only (single-model mode)"
     # Pre-v2.7.6 (issue #89): an empty ``api_settings`` (from a cached
     # transient fetch failure) collapsed into self-service mode and
     # silently loaded the bundled ``orionbelt_1_commerce.yaml`` over whatever
@@ -1818,7 +1831,7 @@ def create_blocks(
         with gr.Tabs() as tabs:
             with gr.Tab("SQL Compiler", id=0):
                 with gr.Row(elem_classes=["settings-row"]):
-                    if single_model:
+                    if curated_parts:
                         # Shown by the page load when MODEL_FILES holds more
                         # than one model.
                         with gr.Row(elem_classes=["settings-pair"], visible=False) as model_pair:
@@ -1862,7 +1875,9 @@ def create_blocks(
                     # Hidden for curated models: the UI works on each in its
                     # own session on this API, so pointing it elsewhere would
                     # break that. It still carries the URL every call uses.
-                    with gr.Row(elem_classes=["settings-pair"], visible=not single_model):
+                    with gr.Row(
+                        elem_classes=["settings-pair"], visible=not single_model
+                    ) as api_pair:
                         gr.HTML(
                             '<span class="settings-label">API Base URL</span>',
                             padding=False,
@@ -1901,7 +1916,7 @@ def create_blocks(
 
                 with gr.Row(elem_classes=["editor-row"]):
                     model_label = (
-                        "OBML Model (YAML) \u2014 read-only (single-model mode)"
+                        curated_label
                         if single_model
                         else "OBML Model (YAML) \u2014 schema/obml-schema.json"
                     )
@@ -3378,15 +3393,6 @@ def create_blocks(
             "[sm, sq, sa, sd, sz, ss, (window.innerWidth <= 768 ? 1 : 0)]"
         )
 
-        # In single-model mode, skip injecting the file upload button for the
-        # model editor (it's read-only).  The query upload button still applies.
-        inject_js = _INJECT_UPLOAD_JS
-        if single_model:
-            inject_js = inject_js.replace(
-                "addUploadBtn('ob-model', 'ob-model-bridge');",
-                "/* single-model mode: model upload disabled */",
-            )
-
         page_load = demo.load(
             fn=_restore,
             inputs=[
@@ -3402,18 +3408,19 @@ def create_blocks(
             js=_restore_js,
         )
 
-        if single_model:
+        if curated_parts:
             # Curated models (MODEL_FILES): show the chosen one, and offer the
             # others in the "Model" dropdown when there are several. The UI
             # works on each in its own protected session (see _curated_model).
-            def _load_curated(
+            def _curated_page(
                 api_url_val: str, saved_name: str, saved_query_val: str, query_model: str
-            ) -> tuple[Any, ...]:
+            ) -> tuple[Any, ...] | None:
+                """The page's values for the chosen model; None if the API did not answer."""
                 names = _fetch_curated_models(api_url_val)
                 name = saved_name if saved_name in names else (names[0] if names else "")
                 picked = _curated_model(api_url_val, name) if name else None
-                if picked is None:  # API unreachable: leave the page as it is
-                    return (gr.update(),) * 8
+                if picked is None:
+                    return None
                 model_yaml, sess, mdl = picked
                 several = len(names) > 1
                 # The saved query and SQL (the theme toggle saves both) are
@@ -3433,6 +3440,46 @@ def create_blocks(
                     name,
                 )
 
+            def _load_curated(
+                api_url_val: str, saved_name: str, saved_query_val: str, query_model: str
+            ) -> tuple[Any, ...]:
+                page = _curated_page(api_url_val, saved_name, saved_query_val, query_model)
+                return page or (gr.update(),) * 8  # API unreachable: leave the page
+
+            def _recover(
+                api_url_val: str,
+                editor: str | None,
+                saved_name: str,
+                saved_query_val: str,
+                query_model: str,
+            ) -> tuple[Any, ...]:
+                # The API did not answer when this process started (a cold
+                # start can outlast the startup wait), so the page was built
+                # without knowing it. Ask again on each page load, as the
+                # editor's message promises, and set the page up for what
+                # the API serves.
+                keep = (gr.update(),) * 10
+                settings = _fetch_settings(api_url_val)
+                if settings.get("_unreachable"):
+                    return keep
+                if not settings.get("single_model_mode"):
+                    # Self-service: the starter, unless a saved model was restored.
+                    if (editor or "").strip() != example_model.strip():
+                        return keep
+                    return (*keep[:2], _load_example_model(), *keep[3:])
+                page = _curated_page(api_url_val, saved_name, saved_query_val, query_model)
+                if page is None:
+                    return keep
+                pair, select, model_yaml, *rest = page
+                return (
+                    pair,
+                    select,
+                    gr.update(value=model_yaml, interactive=False, label=curated_label),
+                    *rest,
+                    gr.update(visible=False),  # the API Base URL
+                    gr.update(visible=False),  # Import OSI
+                )
+
             def _choose_model(name: str | None, api_url_val: str) -> tuple[Any, ...]:
                 picked = _curated_model(api_url_val, name) if name else None
                 if picked is None:
@@ -3442,20 +3489,28 @@ def create_blocks(
 
             # A value set here fires model_input.change, whose handlers refill
             # the pickers, the "Jump to" targets and the example queries.
-            page_load = page_load.then(
-                fn=_load_curated,
-                inputs=[api_url, saved_model_name, saved_query, saved_query_model],
-                outputs=[
-                    model_pair,
-                    model_select,
-                    model_input,
-                    query_input,
-                    sql_output,
-                    session_state,
-                    model_state,
-                    saved_model_name,
-                ],
-            )
+            curated_outputs = [
+                model_pair,
+                model_select,
+                model_input,
+                query_input,
+                sql_output,
+                session_state,
+                model_state,
+                saved_model_name,
+            ]
+            if single_model:
+                page_load = page_load.then(
+                    fn=_load_curated,
+                    inputs=[api_url, saved_model_name, saved_query, saved_query_model],
+                    outputs=curated_outputs,
+                )
+            else:
+                page_load = page_load.then(
+                    fn=_recover,
+                    inputs=[api_url, model_input, saved_model_name, saved_query, saved_query_model],
+                    outputs=[*curated_outputs, api_pair, import_osi_btn],
+                )
             # ``.select``, not ``.input``: measured, ``.input`` fired twice for
             # one pick, fetching the model twice.
             model_select.select(
@@ -3495,7 +3550,7 @@ def create_blocks(
             fn=example_picker_update,
             inputs=[model_input],
             outputs=[example_picker],
-        ).then(fn=None, js=inject_js)
+        ).then(fn=None, js=_INJECT_UPLOAD_JS)
 
         # Session cleanup: API sessions expire automatically via SESSION_TTL_SECONDS.
         # Gradio's demo.unload() cannot access gr.State, so we rely on TTL expiry
