@@ -68,17 +68,9 @@ def _adbc_uri(
     verifying its certificate, as PyMySQL and the MySQL clients do by default;
     the driver's own default is no TLS at all. The client name goes in
     ``connectionAttributes``: any other parameter the driver does not know it
-    sets as a session variable, which MySQL refuses.
-
-    Raises:
-        NotSupportedError: The client name has a comma, where the driver
-            starts another attribute.
+    sets as a session variable, which MySQL refuses. It has no comma, where the
+    driver would start another attribute: ``connect()`` sees to that.
     """
-    if client_name is not None and "," in client_name:
-        raise NotSupportedError(
-            "The ADBC MySQL driver splits connection attributes at commas, so its "
-            f"client_name cannot contain one ({client_name!r}); use backend='pymysql'."
-        )
     userinfo = ""
     if user is not None:
         userinfo = quote(user, safe="")
@@ -159,8 +151,9 @@ def connect(
     backend : str
         ``"auto"`` (default) reads through the ADBC MySQL driver when it is
         installed and through PyMySQL otherwise; ``"adbc"`` or ``"pymysql"``
-        insists on one. The ADBC driver takes no certificate files, so
-        ``"auto"`` with any ``ssl_*`` path uses PyMySQL.
+        insists on one. The ADBC driver takes no certificate files and splits
+        connection attributes at commas, so ``"auto"`` with any ``ssl_*`` path,
+        or with a ``client_name`` holding a comma, uses PyMySQL.
     client_name : str, optional
         Sent as the ``program_name`` connection attribute, which MySQL shows in
         ``performance_schema.session_connect_attrs``.
@@ -174,6 +167,13 @@ def connect(
         raise NotSupportedError(
             "The ADBC MySQL driver takes no certificate files; use backend='pymysql' "
             "or 'auto' with ssl_ca / ssl_cert / ssl_key."
+        )
+    comma = client_name is not None and "," in client_name
+    if backend == "adbc" and comma:
+        raise NotSupportedError(
+            "The ADBC MySQL driver splits connection attributes at commas, so its "
+            f"client_name cannot contain one ({client_name!r}); use backend='pymysql' "
+            "or 'auto'."
         )
 
     def open_pymysql() -> Any:
@@ -191,7 +191,7 @@ def connect(
         )
 
     native: Any = None
-    if backend != "pymysql" and not ssl:
+    if backend != "pymysql" and not ssl and not comma:
         uri = _adbc_uri(
             host=host,
             port=port,

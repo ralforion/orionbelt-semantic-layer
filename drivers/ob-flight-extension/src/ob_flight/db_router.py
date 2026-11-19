@@ -17,7 +17,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from orionbelt.service.client_name import CLIENT_NAME
+from orionbelt import __version__ as _obsl_version
 
 from ob_flight.datasources import (
     _CREDENTIAL_KEYS,
@@ -69,6 +69,11 @@ VENDOR_MAP: dict[str, str] = {
 # and Dremio are left out: see ``orionbelt.service.client_name``.
 _CLIENT_NAMED = frozenset({"bigquery", "clickhouse", "databricks", "duckdb", "mysql", "postgres"})
 
+# The name ``orionbelt.service.client_name`` gives OBSL, built here from the
+# version rather than imported: this package does not require an OBSL release
+# recent enough to have that module.
+_CLIENT_NAME = f"orionbelt-semantic-layer/{_obsl_version}"
+
 
 def _source(source: DataSource | str) -> DataSource:
     """A data source, or the implicit source of a dialect name."""
@@ -115,7 +120,7 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
         return module.Connection(native, init=prepare)
     kwargs = datasource.credentials(**overrides)
     if dialect in _CLIENT_NAMED:
-        kwargs.setdefault("client_name", CLIENT_NAME)
+        kwargs.setdefault("client_name", _CLIENT_NAME)
     # DuckDB: open read-only to avoid cross-process file lock conflicts.
     # MotherDuck is remote, so no local file lock exists to conflict over --
     # but read-only is still correct for a semantic layer that only reads,

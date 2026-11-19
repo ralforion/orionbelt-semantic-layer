@@ -190,10 +190,15 @@ def test_connect_sends_the_client_name_as_program_name_on_either_backend() -> No
     assert connect_pymysql.call_args.kwargs["program_name"] == "app/1.0"
 
 
-def test_the_adbc_backend_refuses_a_client_name_with_a_comma() -> None:
-    """The driver would start a second attribute at the comma."""
+def test_a_client_name_with_a_comma_goes_through_pymysql() -> None:
+    """The ADBC driver would start a second attribute at the comma."""
+    with patch("ob_mysql._connect_adbc") as connect_adbc, patch("pymysql.connect") as connect:
+        conn = ob_mysql.connect(client_name="Example, Inc./1.0")
+    connect_adbc.assert_not_called()
+    assert conn.backend == "pymysql"
+    assert connect.call_args.kwargs["program_name"] == "Example, Inc./1.0"
     with pytest.raises(NotSupportedError, match="commas"):
-        ob_mysql.connect(client_name="app,1", backend="adbc")
+        ob_mysql.connect(client_name="Example, Inc./1.0", backend="adbc")
 
 
 def test_an_adbc_connection_keeps_the_servers_time_zone() -> None:
