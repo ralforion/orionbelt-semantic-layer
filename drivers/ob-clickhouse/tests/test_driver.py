@@ -718,3 +718,12 @@ def test_exceptions_importable() -> None:
     assert issubclass(InterfaceError, Error)
     # Warning is separate
     assert Warning is not None
+
+
+def test_connect_names_the_client_in_the_user_agent() -> None:
+    with patch("clickhouse_connect.get_client") as mock_get_client:
+        mock_get_client.return_value = _make_mock_client()
+        ob_clickhouse.connect(client_name="app/1.0")
+        assert mock_get_client.call_args.kwargs["client_name"] == "app/1.0"
+        ob_clickhouse.connect()
+        assert "client_name" not in mock_get_client.call_args.kwargs

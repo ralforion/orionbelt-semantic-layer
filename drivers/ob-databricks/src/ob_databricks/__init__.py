@@ -50,6 +50,7 @@ def connect(
     access_token: str | None = None,
     catalog: str = "hive_metastore",
     schema: str = "default",
+    client_name: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -69,6 +70,9 @@ def connect(
         Unity Catalog name (default: ``hive_metastore``).
     schema : str
         Schema name (default: ``default``).
+    client_name : str, optional
+        Added to the User-Agent (the connector's ``user_agent_entry``), which
+        Databricks shows in Query History and the audit log.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
@@ -84,6 +88,8 @@ def connect(
     }
     if access_token is not None:
         connect_kwargs["access_token"] = access_token
+    if client_name is not None:
+        connect_kwargs["user_agent_entry"] = client_name
     connect_kwargs.update(kwargs)
 
     native = sql.connect(**connect_kwargs)

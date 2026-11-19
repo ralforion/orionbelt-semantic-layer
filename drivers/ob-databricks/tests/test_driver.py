@@ -544,3 +544,17 @@ def test_plain_sql_passthrough() -> None:
         cur.execute("SELECT COUNT(*) FROM orders")
         mock_post.assert_not_called()
         mock_native.cursor().execute.assert_called_once_with("SELECT COUNT(*) FROM orders")
+
+
+def test_connect_names_the_client_in_the_user_agent() -> None:
+    with patch("databricks.sql.connect") as mock_connect:
+        ob_databricks.connect("host", "/path", client_name="app/1.0")
+        assert mock_connect.call_args.kwargs["user_agent_entry"] == "app/1.0"
+        ob_databricks.connect("host", "/path")
+        assert "user_agent_entry" not in mock_connect.call_args.kwargs
+
+
+def test_an_explicit_user_agent_entry_wins_over_the_client_name() -> None:
+    with patch("databricks.sql.connect") as mock_connect:
+        ob_databricks.connect("host", "/path", client_name="app/1.0", user_agent_entry="own/2")
+        assert mock_connect.call_args.kwargs["user_agent_entry"] == "own/2"

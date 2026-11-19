@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ## [Unreleased]
 
+### Added
+
+- **OBSL names itself to the databases it reads, as `orionbelt-semantic-layer/<version>`.** The name shows next to OBSL's queries in each database's own history: as the User-Agent on BigQuery, ClickHouse, Databricks and DuckDB (MotherDuck, and DuckDB's HTTP reads), as `application_name` on Postgres, and as the `program_name` connection attribute on MySQL. Snowflake and Dremio get none: Snowflake's `application` is for its registered partners. The six drivers take a new `client_name` argument for this; unset, a driver sends its vendor library's default, as before. The Data Sources guide lists where each database shows it. On MySQL a `client_name` with a comma goes through PyMySQL, since the ADBC driver would split it into two attributes; `backend="adbc"` refuses it.
+
 ### Changed
 
 - **One sort icon per result column, which cycles through unsorted, ascending and descending.** Query Results headers showed `▲ ▼ ✕` on every column, and the always-visible `✕` (stop sorting by this column) read as "remove the column". Each header now has one icon of two stacked triangles: both dim while the column is not sorted, the active one orange; a click moves to the next state, and its tooltip says what the click will do.

@@ -329,3 +329,17 @@ def test_plain_sql_passthrough(duckdb_conn_with_data: Connection) -> None:
     with duckdb_conn_with_data.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM orders")
         assert cur.fetchone() == (5,)
+
+
+def test_connect_sends_the_client_name_as_duckdbs_user_agent() -> None:
+    def user_agent(conn: Connection) -> str:
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_setting('custom_user_agent')")
+            return str(cur.fetchone()[0])
+
+    with ob_duckdb.connect(client_name="app/1.0") as conn:
+        assert user_agent(conn) == "app/1.0"
+    own = {"custom_user_agent": "own/2"}
+    with ob_duckdb.connect(client_name="app/1.0", config=own) as conn:
+        assert user_agent(conn) == "own/2"
+    assert own == {"custom_user_agent": "own/2"}

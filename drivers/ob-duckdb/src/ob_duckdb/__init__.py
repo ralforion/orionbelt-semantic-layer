@@ -46,6 +46,7 @@ def connect(
     read_only: bool = False,
     config: dict[str, Any] | None = None,
     init_sql: str | None = None,
+    client_name: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -63,13 +64,20 @@ def connect(
     init_sql : str
         Statements run on this connection and on every cursor of it, such as
         ``LOAD iceberg``, ``CREATE SECRET``, ``ATTACH`` or ``SET search_path``.
+    client_name : str, optional
+        DuckDB's ``custom_user_agent``, added to the User-Agent that DuckDB
+        sends to MotherDuck and on its HTTP reads. A ``custom_user_agent`` in
+        ``config`` wins.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
         HTTP timeout in seconds for OBML compilation.
     """
     init = _statements(init_sql) if init_sql else None
-    native = duckdb.connect(database=database, read_only=read_only, config=config or {})
+    options = dict(config) if config else {}
+    if client_name is not None:
+        options.setdefault("custom_user_agent", client_name)
+    native = duckdb.connect(database=database, read_only=read_only, config=options)
     if init is not None:
         try:
             init(native)

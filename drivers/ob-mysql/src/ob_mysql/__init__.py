@@ -53,13 +53,23 @@ ADBC_DRIVER = "mysql"
 
 
 def _adbc_uri(
-    *, host: str, port: int, database: str, user: str | None, password: str | None, charset: str
+    *,
+    host: str,
+    port: int,
+    database: str,
+    user: str | None,
+    password: str | None,
+    charset: str,
+    client_name: str | None,
 ) -> str:
     """The ADBC driver's ``mysql://`` URI.
 
     ``tls=preferred`` encrypts whenever the server offers TLS, without
     verifying its certificate, as PyMySQL and the MySQL clients do by default;
-    the driver's own default is no TLS at all.
+    the driver's own default is no TLS at all. The client name goes in
+    ``connectionAttributes``: any other parameter the driver does not know it
+    sets as a session variable, which MySQL refuses. It has no comma, where the
+    driver would start another attribute: ``connect()`` sees to that.
     """
     userinfo = ""
     if user is not None:
@@ -67,7 +77,10 @@ def _adbc_uri(
         if password is not None:
             userinfo += ":" + quote(password, safe="")
         userinfo += "@"
-    query = urlencode({"tls": "preferred", "charset": charset})
+    params = {"tls": "preferred", "charset": charset}
+    if client_name is not None:
+        params["connectionAttributes"] = f"program_name:{client_name}"
+    query = urlencode(params)
     return f"mysql://{userinfo}{host}:{port}/{quote(database, safe='')}?{query}"
 
 
@@ -106,6 +119,7 @@ def connect(
     ssl_key: str | None = None,
     charset: str = "utf8mb4",
     backend: Literal["auto", "adbc", "pymysql"] = "auto",
+    client_name: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -137,8 +151,12 @@ def connect(
     backend : str
         ``"auto"`` (default) reads through the ADBC MySQL driver when it is
         installed and through PyMySQL otherwise; ``"adbc"`` or ``"pymysql"``
-        insists on one. The ADBC driver takes no certificate files, so
-        ``"auto"`` with any ``ssl_*`` path uses PyMySQL.
+        insists on one. The ADBC driver takes no certificate files and splits
+        connection attributes at commas, so ``"auto"`` with any ``ssl_*`` path,
+        or with a ``client_name`` holding a comma, uses PyMySQL.
+    client_name : str, optional
+        Sent as the ``program_name`` connection attribute, which MySQL shows in
+        ``performance_schema.session_connect_attrs``.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
@@ -149,6 +167,13 @@ def connect(
         raise NotSupportedError(
             "The ADBC MySQL driver takes no certificate files; use backend='pymysql' "
             "or 'auto' with ssl_ca / ssl_cert / ssl_key."
+        )
+    comma = client_name is not None and "," in client_name
+    if backend == "adbc" and comma:
+        raise NotSupportedError(
+            "The ADBC MySQL driver splits connection attributes at commas, so its "
+            f"client_name cannot contain one ({client_name!r}); use backend='pymysql' "
+            "or 'auto'."
         )
 
     def open_pymysql() -> Any:
@@ -162,12 +187,19 @@ def connect(
             password=password or "",
             charset=charset,
             ssl=ssl or None,
+            program_name=client_name,
         )
 
     native: Any = None
-    if backend != "pymysql" and not ssl:
+    if backend != "pymysql" and not ssl and not comma:
         uri = _adbc_uri(
-            host=host, port=port, database=database, user=user, password=password, charset=charset
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            charset=charset,
+            client_name=client_name,
         )
         native = _connect_adbc(uri)
         if native is None and backend == "adbc":
