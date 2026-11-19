@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from google.api_core.client_info import ClientInfo
 from google.cloud import bigquery
 
 from ob_bigquery.connection import Connection
@@ -45,6 +46,7 @@ def connect(
     credentials: Any = None,
     credentials_file: str | None = None,
     location: str | None = None,
+    client_name: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -62,6 +64,9 @@ def connect(
         ``GOOGLE_APPLICATION_CREDENTIALS`` env var.
     location : str, optional
         Default dataset location (e.g. ``US``, ``EU``).
+    client_name : str, optional
+        Put in front of the User-Agent of the client's requests, as
+        ``name/version``.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
@@ -83,6 +88,9 @@ def connect(
         client_kwargs["credentials"] = credentials
     if location is not None:
         client_kwargs["location"] = location
+    if client_name is not None:
+        # Untyped in google-api-core, as the service account constructor above.
+        client_kwargs["client_info"] = ClientInfo(user_agent=client_name)  # type: ignore[no-untyped-call]
 
     native = bigquery.Client(**client_kwargs)
     return Connection(

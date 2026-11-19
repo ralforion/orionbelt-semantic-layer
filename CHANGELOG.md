@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ## [Unreleased]
 
+### Added
+
+- **OBSL names itself to the databases it reads, as `orionbelt-semantic-layer/<version>`.** The name shows next to OBSL's queries in each database's own history: as the User-Agent on BigQuery, ClickHouse, Databricks and DuckDB (MotherDuck, and DuckDB's HTTP reads), as `application_name` on Postgres, and as the `program_name` connection attribute on MySQL. Snowflake and Dremio get none: Snowflake's `application` is for its registered partners. The six drivers take a new `client_name` argument for this; unset, a driver sends its vendor library's default, as before. The Data Sources guide lists where each database shows it. A `client_name` with a comma is refused on the MySQL ADBC backend, which would split it into two attributes.
+
 ## [3.1.1] - 2026-11-19
 
 ### Added

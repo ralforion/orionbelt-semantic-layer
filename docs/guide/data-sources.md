@@ -247,6 +247,24 @@ against it; at most `POOL_SIZE` of them are kept, and never more than the
 bound. Waiting queries are served in order of arrival, so a steady stream of
 new ones cannot starve one that came first.
 
+## How OBSL names itself to your database
+
+Each connection OBSL opens to a data source carries the name
+`orionbelt-semantic-layer/<version>`, for example
+`orionbelt-semantic-layer/3.1.1`. Your database shows it next to the queries
+OBSL runs, so you can tell them apart from other tools' queries.
+
+| Database | Sent as | Where you see it |
+| --- | --- | --- |
+| BigQuery | The start of the User-Agent | Cloud Audit Logs: `protoPayload.requestMetadata.callerSuppliedUserAgent` |
+| ClickHouse | The start of the User-Agent | `http_user_agent` in `system.query_log` and `system.processes` |
+| Databricks | Inside the User-Agent | The Source column of Query History, and `user_agent` in `system.access.audit` |
+| DuckDB, MotherDuck | DuckDB's `custom_user_agent` | MotherDuck: `USER_AGENT` in `MD_INFORMATION_SCHEMA.QUERY_HISTORY` (Business plan). Files read over HTTP: the User-Agent of each request |
+| MySQL | The `program_name` connection attribute | `performance_schema.session_connect_attrs` |
+| Postgres | `application_name` | `pg_stat_activity` |
+| Snowflake | Nothing | Snowflake's `application` setting is for its registered partners |
+| Dremio | Nothing | |
+
 ## OrionBelt Analytics variable names
 
 The `DB_<NAME>_` prefix and naming rules match OrionBelt Analytics, so one

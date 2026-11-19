@@ -438,3 +438,13 @@ def test_streaming_a_closed_cursor_is_refused() -> None:
 
     with pytest.raises(ProgrammingError):
         cur.fetch_record_batch()
+
+
+def test_connect_sends_the_client_name_as_application_name() -> None:
+    with patch("adbc_driver_postgresql.dbapi.connect") as mock_connect:
+        ob_postgres.connect(host="db", client_name="app/1.0")
+        assert "application_name=app%2F1.0" in mock_connect.call_args.args[0]
+        ob_postgres.connect(host="db", client_name="app/1.0", options={"application_name": "own"})
+        assert "application_name=own" in mock_connect.call_args.args[0]
+        ob_postgres.connect(host="db")
+        assert "application_name" not in mock_connect.call_args.args[0]

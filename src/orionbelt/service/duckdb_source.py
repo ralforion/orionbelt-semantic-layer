@@ -55,6 +55,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from orionbelt.service.client_name import CLIENT_NAME
 from orionbelt.service.db_executor import ExecutionUnavailableError
 from orionbelt.service.federated_executor import spill_directory
 
@@ -478,9 +479,13 @@ def _duckdb_config(config: DuckDBSettings, spill_dir: str | None) -> dict[str, A
     """DuckDB's own options for these settings.
 
     ``spill_dir`` ``None`` leaves DuckDB's default spill directory (beside a
-    database file); ``""`` turns spilling off.
+    database file); ``""`` turns spilling off. ``custom_user_agent`` names OBSL
+    to MotherDuck and on DuckDB's HTTP reads.
     """
-    options: dict[str, Any] = {"memory_limit": config.memory_limit}
+    options: dict[str, Any] = {
+        "memory_limit": config.memory_limit,
+        "custom_user_agent": CLIENT_NAME,
+    }
     if config.threads is not None:
         options["threads"] = config.threads
     if spill_dir is not None:

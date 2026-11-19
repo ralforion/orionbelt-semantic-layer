@@ -167,9 +167,33 @@ def test_certificate_files_go_through_pymysql() -> None:
 
 def test_the_uri_quotes_credentials() -> None:
     uri = ob_mysql._adbc_uri(
-        host="db", port=3306, database="my db", user="a@b", password="p:w/d", charset="utf8mb4"
+        host="db",
+        port=3306,
+        database="my db",
+        user="a@b",
+        password="p:w/d",
+        charset="utf8mb4",
+        client_name=None,
     )
     assert uri == "mysql://a%40b:p%3Aw%2Fd@db:3306/my%20db?tls=preferred&charset=utf8mb4"
+
+
+def test_connect_sends_the_client_name_as_program_name_on_either_backend() -> None:
+    with (
+        patch("ob_mysql._connect_adbc", return_value=MagicMock()) as connect_adbc,
+        patch("pymysql.connect") as connect_pymysql,
+    ):
+        ob_mysql.connect(client_name="app/1.0")
+        ob_mysql.connect(client_name="app/1.0", backend="pymysql")
+    # ADBC: in ``connectionAttributes``; other parameters become session variables.
+    assert "connectionAttributes=program_name%3Aapp%2F1.0" in connect_adbc.call_args.args[0]
+    assert connect_pymysql.call_args.kwargs["program_name"] == "app/1.0"
+
+
+def test_the_adbc_backend_refuses_a_client_name_with_a_comma() -> None:
+    """The driver would start a second attribute at the comma."""
+    with pytest.raises(NotSupportedError, match="commas"):
+        ob_mysql.connect(client_name="app,1", backend="adbc")
 
 
 def test_an_adbc_connection_keeps_the_servers_time_zone() -> None:

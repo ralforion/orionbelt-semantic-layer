@@ -17,6 +17,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+from orionbelt.service.client_name import CLIENT_NAME
+
 from ob_flight.datasources import (
     _CREDENTIAL_KEYS,
     _ENV_ALIASES,
@@ -63,6 +65,10 @@ VENDOR_MAP: dict[str, str] = {
     "mysql": "ob_mysql",
 }
 
+# The drivers that name OBSL to their database, by ``client_name``. Snowflake
+# and Dremio are left out: see ``orionbelt.service.client_name``.
+_CLIENT_NAMED = frozenset({"bigquery", "clickhouse", "databricks", "duckdb", "mysql", "postgres"})
+
 
 def _source(source: DataSource | str) -> DataSource:
     """A data source, or the implicit source of a dialect name."""
@@ -108,6 +114,8 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
 
         return module.Connection(native, init=prepare)
     kwargs = datasource.credentials(**overrides)
+    if dialect in _CLIENT_NAMED:
+        kwargs.setdefault("client_name", CLIENT_NAME)
     # DuckDB: open read-only to avoid cross-process file lock conflicts.
     # MotherDuck is remote, so no local file lock exists to conflict over --
     # but read-only is still correct for a semantic layer that only reads,

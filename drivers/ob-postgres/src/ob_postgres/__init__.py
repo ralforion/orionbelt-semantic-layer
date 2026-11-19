@@ -78,6 +78,7 @@ def connect(
     sslmode: str | None = None,
     schema: str | None = None,
     options: dict[str, Any] | None = None,
+    client_name: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -104,6 +105,10 @@ def connect(
         PostgreSQL schema — sets ``search_path`` after connecting.
     options : dict, optional
         Extra connection options (added as URI query parameters).
+    client_name : str, optional
+        Sent as ``application_name``, which Postgres shows in
+        ``pg_stat_activity``. An ``application_name`` in ``options`` wins, and
+        a ``dsn`` is used as given.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
@@ -114,6 +119,8 @@ def connect(
     else:
         # Include search_path as a connection option if schema is specified
         extra_options = dict(options) if options else {}
+        if client_name is not None:
+            extra_options.setdefault("application_name", client_name)
         if schema:
             extra_options["options"] = f"-csearch_path={schema}"
 

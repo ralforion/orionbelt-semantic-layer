@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from orionbelt import __version__
 
 from ob_flight.db_router import VENDOR_MAP, connect, get_credentials
 
@@ -84,8 +85,30 @@ class TestConnect:
         with patch("importlib.import_module", return_value=mock_module) as mock_import:
             result = connect("duckdb", database=":memory:")
             mock_import.assert_called_once_with("ob_duckdb")
-            mock_module.connect.assert_called_once_with(database=":memory:", read_only=True)
+            mock_module.connect.assert_called_once_with(
+                database=":memory:",
+                read_only=True,
+                client_name=f"orionbelt-semantic-layer/{__version__}",
+            )
             assert result is mock_conn
+
+    @pytest.mark.parametrize("dialect", sorted(VENDOR_MAP))
+    def test_every_driver_but_snowflakes_and_dremios_names_obsl(self, dialect):
+        """Snowflake's ``application`` is for its registered partners."""
+        mock_module = MagicMock()
+        with patch("importlib.import_module", return_value=mock_module):
+            connect(dialect, database=":memory:")
+        sent = mock_module.connect.call_args.kwargs.get("client_name")
+        if dialect in ("snowflake", "dremio"):
+            assert sent is None
+        else:
+            assert sent == f"orionbelt-semantic-layer/{__version__}"
+
+    def test_a_client_name_passed_in_wins(self):
+        mock_module = MagicMock()
+        with patch("importlib.import_module", return_value=mock_module):
+            connect("postgres", client_name="own/2")
+        assert mock_module.connect.call_args.kwargs["client_name"] == "own/2"
 
     def test_env_overridden_by_kwargs(self, monkeypatch):
         monkeypatch.setenv("POSTGRES_HOST", "env-host")
