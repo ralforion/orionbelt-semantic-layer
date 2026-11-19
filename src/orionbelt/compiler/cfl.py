@@ -332,33 +332,21 @@ class CFLPlanner:
         would project a column from a table it does not select from. The same
         refusal resolution would have raised.
 
-        A dimension read ``via`` an object is projected only by a leg that
-        reaches that object as well; the others pad it. One whose ``via`` object
-        no leg reaches is padded by every leg, which under ``UNION ALL BY NAME``
-        again leaves no column, and elsewhere groups every row under NULL.
-
         Reachability is measured without crossing a containment edge: a leg is
         built out of tables and has no unnest to reach a nested object with, nor
         anything sitting behind one.
         """
         roots = set(measures_by_object) or {resolved.base_object}
         graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
-        reaches = [graph.descendants_without_unnest(root) | {root} for root in roots]
-        reachable: set[str] = set().union(*reaches)
+        reachable = {
+            name for root in roots for name in (graph.descendants_without_unnest(root) | {root})
+        }
         root = sorted(roots)[0]
         unreachable = sorted(
             {dim.object_name for dim in resolved.dimensions if dim.object_name not in reachable}
         )
-        unrouted = {
-            dim.dimension: dim.via
-            for dim in resolved.dimensions
-            if dim.via is not None
-            and dim.object_name in reachable
-            and not any(dim.object_name in reach and dim.via in reach for reach in reaches)
-        }
-        if not unreachable and not unrouted:
+        if not unreachable:
             return
-        facts = ", ".join(f"'{name}'" for name in sorted(roots))
         raise ResolutionError(
             [
                 SemanticError(
@@ -375,7 +363,35 @@ class CFLPlanner:
                 )
                 for name in unreachable
             ]
-            + [
+        )
+
+    @staticmethod
+    def _reject_unprojected_via_dimensions(
+        resolved: ResolvedQuery,
+        projected: set[str],
+        measures_by_object: dict[str, list[ResolvedMeasure]],
+    ) -> None:
+        """Refuse a dimension read ``via`` an object that no leg reached.
+
+        A leg projects such a dimension only when it reaches the ``via`` object
+        as well as the dimension's own, and pads it otherwise. Padded by every
+        leg, it has no value in the union: under ``UNION ALL BY NAME`` there is
+        no such column for the outer SELECT to name, and elsewhere every row is
+        grouped under NULL. Checked against what the legs projected, because a
+        leg may start from a common ancestor of its fact that reaches more than
+        the fact does (``_reject_unreachable_dimensions`` covers a dimension
+        whose own object no leg reaches).
+        """
+        unrouted = {
+            dim.dimension: dim.via
+            for dim in resolved.dimensions
+            if dim.via is not None and dim.name not in projected
+        }
+        if not unrouted:
+            return
+        facts = ", ".join(f"'{name}'" for name in sorted(measures_by_object))
+        raise ResolutionError(
+            [
                 SemanticError(
                     code="UNREACHABLE_REQUIRED_OBJECT",
                     message=(
@@ -646,6 +662,8 @@ class CFLPlanner:
         # Measures a leg's own joins replicate the object of, with the leg and
         # the leg's view of the query (its joins) that found them.
         leg_dedup: dict[str, tuple[str, int, ResolvedQuery]] = {}
+        # Dimensions some leg projects a value for, rather than padding.
+        projected: set[str] = set()
         for obj_name, measures in measures_by_object.items():
             leg_builder = QueryBuilder()
             this_measure_names = {m.name for m in measures}
@@ -744,6 +762,7 @@ class CFLPlanner:
                 if dim.object_name in reachable and via_ok:
                     col: Expr = make_dimension_expr(model, dim, dialect)
                     leg_builder.select(AliasedExpr(expr=col, alias=dim.name))
+                    projected.add(dim.name)
                 elif not union_by_name:
                     model_dim = model.dimensions.get(dim.dimension)
                     dim_type = model_dim.result_type.value if model_dim else None
@@ -976,6 +995,8 @@ class CFLPlanner:
                     self._skip_filter_outside_leg(missing, unfiltered, resolved)
 
             union_legs.append(leg_builder.build())
+
+        self._reject_unprojected_via_dimensions(resolved, projected, measures_by_object)
 
         if leg_dedup:
             union_legs, aliases = self._flag_first_object_rows(

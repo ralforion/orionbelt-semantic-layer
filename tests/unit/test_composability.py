@@ -928,6 +928,86 @@ def test_a_measure_is_not_offered_where_no_fact_reaches_the_via_object() -> None
     assert not _compiles(model, ["Purchase Channel"], ["Revenue", "Refunds"])
 
 
+# Purchases joins its channel, the sale and the return it belongs to (one each),
+# so it is a common root of Sales, Returns and Channels: a measure reading Sales
+# and Returns is planned as a star from Purchases, which joins the ``via``
+# object, not as legs of Sales and Returns.
+COMMON_ROOT_VIA_YAML = """\
+version: 1.0
+
+dataObjects:
+  Channels:
+    code: channels
+    schema: main
+    columns:
+      Channel ID: {code: id, abstractType: string, primaryKey: true}
+      Channel Name: {code: name, abstractType: string}
+  Sales:
+    code: sales
+    schema: main
+    columns:
+      Sale ID: {code: id, abstractType: string, primaryKey: true}
+      Sale Channel ID: {code: channel_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Sale Channel ID]
+        columnsTo: [Channel ID]
+  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Channel ID: {code: channel_id, abstractType: string}
+      Refund: {code: refund, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Return Channel ID]
+        columnsTo: [Channel ID]
+  Purchases:
+    code: purchases
+    schema: main
+    columns:
+      Purchase ID: {code: id, abstractType: string, primaryKey: true}
+      Purchase Channel ID: {code: channel_id, abstractType: string}
+      Purchase Sale ID: {code: sale_id, abstractType: string}
+      Purchase Return ID: {code: return_id, abstractType: string}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Purchase Channel ID]
+        columnsTo: [Channel ID]
+      - joinType: one-to-one
+        joinTo: Sales
+        columnsFrom: [Purchase Sale ID]
+        columnsTo: [Sale ID]
+      - joinType: one-to-one
+        joinTo: Returns
+        columnsFrom: [Purchase Return ID]
+        columnsTo: [Return ID]
+
+dimensions:
+  Purchase Channel: {dataObject: Channels, column: Channel Name, resultType: string, via: Purchases}
+
+measures:
+  Net:
+    expression: "{[Sales].[Amount]} - {[Returns].[Refund]}"
+    aggregation: sum
+    resultType: float
+"""
+
+
+def test_a_via_dimension_beside_a_measure_over_two_objects_of_one_star() -> None:
+    """Neither Sales nor Returns reaches Purchases, but the star from
+    Purchases joins it, in either order of picking."""
+    model = _load(COMMON_ROOT_VIA_YAML)
+    assert "Purchase Channel" in resolve_composables_for_anchors(model, ["Net"]).dimensions
+    assert "Net" in resolve_composables_for_anchors(model, ["Purchase Channel"]).measures
+    assert _compiles(model, ["Purchase Channel"], ["Net"])
+
+
 def test_a_reaggregate_first_stage_over_one_fact_needs_the_via_object() -> None:
     """Its first stage is a query of its own over Sales alone, whatever else
     the outer query reads."""

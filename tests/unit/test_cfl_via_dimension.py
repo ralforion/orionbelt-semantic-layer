@@ -104,7 +104,8 @@ def con() -> duckdb.DuckDBPyConnection:
     )
     con.execute(
         "CREATE TABLE purchases AS SELECT * FROM"
-        " (VALUES ('p1', 'c1', 3.0), ('p2', 'c2', 5.0), ('p3', 'c2', 7.0)) t(id, channel_id, cost)"
+        " (VALUES ('p1', 'c1', 's1', 3.0), ('p2', 'c2', 's2', 5.0), ('p3', 'c2', 's2', 7.0))"
+        " t(id, channel_id, sale_id, cost)"
     )
     con.execute(
         "CREATE TABLE returns AS SELECT * FROM"
@@ -113,8 +114,10 @@ def con() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _compile(dimensions: list[str], measures: list[str], dialect: str) -> CompilationResult:
-    raw, source_map = TrackedLoader().load_string(MODEL_YAML)
+def _compile(
+    dimensions: list[str], measures: list[str], dialect: str, yaml_text: str = MODEL_YAML
+) -> CompilationResult:
+    raw, source_map = TrackedLoader().load_string(yaml_text)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     query = QueryObject(**{"select": {"dimensions": dimensions, "measures": measures}})
@@ -148,3 +151,61 @@ def test_the_plain_dimension_is_grouped_by_every_leg(con: duckdb.DuckDBPyConnect
     compiled = _compile(["Channel"], ["Revenue", "Refunds"], "duckdb")
     rows = con.execute(compiled.sql).fetchall()
     assert sorted(rows) == [("Shop", 20.0, 2.0), ("Web", 10.0, 1.0)]
+
+
+# Sales no longer joins Channels; each purchase joins its channel and the sale
+# it belongs to. The Sales leg cannot reach Channels from Sales, so it starts
+# from Purchases, the common ancestor of Sales and Channels, and that start
+# reaches the ``via`` object too.
+ANCESTOR_YAML = (
+    MODEL_YAML.replace(
+        """      Sale Channel Id: {code: channel_id, abstractType: string}
+      Amount: {code: amount, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Sale Channel Id]
+        columnsTo: [Channel Id]
+""",
+        """      Amount: {code: amount, abstractType: float}
+""",
+    )
+    .replace(
+        """      Purchase Channel Id: {code: channel_id, abstractType: string}
+      Cost: {code: cost, abstractType: float}
+""",
+        """      Purchase Channel Id: {code: channel_id, abstractType: string}
+      Purchase Sale Id: {code: sale_id, abstractType: string}
+      Cost: {code: cost, abstractType: float}
+""",
+    )
+    .replace(
+        """        columnsFrom: [Purchase Channel Id]
+        columnsTo: [Channel Id]
+""",
+        """        columnsFrom: [Purchase Channel Id]
+        columnsTo: [Channel Id]
+      - joinType: many-to-one
+        joinTo: Sales
+        columnsFrom: [Purchase Sale Id]
+        columnsTo: [Sale Id]
+""",
+    )
+)
+
+
+def test_a_leg_starting_from_a_common_ancestor_groups_by_it(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Revenue is split by the channel of the purchases of each sale (``s2``
+    counted once, though two purchases name it), and the refunds land in the
+    NULL row."""
+    assert "Sale Channel Id" not in ANCESTOR_YAML
+    assert "joinTo: Sales" in ANCESTOR_YAML
+    compiled = _compile(["Purchase Channel"], ["Revenue", "Refunds"], "duckdb", ANCESTOR_YAML)
+    rows = con.execute(compiled.sql).fetchall()
+    assert sorted(rows, key=lambda row: row[0] or "") == [
+        (None, None, 3.0),
+        ("Shop", 20.0, None),
+        ("Web", 10.0, None),
+    ]
