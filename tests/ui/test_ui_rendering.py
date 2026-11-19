@@ -28,6 +28,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -42,15 +43,21 @@ def _free_port() -> int:
         return port
 
 
-@pytest.fixture(scope="module")
-def ui_url() -> Iterator[str]:
-    """A real Gradio server, served the way production serves it."""
-    pytest.importorskip("gradio", reason="gradio required for the UI suite")
-    pytest.importorskip("playwright", reason="playwright required: uv run playwright install")
+def _wait_for_port(port: int, what: str) -> None:
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return
+        except OSError:
+            time.sleep(0.5)
+    pytest.fail(f"{what} did not start on port {port}")
 
-    from orionbelt.ui.app import create_blocks, frontend_assets
 
-    demo = create_blocks()
+def _launch_ui(demo: Any) -> str:
+    """Serve a standalone Gradio *demo* on a free port; return its URL."""
+    from orionbelt.ui.app import frontend_assets
+
     port = _free_port()
     # ``frontend_assets`` is the contract under test as much as the markup is:
     # it is where the mermaid loader has to live for every serving mode to get
@@ -66,20 +73,35 @@ def ui_url() -> Iterator[str]:
         ),
         daemon=True,
     ).start()
+    _wait_for_port(port, "UI")
+    return f"http://127.0.0.1:{port}"
 
-    url = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                break
-        except OSError:
-            time.sleep(0.5)
-    else:
-        pytest.fail(f"UI did not start on {url}")
 
+def _start_api(port: int, **settings: Any) -> Any:
+    """Serve the API on *port*; return its uvicorn server."""
+    uvicorn = pytest.importorskip("uvicorn", reason="uvicorn required")
+
+    from orionbelt.api.app import create_app
+    from orionbelt.settings import Settings
+
+    app = create_app(settings=Settings(port=port, **settings))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    threading.Thread(target=server.run, daemon=True).start()
+    _wait_for_port(port, "API")
+    return server
+
+
+@pytest.fixture(scope="module")
+def ui_url() -> Iterator[str]:
+    """A real Gradio server, served the way production serves it."""
+    pytest.importorskip("gradio", reason="gradio required for the UI suite")
+    pytest.importorskip("playwright", reason="playwright required: uv run playwright install")
+
+    from orionbelt.ui.app import create_blocks
+
+    demo = create_blocks()
     try:
-        yield url
+        yield _launch_ui(demo)
     finally:
         demo.close()
 
@@ -138,31 +160,13 @@ def _serve_embedded_ui(**settings: Any) -> Iterator[str]:
     """Serve the API with its ``/ui`` on a free port; yield the UI's URL."""
     pytest.importorskip("gradio", reason="gradio required for the UI suite")
     pytest.importorskip("playwright", reason="playwright required")
-    uvicorn = pytest.importorskip("uvicorn", reason="uvicorn required")
-
-    from orionbelt.api.app import create_app
-    from orionbelt.settings import Settings
 
     # The port first: the embedded UI takes its API URL from the settings'
     # effective port at build time, so an app built before the port is known
     # points its tabs at the default (or the .env) port, where a developer's
     # own server may be answering and this fixture's never is.
     port = _free_port()
-    app = create_app(settings=Settings(ui_enabled=True, port=port, **settings))
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-    server = uvicorn.Server(config)
-    threading.Thread(target=server.run, daemon=True).start()
-
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                break
-        except OSError:
-            time.sleep(0.5)
-    else:
-        pytest.fail("embedded UI did not start")
-
+    server = _start_api(port, ui_enabled=True, **settings)
     try:
         yield f"http://127.0.0.1:{port}/ui"
     finally:
@@ -640,6 +644,13 @@ class TestTheModelDropdown:
         """The UI works on each model in its own session on this API."""
         assert not curated_page.locator(".settings-label", has_text="API Base URL").is_visible()
 
+    def test_the_model_takes_no_upload(self, curated_page: Any) -> None:
+        """The editor is read-only; the query editor keeps its upload button."""
+        from playwright.sync_api import expect
+
+        expect(curated_page.locator("#ob-query [title='Load YAML file']")).to_have_count(1)
+        expect(curated_page.locator("#ob-model [title='Load YAML file']")).to_have_count(0)
+
     def test_picking_a_model_loads_it_and_compiles_against_it(self, curated_page: Any) -> None:
         page = curated_page
         _pick(page, "Model", "returns")
@@ -731,3 +742,62 @@ class TestAnExpiredSession:
         finally:
             browser.close()
             served.close()
+
+
+_STARTER = Path(__file__).resolve().parents[2] / "examples" / "orionbelt_1_commerce.yaml"
+
+
+class TestTheApiAnswersAfterTheUiStarted:
+    """The UI asks the API what it serves when the UI process starts. On Cloud
+    Run the API can still be starting then (once 95 s, longer than the UI
+    waited), and every page showed "API unreachable" until the UI restarted:
+    a reload did not help, though the message said it would."""
+
+    @staticmethod
+    def _ui_before_its_api() -> tuple[int, Any, str]:
+        """A standalone UI built while nothing listens on its API's port."""
+        from orionbelt.ui.app import create_blocks
+
+        port = _free_port()
+        demo = create_blocks(default_api_url=f"http://127.0.0.1:{port}")
+        return port, demo, _launch_ui(demo)
+
+    def test_a_curated_model_appears_on_the_next_page_load(self, playwright: Any) -> None:
+        from playwright.sync_api import expect
+
+        port, demo, ui = self._ui_before_its_api()
+        server = _start_api(port, model_files=str(_STARTER))
+        browser, page = _open_page(playwright, ui, "SQL Compiler")
+        try:
+            page.set_viewport_size(_WINDOW)
+            editor = page.locator("#ob-model .cm-content")
+            expect(editor).to_contain_text("OrionBelt_1 Commercial Analytics Model", timeout=30_000)
+            expect(editor).to_have_attribute("contenteditable", "false")
+            assert not page.locator(".settings-label", has_text="API Base URL").is_visible()
+            assert not page.get_by_role("button", name="Import OSI").is_visible()
+            # The query editor gets its upload button; the read-only model does not.
+            expect(page.locator("#ob-query [title='Load YAML file']")).to_have_count(1)
+            expect(page.locator("#ob-model [title='Load YAML file']")).to_have_count(0)
+            # Actions use the curated model's session: an upload would be refused.
+            page.get_by_role("button", name="Compile SQL").click()
+            expect(page.locator("#ob-sql")).to_contain_text("SELECT", timeout=15_000)
+        finally:
+            browser.close()
+            server.should_exit = True
+            demo.close()
+
+    def test_a_self_service_api_gives_the_starter(self, playwright: Any) -> None:
+        from playwright.sync_api import expect
+
+        port, demo, ui = self._ui_before_its_api()
+        server = _start_api(port)
+        browser, page = _open_page(playwright, ui, "SQL Compiler")
+        try:
+            editor = page.locator("#ob-model .cm-content")
+            expect(editor).to_contain_text("OrionBelt_1 Commercial Analytics Model", timeout=30_000)
+            expect(editor).to_have_attribute("contenteditable", "true")
+            assert page.locator(".settings-label", has_text="API Base URL").is_visible()
+        finally:
+            browser.close()
+            server.should_exit = True
+            demo.close()
