@@ -559,7 +559,9 @@ def sort_state_str(query_yaml: str) -> str:
 
     Fed to the header JS, which shows each column's sort icon in its state and
     picks the next one on a click. Newline-separated so a value can't collide
-    with the delimiter.
+    with the delimiter. A direction the query leaves out is ``asc``, as the
+    query runs it (``QueryOrderBy.direction``); reading it as ``desc`` made the
+    next click stop sorting instead of sorting descending.
     """
     from ruamel.yaml import YAML
 
@@ -571,7 +573,8 @@ def sort_state_str(query_yaml: str) -> str:
     if isinstance(node, dict):
         for o in node.get("orderBy") or []:
             if isinstance(o, dict) and o.get("field"):
-                parts.append(f"{o.get('field')}|{o.get('direction', 'desc')}")
+                direction = str(o.get("direction") or "asc").lower()
+                parts.append(f"{o.get('field')}|{direction}")
     return "\n".join(parts)
 
 

@@ -153,3 +153,41 @@ def test_a_query_that_does_not_parse_names_its_line() -> None:
     """ "measures:" one space deeper than "dimensions:" (the reported case)."""
     broken = QUERY.replace("\n  measures:", "\n   measures:")
     assert query_parse_problem(broken) == "line 5"
+
+
+@pytest.mark.parametrize(
+    ("order_by", "state"),
+    [
+        ("  - field: Total Sales\n", "Total Sales|asc"),  # as the query runs it
+        ("  - field: Total Sales\n    direction: DESC\n", "Total Sales|desc"),
+    ],
+)
+def test_sort_state_reads_the_direction_the_query_runs(order_by: str, state: str) -> None:
+    """An omitted direction is ascending: the next click then sorts descending."""
+    query = "select:\n  measures: [Total Sales]\norderBy:\n" + order_by
+    assert header_states(query)[0] == state
+    out = _apply_header_signal(query, "Total Sales|desc|1")
+    assert yaml.safe_load(out)["orderBy"] == [{"field": "Total Sales", "direction": "desc"}]
+
+
+def test_a_query_loaded_from_a_file_is_checked_for_the_title() -> None:
+    """Loading a file replaces the editor's text without a blur.
+
+    The parse check has to follow it, or a fixed query kept the orange
+    "does not parse" title of the one it replaced.
+    """
+    from unittest.mock import patch
+
+    from orionbelt.ui import app as ui_app
+
+    with (
+        patch.object(ui_app, "_fetch_settings", return_value={"_unreachable": True}),
+        patch.object(ui_app, "_fetch_dialects", return_value=["duckdb"]),
+    ):
+        blocks = ui_app.create_blocks(default_api_url="http://example.invalid")
+    ids = {getattr(b, "elem_id", None): block_id for block_id, b in blocks.blocks.items()}
+    fns = list(blocks.fns.values())
+    (upload,) = [f for f in fns if (ids["ob-query-bridge"], "change") in map(tuple, f.targets)]
+    followers = [f for f in fns if f.trigger_after == upload._id]
+    assert [f.name for f in followers] == ["_highlight_pickers"]
+    assert ids["ob-query"] in [o._id for o in followers[0].outputs]

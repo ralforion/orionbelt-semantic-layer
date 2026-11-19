@@ -2078,7 +2078,8 @@ def create_blocks(
                     inputs=[model_bridge],
                     outputs=[model_input],
                 )
-                query_bridge.change(
+                # Kept to chain the parse check onto, once it is defined below.
+                query_upload = query_bridge.change(
                     fn=lambda x: x,
                     inputs=[query_bridge],
                     outputs=[query_input],
@@ -2234,6 +2235,14 @@ def create_blocks(
                 # .then above; this keeps manual edits from resolving the model
                 # on every character while still updating when focus leaves.
                 query_input.blur(
+                    fn=_highlight_pickers,
+                    inputs=[model_input, query_input],
+                    outputs=[dim_picker, meas_picker, query_input],
+                )
+                # A query loaded from a file replaces the editor's text without
+                # a blur: check it too, or a fixed query kept the orange
+                # "does not parse" title of the one it replaced.
+                query_upload.then(
                     fn=_highlight_pickers,
                     inputs=[model_input, query_input],
                     outputs=[dim_picker, meas_picker, query_input],
@@ -3635,6 +3644,12 @@ def create_blocks(
                     model_state,
                     saved_model_name,
                 ],
+            ).then(
+                # The chosen model's starting query replaces the editor's text:
+                # mark the pickers for it and reset a "does not parse" title.
+                fn=_highlight_pickers,
+                inputs=[model_input, query_input],
+                outputs=[dim_picker, meas_picker, query_input],
             )
 
         page_load.then(
