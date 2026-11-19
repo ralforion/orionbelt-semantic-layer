@@ -496,7 +496,7 @@ async def execute_query_with_cache(
             store=store,
             model_id=model_id,
             dialect=dialect,
-            sql=key_sql if key_sql is not None else compile_result.sql,
+            sql=key_sql if key_sql is not None else compile_result.key_sql,
             physical_tables=compile_result.physical_tables,
             cache=cache,
             cache_config=cache_config,
@@ -648,6 +648,11 @@ class _LegQuery:
 
     sql: str
     physical_tables: list[str]
+
+    @property
+    def key_sql(self) -> str:
+        """A leg is keyed on its own SQL: it carries no AST to reorder."""
+        return self.sql
 
 
 async def execute_federated_with_cache(

@@ -7,6 +7,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 
 from orionbelt.ast.nodes import Select
+from orionbelt.compiler import condition_order
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
 from orionbelt.compiler.fanout import detect_fanout
@@ -169,6 +170,16 @@ class CompilationResult:
     """For a model read from several data sources, the one this query reads
     when it reads only one; ``sql`` is then written in that source's dialect
     where it is configured here."""
+    cache_key_sql: str | None = None
+    """``sql`` with the AND-ed conditions of every WHERE and HAVING in a fixed
+    order, when that differs from ``sql``: what the result cache keys on, so
+    filters given in another order share an entry. See
+    ``compiler/condition_order.py`` and :attr:`key_sql`."""
+
+    @property
+    def key_sql(self) -> str:
+        """The SQL the result cache keys on (``sql`` unless its conditions moved)."""
+        return self.cache_key_sql or self.sql
 
 
 def _collect_subquery_objects(items: list[QueryFilterItem]) -> set[str]:
@@ -457,6 +468,9 @@ class CompilationPipeline:
         # Phase 3: Dialect-specific SQL rendering
         codegen = CodeGenerator(dialect)
         sql = codegen.generate(wrapped_ast)
+        # The same query with its AND-ed conditions in a fixed order, which the
+        # result cache keys on: filters given in another order share an entry.
+        cache_key_sql = condition_order.key_sql(wrapped_ast, dialect)
 
         # Phase 4: SQL validation (non-blocking)
         validation_errors = validate_sql(sql, dialect_name)
@@ -514,6 +528,7 @@ class CompilationPipeline:
             sql_valid=sql_valid,
             explain=explain,
             data_source=data_source,
+            cache_key_sql=cache_key_sql if cache_key_sql != sql else None,
         )
 
     def _compile_federated(

@@ -146,6 +146,20 @@ Drops every cache entry regardless of TTL or freshness contract — useful from 
 - `query/sql` and `query/plan` are not cached (they don't execute against the warehouse).
 - Results larger than `CACHE_MAX_VALUE_BYTES` (default 10 MB) skip the cache.
 
+## When two queries share an entry
+
+An entry is found by the data source, the model, the dialect and the SQL the query compiles to. Filters that are the same but listed in another order still find one entry: the key is built from the SQL with the conditions joined by AND, in `WHERE` and in `HAVING`, put in a fixed order. The SQL that runs keeps the order you wrote.
+
+| Two queries | One entry? | Why |
+|---|---|---|
+| `where: [Country = DE, Segment = Retail]` and `where: [Segment = Retail, Country = DE]` | Yes | The same conditions, joined by AND |
+| `having: [Revenue > 100, Orders > 5]` and the same two the other way round | Yes | The same, in `HAVING` |
+| Two `logic: or` groups whose filters are in another order | No | Only AND is reordered; OR keeps its order |
+| The same filters, another `orderBy` or `limit` | No | Different queries |
+| Another filter value | No | Different rows |
+
+This is what lets the UI's click-to-filter in Query Results read from the cache when you click the same values in another order: each click adds its filter at the end of `where`.
+
 ## Storage
 
 The file backend uses two layers:

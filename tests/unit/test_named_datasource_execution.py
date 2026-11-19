@@ -273,7 +273,9 @@ class TestCacheRace:
                 store=None,
                 model=None,
                 compile_result=SimpleNamespace(
-                    sql="SELECT region FROM shop", physical_tables=["shop"]
+                    sql="SELECT region FROM shop",
+                    key_sql="SELECT region FROM shop",
+                    physical_tables=["shop"],
                 ),
                 model_id="m",
                 dialect="duckdb",

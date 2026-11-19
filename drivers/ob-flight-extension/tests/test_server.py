@@ -948,6 +948,31 @@ class TestFlightBuildCacheMeta:
         # Empty physical_tables -> all-static -> capped at max TTL.
         assert meta["ttl"] == 86400
 
+    def test_key_is_built_from_key_sql_and_the_compiled_sql_runs(self, mock_session_manager):
+        """With ``key_sql`` (the AND-ed conditions in a fixed order) the key is
+        REST's for that SQL, so filters given in another order share an entry
+        across surfaces; ``sql``, what runs, stays the compiled SQL."""
+        from orionbelt.cache.key import build_cache_key, build_datasource_key
+
+        server = self._server_with_cache(mock_session_manager)
+        compiled = "SELECT a FROM t WHERE b = 2 AND a = 1 GROUP BY a"
+        key_sql = "SELECT a FROM t WHERE a = 1 AND b = 2 GROUP BY a"
+        meta = server._build_cache_meta(
+            compiled_sql=compiled,
+            dialect="postgres",
+            context=None,
+            physical_tables=[],
+            key_sql=key_sql,
+        )
+        assert meta is not None
+        assert meta["key"] == build_cache_key(
+            datasource=build_datasource_key("postgres"),
+            model_id="test-model",
+            dialect="postgres",
+            sql=key_sql,
+        )
+        assert meta["sql"] == compiled
+
     def test_nondeterministic_sql_returns_none(self, mock_session_manager):
         server = self._server_with_cache(mock_session_manager)
         meta = server._build_cache_meta(

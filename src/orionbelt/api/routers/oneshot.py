@@ -346,7 +346,7 @@ async def _run_query(
                 datasource=datasource,
                 model_id=model_id,
                 dialect=dialect,
-                sql=compile_result.sql,
+                sql=compile_result.key_sql,
             )
             ttl_outcome = _resolve_oneshot_ttl(
                 store=store,

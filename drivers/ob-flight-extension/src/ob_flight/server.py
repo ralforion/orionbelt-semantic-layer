@@ -308,6 +308,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         context: flight.ServerCallContext | None,
         physical_tables: list[str],
         source: DataSource | None = None,
+        key_sql: str | None = None,
     ) -> dict[str, Any] | None:
         return server_execution.build_cache_meta(
             self,
@@ -316,6 +317,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             context=context,
             physical_tables=physical_tables,
             source=source,
+            key_sql=key_sql,
         )
 
     @staticmethod
