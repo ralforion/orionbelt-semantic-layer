@@ -336,11 +336,13 @@ def apply_cell_filter(evt: gr.EventData, query_yaml: str, table: object) -> str:
     return buf.getvalue()
 
 
-def remove_cell_filter(query_yaml: str) -> str:
-    """Drop all click-added equality filters from ``where`` AND ``having`` (Clear).
+def remove_cell_filter(query_yaml: str, field: str | None = None) -> str:
+    """Drop click-added filters from ``where`` AND ``having``.
 
-    Only ``op: equals`` entries (the click-added ones) are removed; query-defined
-    filters with other ops stay enforced.
+    With no *field*, every click-added filter goes (the "Clear filters" chip);
+    with one, only that column's (the ✕ in its header). Click-added filters are
+    the ``equals`` and ``notset`` (IS NULL) entries; query-defined filters with
+    other ops stay enforced.
     """
     from io import StringIO
 
@@ -360,7 +362,11 @@ def remove_cell_filter(query_yaml: str) -> str:
         kept = [
             w
             for w in (node.get(clause) or [])
-            if not (isinstance(w, dict) and w.get("op") in _CLICK_FILTER_OPS)
+            if not (
+                isinstance(w, dict)
+                and w.get("op") in _CLICK_FILTER_OPS
+                and (field is None or w.get("field") == field)
+            )
         ]
         if kept:
             node[clause] = kept
@@ -371,33 +377,52 @@ def remove_cell_filter(query_yaml: str) -> str:
     return buf.getvalue()
 
 
-def filter_chip_update(query_yaml: str) -> object:
-    """Show a "Clear filters" button listing the active click-filters.
-
-    Lists every click-added equality filter (``op: equals``); the button clears
-    all of them at once via :func:`remove_cell_filter`, leaving the query's own
-    filters (e.g. an ``in`` list) untouched. Removing a single filter is done by
-    clicking that value again (toggle).
-    """
+def _click_filters(query_yaml: str) -> list[tuple[str, str]]:
+    """``(field, "field = value")`` for each click-added filter of the query."""
     from ruamel.yaml import YAML
 
     try:
         node = _query_node(YAML().load(query_yaml))
     except Exception:
         node = None
-    active: list[str] = []
+    active: list[tuple[str, str]] = []
     if isinstance(node, dict):
         for clause in ("where", "having"):
             for w in node.get(clause) or []:
                 if not isinstance(w, dict):
                     continue
+                field = str(w.get("field"))
                 if w.get("op") == _FILTER_EQ_OP:
-                    active.append(f"{w.get('field')} = {w.get('value')}")
+                    active.append((field, f"{field} = {w.get('value')}"))
                 elif w.get("op") == _FILTER_NULL_OP:
-                    active.append(f"{w.get('field')} IS NULL")
+                    active.append((field, f"{field} IS NULL"))
+    return active
+
+
+def filter_chip_update(query_yaml: str) -> object:
+    """Show a "Clear filters" button listing the active click-filters.
+
+    Lists every click-added filter; the button clears all of them at once via
+    :func:`remove_cell_filter`, leaving the query's own filters (e.g. an ``in``
+    list) untouched. One filter is removed with the ✕ in its column's header, or
+    by clicking that value again (toggle).
+    """
+    active = [text for _, text in _click_filters(query_yaml)]
     if active:
         return gr.update(value="✕  Clear filters  ·  " + "   ·   ".join(active), visible=True)
     return gr.update(visible=False)
+
+
+def filter_state_str(query_yaml: str) -> str:
+    """JSON ``{column: "column = value"}`` of the click-added filters.
+
+    Fed to the header JS, which marks each filtered column with a filter icon
+    (the text as its tooltip) and a ✕ that removes that column's filter. JSON,
+    not a delimited list, because a filter value can contain any character.
+    """
+    import json
+
+    return json.dumps(dict(_click_filters(query_yaml)), ensure_ascii=False)
 
 
 _ExecTuple = tuple[
@@ -413,6 +438,30 @@ _ExecTuple = tuple[
     str,
 ]
 
+#: What every rewrite-and-execute handler returns: the new query YAML, the 10
+#: execute outputs, the filter-chip update, the sort state and the filter state.
+_RewriteTuple = tuple[str, *_ExecTuple, object, str, str]
+
+
+def _rewritten(new_query: str, result: _ExecTuple) -> _RewriteTuple:
+    """The shared return of the rewrite-and-execute handlers.
+
+    The chip and both header states are computed from the query in hand, not
+    read back from the editor, so they don't suffer Gradio's output→input lag.
+    """
+    return (
+        new_query,
+        *result,
+        filter_chip_update(new_query),
+        sort_state_str(new_query),
+        filter_state_str(new_query),
+    )
+
+
+def header_states(query_yaml: str) -> tuple[str, str]:
+    """The sort state and the filter state the header JS reads, after an execute."""
+    return sort_state_str(query_yaml), filter_state_str(query_yaml)
+
 
 def filter_and_execute(
     evt: gr.EventData,
@@ -424,22 +473,19 @@ def filter_and_execute(
     session_state: dict[str, str] | None,
     model_state: dict[str, str] | None,
     request: gr.Request | None = None,
-) -> tuple[str, *_ExecTuple, object, str]:
+) -> _RewriteTuple:
     """Apply the clicked filter to the query AND execute — in one call.
 
     Doing the rewrite + execute together means the execute runs the *just
     rewritten* query directly. If instead ``query_input`` were an output of the
     rewrite and a chained input of the execute, Gradio would feed the execute the
     pre-update value — the bug where a click only took effect on the *next* click.
-    The Clear-filters chip and sort-state are computed here too (from the new
-    query, in-hand) so they don't suffer the same lag. Returns: new query YAML,
-    the 10 execute outputs, the filter-chip update, then the sort-state string.
     """
     new_query = apply_cell_filter(evt, query_yaml, table)
     result = execute_query(
         model_yaml, new_query, dialect, api_url, session_state, model_state, request
     )
-    return (new_query, *result, filter_chip_update(new_query), sort_state_str(new_query))
+    return _rewritten(new_query, result)
 
 
 def clear_filters_and_execute(
@@ -450,22 +496,24 @@ def clear_filters_and_execute(
     session_state: dict[str, str] | None,
     model_state: dict[str, str] | None,
     request: gr.Request | None = None,
-) -> tuple[str, *_ExecTuple, object, str]:
+) -> _RewriteTuple:
     """Drop all click-added filters AND execute in one call (see :func:`filter_and_execute`)."""
     new_query = remove_cell_filter(query_yaml)
     result = execute_query(
         model_yaml, new_query, dialect, api_url, session_state, model_state, request
     )
-    return (new_query, *result, filter_chip_update(new_query), sort_state_str(new_query))
+    return _rewritten(new_query, result)
 
 
-def _apply_sort_signal(query_yaml: str, signal: str | None) -> str:
-    """Rewrite the query's ``orderBy`` from a per-header sort click.
+def _apply_header_signal(query_yaml: str, signal: str | None) -> str:
+    """Rewrite the query from a click on a result column's header controls.
 
-    ``signal`` is ``"<column>|<action>|<nonce>"`` where action is
-    ``asc`` / ``desc`` / ``clear``. Additive: ▲/▼ add-or-replace that column's
-    entry (keeping other columns' ordering); ✕ removes just that column. When no
-    ordering remains, ``orderBy`` is dropped entirely (order not enforced).
+    ``signal`` is ``"<column>|<action>|<nonce>"``. The sort icon cycles a
+    column through ``asc``, ``desc`` and ``clear``: ``asc`` / ``desc``
+    add-or-replace that column's ``orderBy`` entry (keeping the other columns'
+    ordering), ``clear`` removes it, and with no ordering left ``orderBy`` is
+    dropped. ``unfilter`` (the ✕ next to a column's filter icon) removes that
+    column's click-added filter.
     """
     from io import StringIO
 
@@ -477,6 +525,8 @@ def _apply_sort_signal(query_yaml: str, signal: str | None) -> str:
     col, action = parts[0], parts[1]
     if not col:
         return query_yaml
+    if action == "unfilter":
+        return remove_cell_filter(query_yaml, col)
 
     yaml_rt = YAML()
     try:
@@ -507,8 +557,11 @@ def _apply_sort_signal(query_yaml: str, signal: str | None) -> str:
 def sort_state_str(query_yaml: str) -> str:
     """Compact ``field|direction`` newline-list of the active ``orderBy``.
 
-    Fed to the header JS so it can colour the active ▲/▼ per column (and gray the
-    rest). Newline-separated so a value can't collide with the delimiter.
+    Fed to the header JS, which shows each column's sort icon in its state and
+    picks the next one on a click. Newline-separated so a value can't collide
+    with the delimiter. A direction the query leaves out is ``asc``, as the
+    query runs it (``QueryOrderBy.direction``); reading it as ``desc`` made the
+    next click stop sorting instead of sorting descending.
     """
     from ruamel.yaml import YAML
 
@@ -520,11 +573,12 @@ def sort_state_str(query_yaml: str) -> str:
     if isinstance(node, dict):
         for o in node.get("orderBy") or []:
             if isinstance(o, dict) and o.get("field"):
-                parts.append(f"{o.get('field')}|{o.get('direction', 'desc')}")
+                direction = str(o.get("direction") or "asc").lower()
+                parts.append(f"{o.get('field')}|{direction}")
     return "\n".join(parts)
 
 
-def sort_and_execute(
+def header_action_and_execute(
     signal: str,
     query_yaml: str,
     model_yaml: str,
@@ -533,18 +587,17 @@ def sort_and_execute(
     session_state: dict[str, str] | None,
     model_state: dict[str, str] | None,
     request: gr.Request | None = None,
-) -> tuple[str, *_ExecTuple, object, str]:
-    """Apply a per-header sort click to ``orderBy`` AND execute in one call.
+) -> _RewriteTuple:
+    """Apply a header click (sort or remove filter) AND execute in one call.
 
     One handler (rewrite + execute) so the execute runs the just-rewritten query
     directly — the same fix that made click-to-filter apply on the first click.
-    Returns the shared shape (query, execute outputs, filter-chip, sort-state).
     """
-    new_query = _apply_sort_signal(query_yaml, signal)
+    new_query = _apply_header_signal(query_yaml, signal)
     result = execute_query(
         model_yaml, new_query, dialect, api_url, session_state, model_state, request
     )
-    return (new_query, *result, filter_chip_update(new_query), sort_state_str(new_query))
+    return _rewritten(new_query, result)
 
 
 #: Sections whose children are listed: mappings by key, lists by ``name``.
@@ -1201,6 +1254,20 @@ def _extract_model_items(
                     fields.append(f"{obj_name}.{col_name}")
     fields.sort()
     return dims, meas_met, fields
+
+
+def query_parse_problem(query_yaml: str) -> str | None:
+    """Where the query YAML stops parsing ("line 5"), or ``None`` when it parses.
+
+    The pickers' composability marks need a parsed query; without one they say
+    so rather than dropping every ✓, which read as "nothing can be added".
+    """
+    try:
+        yaml.safe_load(query_yaml or "")
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        return f"line {mark.line + 1}" if mark is not None else "an unknown line"
+    return None
 
 
 def _composable_sets(model_yaml: str, query_yaml: str) -> dict[str, set[str]] | None:
