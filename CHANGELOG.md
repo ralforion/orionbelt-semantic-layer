@@ -4,6 +4,8 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-11-19
+
 ### Added
 
 - **A Model dropdown in the UI when `MODEL_FILES` loads more than one model.** It leads the SQL Compiler's settings row and lists `GET /v1/models`; picking one loads it into the read-only editor and starts the query box with the model's first example query (or an empty `select` for the pickers). The UI works on each curated model in its own protected session, as BI tools do with the Flight `database` field, so it creates no session of its own and uploads nothing. The choice is remembered in the browser. In curated mode the API Base URL field is hidden: the UI's sessions are on its own API.
