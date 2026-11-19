@@ -332,21 +332,33 @@ class CFLPlanner:
         would project a column from a table it does not select from. The same
         refusal resolution would have raised.
 
+        A dimension read ``via`` an object is projected only by a leg that
+        reaches that object as well; the others pad it. One whose ``via`` object
+        no leg reaches is padded by every leg, which under ``UNION ALL BY NAME``
+        again leaves no column, and elsewhere groups every row under NULL.
+
         Reachability is measured without crossing a containment edge: a leg is
         built out of tables and has no unnest to reach a nested object with, nor
         anything sitting behind one.
         """
         roots = set(measures_by_object) or {resolved.base_object}
         graph = JoinGraph.of(model, use_path_names=resolved.use_path_names or None)
-        reachable = {
-            name for root in roots for name in (graph.descendants_without_unnest(root) | {root})
-        }
+        reaches = [graph.descendants_without_unnest(root) | {root} for root in roots]
+        reachable: set[str] = set().union(*reaches)
         root = sorted(roots)[0]
         unreachable = sorted(
             {dim.object_name for dim in resolved.dimensions if dim.object_name not in reachable}
         )
-        if not unreachable:
+        unrouted = {
+            dim.dimension: dim.via
+            for dim in resolved.dimensions
+            if dim.via is not None
+            and dim.object_name in reachable
+            and not any(dim.object_name in reach and dim.via in reach for reach in reaches)
+        }
+        if not unreachable and not unrouted:
             return
+        facts = ", ".join(f"'{name}'" for name in sorted(roots))
         raise ResolutionError(
             [
                 SemanticError(
@@ -362,6 +374,22 @@ class CFLPlanner:
                     path="select",
                 )
                 for name in unreachable
+            ]
+            + [
+                SemanticError(
+                    code="UNREACHABLE_REQUIRED_OBJECT",
+                    message=(
+                        f"Dimension '{name}' is read via '{via}', which none of the "
+                        f"query's facts ({facts}) reaches via directed joins, so no part "
+                        f"of the query can group by it."
+                    ),
+                    path="select.dimensions",
+                    hint=(
+                        f"Add a measure whose fact reaches '{via}', or use a dimension "
+                        f"read via one of the query's facts."
+                    ),
+                )
+                for name, via in sorted(unrouted.items())
             ]
         )
 

@@ -555,9 +555,8 @@ class ComposabilityResolver:
             return True
         return self._has_common_root(context | required)
 
-    @staticmethod
     def _padded_waypoints(
-        plan_sources: set[str], leg_facts: set[str], waypoints: set[str]
+        self, plan_sources: set[str], leg_facts: set[str], waypoints: set[str]
     ) -> set[str]:
         """The waypoints a candidate's query may leave unreached.
 
@@ -566,8 +565,19 @@ class ComposabilityResolver:
         legs, and a leg that cannot reach a waypoint projects NULL for its
         dimension and does not join it. A single-fact query is a star, which
         joins every one.
+
+        Only while some leg does reach it: one that no leg reaches is padded by
+        every leg, so none projects its dimension and the planner refuses the
+        query. That waypoint stays required.
         """
-        return waypoints if len(plan_sources | leg_facts) > 1 else set()
+        facts = plan_sources | leg_facts
+        if len(facts) <= 1:
+            return set()
+        return {w for w in waypoints if self._reached_by_a_leg(w, facts)}
+
+    def _reached_by_a_leg(self, obj: str, facts: set[str]) -> bool:
+        """Whether a CFL leg of one of *facts* reaches *obj*, which it does without an unnest."""
+        return any(obj in self._reach_no_unnest.get(fact, set()) for fact in facts)
 
     def _metric_legs_reachable(
         self, name: str, spine: set[str], waypoints: set[str] | None = None
@@ -760,10 +770,13 @@ class ComposabilityResolver:
         # them wherever the dimension is projected — so they are as much a
         # requirement as the dimension's own object. So is a ``via`` object,
         # except on a CFL leg (independent leg facts), which projects NULL for
-        # the dimension when it cannot reach it.
+        # the dimension when it cannot reach it. One leg at least has to reach
+        # it, though, or no leg projects the dimension at all.
         needed = {obj} | (reads or set())
         if waypoint and len(leg_facts) <= 1:
             needed.add(waypoint)
+        elif waypoint and not self._reached_by_a_leg(waypoint, leg_facts):
+            return False
         if leg_facts:
             # Must be groupable across every existing measure leg.
             return all(self._reaches_all(fact, needed) for fact in leg_facts)

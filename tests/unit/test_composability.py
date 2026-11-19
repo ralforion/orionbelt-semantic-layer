@@ -795,6 +795,18 @@ dataObjects:
         joinTo: Channels
         columnsFrom: [Purchase Channel ID]
         columnsTo: [Channel ID]
+  Returns:
+    code: returns
+    schema: main
+    columns:
+      Return ID: {code: id, abstractType: string, primaryKey: true}
+      Return Channel ID: {code: channel_id, abstractType: string}
+      Refund: {code: refund, abstractType: float}
+    joins:
+      - joinType: many-to-one
+        joinTo: Channels
+        columnsFrom: [Return Channel ID]
+        columnsTo: [Channel ID]
 
 dimensions:
   Sales Channel: {dataObject: Channels, column: Channel Name, resultType: string, via: Sales}
@@ -807,6 +819,9 @@ measures:
     aggregation: sum
   Spend:
     columns: [{dataObject: Purchases, column: Cost}]
+    aggregation: sum
+  Refunds:
+    columns: [{dataObject: Returns, column: Refund}]
     aggregation: sum
 
 metrics:
@@ -888,6 +903,31 @@ def test_a_via_dimension_beside_another_fact_plans_as_cfl() -> None:
     )
 
 
+def test_a_via_dimension_needs_one_fact_that_reaches_its_via_object() -> None:
+    """Sales and Returns both reach Channels, but neither reaches Purchases:
+    every leg would pad ``Purchase Channel``, so none would project it."""
+    model = _load(VIA_YAML)
+    dims = resolve_composables_for_anchors(model, ["Revenue", "Refunds"]).dimensions
+    assert "Purchase Channel" not in dims
+    assert "Sales Channel" in dims
+    assert not _compiles(model, ["Purchase Channel"], ["Revenue", "Refunds"])
+    assert (
+        "Purchase Channel"
+        in resolve_composables_for_anchors(model, ["Spend", "Refunds"]).dimensions
+    )
+
+
+def test_a_measure_is_not_offered_where_no_fact_reaches_the_via_object() -> None:
+    """Beside ``Purchase Channel`` and Revenue, Spend brings a leg that reaches
+    Purchases, and Refunds does not."""
+    model = _load(VIA_YAML)
+    offered = _offered(model, ["Revenue", "Purchase Channel"])
+    assert "Spend" in offered
+    assert _compiles(model, ["Purchase Channel"], ["Revenue", "Spend"])
+    assert "Refunds" not in offered
+    assert not _compiles(model, ["Purchase Channel"], ["Revenue", "Refunds"])
+
+
 def test_a_reaggregate_first_stage_over_one_fact_needs_the_via_object() -> None:
     """Its first stage is a query of its own over Sales alone, whatever else
     the outer query reads."""
@@ -940,6 +980,9 @@ def test_a_window_metric_wraps_the_cfl_result() -> None:
         ["Revenue", "Sales Channel"],
         ["Revenue", "Spend"],
         ["Revenue", "Spend", "Purchase Channel"],
+        ["Refunds"],
+        ["Revenue", "Refunds"],
+        ["Spend", "Refunds", "Purchase Channel"],
     ],
     ids=" + ".join,
 )
