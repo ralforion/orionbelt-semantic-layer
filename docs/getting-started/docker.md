@@ -149,4 +149,4 @@ Load Balancer (single IP)
   └── /*        → orionbelt-api  (FastAPI)
 ```
 
-The API image (`Dockerfile`) excludes Gradio for faster cold starts (~2-3s vs ~12s), while the UI image (`Dockerfile.ui`) connects to the API via `API_BASE_URL`. Cloud Armor provides WAF protection.
+The API image (`Dockerfile`) excludes Gradio for faster cold starts (~2-3s vs ~12s), while the UI image (`Dockerfile.ui`) connects to the API via `API_BASE_URL`. When the UI starts while a scaled-down API is still starting, it waits up to two minutes for the API; a page opened while the API did not answer asks it again each time the page loads. Cloud Armor provides WAF protection.

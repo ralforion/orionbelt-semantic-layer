@@ -11,6 +11,7 @@ module.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import time
 from typing import Any
 
@@ -487,8 +488,36 @@ def _fetch_dialects(api_url: str) -> list[str]:
     return result
 
 
-def _fetch_settings(api_url: str) -> dict[str, Any]:
+# How long the UI's startup waits for an API that is still starting. On the
+# demo (Cloud Run, scaled to zero) the API's cold start takes 8 to 18 s and
+# once took 95 s. The UI has 240 s to start (its startup probe), and its own
+# start takes up to about 80 s.
+_STARTUP_API_WAIT = 120.0
+_RETRY_DELAYS = (1.5, 3.0)
+_WAIT_DELAY = 5.0
+
+
+def _api_starting(exc: Exception) -> bool:
+    """Whether *exc* says the API is there but not answering yet.
+
+    A Cloud Run cold start holds the request until it times out, or answers
+    429 or a 5xx. A refused connection means nothing listens: waiting for
+    that would only delay a UI started without its API.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or status >= 500
+    return False
+
+
+def _fetch_settings(api_url: str, *, wait: float = 0.0) -> dict[str, Any]:
     """Fetch public settings from the API. Retries on transient failure.
+
+    Three quick tries, then more for up to *wait* seconds while the API is
+    still starting (see ``_api_starting``). Only the UI's startup waits; a
+    page load must not.
 
     Returns ``{"_unreachable": True}`` when every retry fails — callers
     use that flag to distinguish *"API is in self-service mode"* (empty
@@ -498,16 +527,12 @@ def _fetch_settings(api_url: str) -> dict[str, Any]:
     Not cached: pre-v2.7.6 a single transient failure (Cloud Run cold
     start exceeding the 5-second client timeout) wrote ``{}`` to the
     cache, sticking forever and silently swapping the deployed model
-    out for ``examples/orionbelt_1_commerce.yaml``. The session-wide model
-    fetch happens once at UI startup; the cache served no real purpose.
+    out for ``examples/orionbelt_1_commerce.yaml``.
     """
     url = api_url.rstrip("/")
+    deadline = time.monotonic() + wait
     last_exc: Exception | None = None
-    # 3-attempt retry with simple backoff covers Cloud Run cold-start
-    # (typically 3-5s warm-up) without holding the UI hostage.
-    for delay in (0, 1.5, 3.0):
-        if delay:
-            time.sleep(delay)
+    for attempt in itertools.count():
         try:
             resp = httpx.get(f"{url}/v1/settings", timeout=5, headers=_API_HEADERS)
             resp.raise_for_status()
@@ -515,7 +540,12 @@ def _fetch_settings(api_url: str) -> dict[str, Any]:
             return payload
         except Exception as exc:
             last_exc = exc
-            continue
+            if attempt < len(_RETRY_DELAYS):
+                time.sleep(_RETRY_DELAYS[attempt])
+            elif _api_starting(exc) and time.monotonic() + _WAIT_DELAY < deadline:
+                time.sleep(_WAIT_DELAY)
+            else:
+                break
     return {
         "_unreachable": True,
         "_error": f"{type(last_exc).__name__}: {last_exc}" if last_exc else "unknown",
