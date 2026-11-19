@@ -1252,80 +1252,112 @@ def _decorate_choices(
     return out
 
 
-def _insert_into_query(query: str, value: str, section: str) -> str:
-    """Insert *value* into the correct *section* of query YAML.
+class QueryInsertError(ValueError):
+    """A picked artefact cannot be added: the query in the editor is unreadable."""
 
-    *section* is one of ``"dimensions"``, ``"measures"``, or ``"where"``.
+
+# The starter query's layout: keys two spaces in, list items four ("    - x").
+_DEFAULT_QUERY_INDENT = (2, 4, 2)
+
+# A new ``where`` goes before these keys, so the query keeps reading
+# select, where, having, orderBy, limit.
+_KEYS_AFTER_WHERE = ("having", "orderBy", "limit")
+
+
+def _query_indent(seq_indent: int | None, dash_offset: int | None) -> tuple[int, int, int]:
+    """ruamel ``(mapping, sequence, offset)`` matching the editor's layout.
+
+    Takes the two numbers ``load_yaml_guess_indent`` reads off the text, both
+    relative to the parent key: where a list item's content starts and where
+    its dash sits.
     """
-    lines = query.rstrip("\n").split("\n")
+    if seq_indent is None:
+        return _DEFAULT_QUERY_INDENT
+    if dash_offset is None:  # nested mappings but no block list yet
+        return seq_indent, seq_indent + 2, seq_indent
+    if dash_offset == 0:  # "  measures:" / "  - x", as a filter or sort rewrite writes
+        return seq_indent, seq_indent, 0
+    return dash_offset, seq_indent, dash_offset
 
-    if section in ("dimensions", "measures"):
-        target = f"  {section}:"
-        idx = None
-        for i, ln in enumerate(lines):
-            if ln.rstrip() == target:
-                idx = i
-                break
 
-        if idx is not None:
-            last = idx
-            for i in range(idx + 1, len(lines)):
-                if lines[i].startswith("    - "):
-                    last = i
-                elif lines[i].strip() and not lines[i].startswith("      "):
-                    break
-            lines.insert(last + 1, f"    - {value}")
+def _insert_into_query(query: str, value: str, section: str) -> str:
+    """Add *value* to *section* of the query YAML in the editor.
+
+    *section* is ``"dimensions"``, ``"measures"`` or ``"where"``; ``where``
+    gets a new ``field: <value>`` filter with ``op: equals`` and an empty
+    ``value`` to fill in. The query is edited as parsed YAML, so an existing
+    key is found at whatever indentation the editor holds, and the layout,
+    comments, quoting and inline lists are kept. A dimension or measure the
+    query already selects is not added again.
+
+    Raises :class:`QueryInsertError` when the query does not parse, or its
+    ``select`` / ``where`` does not have the shape a query has. Editing text
+    the parser cannot read only made it worse: a second ``measures:`` block.
+    """
+    from io import StringIO
+
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from ruamel.yaml.error import YAMLError
+    from ruamel.yaml.util import load_yaml_guess_indent
+
+    yaml_rt = YAML()
+    yaml_rt.preserve_quotes = True
+    yaml_rt.width = 4096  # never re-wrap a line the user wrote
+    try:
+        root, seq_indent, dash_offset = load_yaml_guess_indent(query, yaml=yaml_rt)
+    except (YAMLError, IndexError) as exc:
+        # IndexError: the indent guesser reads past the end of a bare "-" line.
+        mark = getattr(exc, "problem_mark", None)
+        at = f" at line {mark.line + 1}" if mark is not None else ""
+        raise QueryInsertError(f"the query YAML does not parse{at}") from None
+    if root is None:
+        root = CommentedMap()
+    node = _query_node(root)
+    if not isinstance(node, CommentedMap):
+        raise QueryInsertError("the query is not a mapping of select, where, ...")
+
+    def put(mapping: CommentedMap, key: str, value: object, pos: int) -> None:
+        # An empty key ("measures:" with nothing under it) is filled where it
+        # stands; ``insert`` would move it to *pos*.
+        if key in mapping:
+            mapping[key] = value
         else:
-            sel_idx = None
-            for i, ln in enumerate(lines):
-                if ln.rstrip() == "select:":
-                    sel_idx = i
-                    break
-            if sel_idx is not None:
-                end = sel_idx
-                for i in range(sel_idx + 1, len(lines)):
-                    if lines[i] and not lines[i].startswith(" "):
-                        break
-                    end = i
-                lines.insert(end + 1, target)
-                lines.insert(end + 2, f"    - {value}")
-            else:
-                lines.insert(0, "select:")
-                lines.insert(1, target)
-                lines.insert(2, f"    - {value}")
+            mapping.insert(pos, key, value)
 
-    elif section == "where":
-        tpl = [
-            f"  - field: {value}",
-            "    op: equals",
-            "    value: ",
-        ]
-        idx = None
-        for i, ln in enumerate(lines):
-            if ln.rstrip() == "where:":
-                idx = i
-                break
-        if idx is not None:
-            end = idx
-            for i in range(idx + 1, len(lines)):
-                if lines[i] and not lines[i].startswith(" "):
-                    break
-                if lines[i].strip():
-                    end = i
-            for j, t in enumerate(tpl):
-                lines.insert(end + 1 + j, t)
-        else:
-            pos = len(lines)
-            for i, ln in enumerate(lines):
-                s = ln.strip()
-                if s.startswith("orderBy:") or s.startswith("limit:"):
-                    pos = i
-                    break
-            lines.insert(pos, "where:")
-            for j, t in enumerate(tpl):
-                lines.insert(pos + 1 + j, t)
+    if section == "where":
+        entries = node.get("where")
+        if entries is None:
+            entries = CommentedSeq()
+            pos = next((i for i, key in enumerate(node) if key in _KEYS_AFTER_WHERE), len(node))
+            put(node, "where", entries, pos)
+        elif not isinstance(entries, CommentedSeq):
+            raise QueryInsertError("'where' is not a list of filters")
+        entries.append(CommentedMap([("field", value), ("op", "equals"), ("value", None)]))
+    else:
+        select = node.get("select")
+        if select is None:
+            select = CommentedMap()
+            put(node, "select", select, 0)
+        elif not isinstance(select, CommentedMap):
+            raise QueryInsertError("'select' is not a mapping")
+        chosen = select.get(section)
+        if chosen is None:
+            chosen = CommentedSeq()
+            # Dimensions before measures, as the starter query reads.
+            put(select, section, chosen, 0 if section == "dimensions" else len(select))
+        elif not isinstance(chosen, CommentedSeq):
+            raise QueryInsertError(f"'select.{section}' is not a list")
+        metrics = select.get("metrics") if section == "measures" else None
+        if value in chosen or (isinstance(metrics, CommentedSeq) and value in metrics):
+            return query
+        chosen.append(value)
 
-    return "\n".join(lines) + "\n"
+    mapping, sequence, offset = _query_indent(seq_indent, dash_offset)
+    yaml_rt.indent(mapping=mapping, sequence=sequence, offset=offset)
+    buf = StringIO()
+    yaml_rt.dump(root, buf)
+    return buf.getvalue()
 
 
 def _load_example_model() -> str:
