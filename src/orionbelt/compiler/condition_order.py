@@ -1,61 +1,100 @@
-"""A fixed order for a query's filters, for its result-cache key.
+"""A fixed order for a query's AND-ed conditions, for its result-cache key.
 
-Two queries that differ only in the order of their filters, ``Client = 'A'``
-then ``Product = 'B'`` against the other way round, return the same rows but
-compile to different SQL. The result cache keys on the compiled SQL, so the
-second missed the entry the first wrote: in the UI, clicking the same two
-values as filters in the other order ran the query on the database again.
+Two queries that differ only in the order of their filters, ``Client = 'A' AND
+Product = 'B'`` against ``Product = 'B' AND Client = 'A'``, return the same
+rows but compile to different SQL. The result cache keys on the compiled SQL,
+so the second missed the entry the first wrote: in the UI, clicking the same
+two values as filters in the other order ran the query on the database again.
 
-:func:`ordered_query` puts the filters joined by AND in one fixed order, and
-the pipeline compiles that query a second time for the key
-(``CompilationResult.key_sql``). What moves: the ``where`` and ``having``
-lists, the filters of a ``logic: and`` group and those of an ``exists``
-subquery. The filters of a ``logic: or`` group keep their order, as does
-everything else, so two queries share a key only when they hold the same
-filters. The SQL that runs is the query as written.
+:func:`key_sql` renders the compiled query a second time with the operands of
+every chain of ANDs sorted by their rendered text, through the same dialect,
+and the cache keys on that. AND is commutative wherever it stands in SQL, and
+nothing else moves, so two queries share a key only when the SQL that runs
+differs in the order of AND-ed conditions alone: the same joins, the same
+rows. The SQL that runs is unchanged.
 
-The query is reordered rather than its compiled SQL: the compiler writes some
-conditions as text (the CTEs of a period-over-period metric) that no walk of
-the SQL tree reaches, and the reordered query nests its groups as deep as the
-one written, which the compiler already took.
+It reorders the compiled query, not the query object: the order of the
+filters can pick the join path a dimension is reached by, so the same filters
+in another order may well be another query. The conditions the compiler
+writes as text, in the CTEs of a period-over-period metric, it writes in this
+order already (:func:`sorted_conjuncts`).
 """
 
 from __future__ import annotations
 
-import json
+from collections.abc import Iterable, Sequence
+from dataclasses import fields, is_dataclass, replace
+from typing import Any, TypeGuard
 
-from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterItem, QueryObject
-from orionbelt.models.semantic import FilterLogic
-
-
-def _sort_key(item: QueryFilterItem) -> str:
-    return json.dumps(item.model_dump(mode="json", by_alias=True), sort_keys=True, default=str)
+from orionbelt.ast.nodes import BinaryOp, Expr, Select
+from orionbelt.dialect.base import Dialect
 
 
-def _ordered_filters[F: QueryFilterItem](items: list[F], *, commutative: bool) -> list[F]:
-    """*items*, each in its fixed order, and sorted among themselves if *commutative*."""
-    ordered = [_ordered_item(item) for item in items]
-    return sorted(ordered, key=_sort_key) if commutative else ordered
+def _is_and(value: object) -> TypeGuard[BinaryOp]:
+    return isinstance(value, BinaryOp) and value.op.upper() == "AND"
 
 
-def _ordered_item[F: QueryFilterItem](item: F) -> F:
-    if isinstance(item, QueryFilterGroup):
-        filters = _ordered_filters(item.filters, commutative=item.logic == FilterLogic.AND)
-        return item.model_copy(update={"filters": filters})
-    if isinstance(item, QueryFilter) and item.subquery is not None:
-        # An EXISTS subquery's filters are joined by AND.
-        inner = _ordered_filters(item.subquery.filter, commutative=True)
-        return item.model_copy(
-            update={"subquery": item.subquery.model_copy(update={"filter": inner})}
-        )
-    return item
+def _conjuncts(expr: Expr) -> list[Expr]:
+    """The operands of a chain of ANDs, however it is nested; else ``[expr]``."""
+    parts: list[Expr] = []
+    pending = [expr]
+    while pending:
+        node = pending.pop()
+        if _is_and(node):
+            pending.extend((node.right, node.left))
+        else:
+            parts.append(node)
+    return parts
 
 
-def ordered_query(query: QueryObject) -> QueryObject:
-    """*query* with every list of filters joined by AND in a fixed order."""
-    return query.model_copy(
-        update={
-            "where": _ordered_filters(query.where, commutative=True),
-            "having": _ordered_filters(query.having, commutative=True),
-        }
+def _balanced_and(parts: Sequence[Expr]) -> Expr:
+    """*parts* joined by AND, as a tree as deep as the log of their count.
+
+    A chain is as deep as the count: four filter groups of 128 conditions each,
+    flattened into one chain of 512, are past what the renderer recurses into.
+    """
+    if len(parts) == 1:
+        return parts[0]
+    middle = len(parts) // 2
+    return BinaryOp(
+        left=_balanced_and(parts[:middle]), op="AND", right=_balanced_and(parts[middle:])
     )
+
+
+def sorted_conjuncts(conditions: Iterable[Expr], dialect: Dialect) -> list[Expr]:
+    """The conditions AND-ed in *conditions*, each in its fixed order, sorted."""
+    parts = [
+        _canonical(part, dialect) for condition in conditions for part in _conjuncts(condition)
+    ]
+    return sorted(parts, key=dialect.compile_expr)
+
+
+def _canonical(value: Any, dialect: Dialect) -> Any:
+    """*value* with every chain of ANDs inside it in a fixed order.
+
+    Walks every field of every node rather than a hand-kept list of them, so no
+    part of the query (a DISTINCT, a GROUPING SETS, a window frame) can be left
+    out of the key: dropping one would give two different queries one entry.
+    """
+    if isinstance(value, list):
+        return [_canonical(item, dialect) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_canonical(item, dialect) for item in value)
+    if _is_and(value):
+        return _balanced_and(sorted_conjuncts([value], dialect))
+    if not is_dataclass(value) or isinstance(value, type):
+        return value
+    return replace(
+        value,
+        **{f.name: _canonical(getattr(value, f.name), dialect) for f in fields(value) if f.init},
+    )
+
+
+def key_sql(ast: Select, dialect: Dialect) -> str:
+    """The SQL of *ast* with its AND-ed conditions in a fixed order.
+
+    Inner conditions are ordered first (a subquery inside a condition), so the
+    text a condition sorts by is already canonical.
+    """
+    canonical: Select = _canonical(ast, dialect)
+    return dialect.compile(canonical)

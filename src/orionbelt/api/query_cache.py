@@ -651,7 +651,7 @@ class _LegQuery:
 
     @property
     def key_sql(self) -> str:
-        """A leg is keyed on its own SQL, as the plan wrote it."""
+        """A leg is keyed on its own SQL: it carries no AST to reorder."""
         return self.sql
 
 

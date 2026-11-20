@@ -148,19 +148,20 @@ Drops every cache entry regardless of TTL or freshness contract — useful from 
 
 ## When two queries share an entry
 
-An entry is found by the data source, the model, the dialect and the SQL the query compiles to. Filters that are the same but listed in another order still find one entry: the key is built from the SQL of the same query with its filters put in a fixed order. The SQL that runs keeps the order you wrote.
+An entry is found by the data source, the model, the dialect and the SQL the query compiles to. Filters that are the same but listed in another order still find one entry: the key is built from the compiled SQL with its conditions joined by AND put in a fixed order. Nothing else in the SQL moves, so two queries share an entry only when they read the same rows. The SQL that runs keeps the order you wrote.
 
 | Two queries | One entry? | Why |
 |---|---|---|
 | `where: [Country = DE, Segment = Retail]` and `where: [Segment = Retail, Country = DE]` | Yes | The same filters, joined by AND |
 | `having: [Revenue > 100, Orders > 5]` and the same two the other way round | Yes | The same, in `having` |
 | Two `logic: and` groups whose filters are in another order | Yes | The same, inside a group |
-| Two `logic: or` groups whose filters are in another order | No | Only filters joined by AND are reordered |
+| Two `logic: or` groups whose filters are in another order | No | Only conditions joined by AND are reordered |
 | The same filters, another `orderBy` or `limit` | No | Different queries |
 | Another filter value | No | Different rows |
-| Filters in another order on a query that reads several data sources | No | A [federated](federation.md) query is keyed on the SQL as written |
+| Filters on two data objects that only the filters bring into the query, in another order | No | Those objects are joined in the order of the filters. Where an object can be reached by more than one join path, that order can pick the path, and so the rows |
+| Filters in another order on a query that reads several data sources | No | A [federated](federation.md) query is keyed on its SQL as written |
 
-This is what lets the UI's click-to-filter in Query Results read from the cache when you click the same values in another order: each click adds its filter at the end of `where`.
+The first rows are what lets the UI's click-to-filter in Query Results read from the cache when you click the same values in another order: each click adds its filter at the end of `where`, on a column the query already selects.
 
 ## Storage
 

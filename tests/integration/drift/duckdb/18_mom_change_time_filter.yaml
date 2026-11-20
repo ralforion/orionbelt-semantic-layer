@@ -1,21 +1,21 @@
 last_verified_by: tests/integration/correctness/test_time_filter_lookback.py::test_mom_change_under_a_time_filter
 sql: "WITH \"date_range\" AS (\nSELECT MIN(\"__ob_pop_src\".\"__ob_bucket\") AS min_date,\n       MAX(\"__ob_pop_src\".\"\
   __ob_bucket\") AS max_date\n  FROM (\n    SELECT date_trunc('month', \"Sales\".\"salesdate\") AS \"__ob_bucket\"\n     \
-  \ FROM \"orionbelt_1\".\"sales\" AS \"Sales\"\n      WHERE (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) >=\
-  \ '2021-03-01') AND (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) < '2021-05-01')\n  ) AS \"__ob_pop_src\"\
+  \ FROM \"orionbelt_1\".\"sales\" AS \"Sales\"\n      WHERE (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) <\
+  \ '2021-05-01') AND (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) >= '2021-03-01')\n  ) AS \"__ob_pop_src\"\
   \n),\n\"date_spine\" AS (\nSELECT d::date AS spine_date,\n       CASE WHEN (d + INTERVAL '-1 month')::date >= (SELECT min_date\
   \ FROM \"date_range\")\n            THEN (d + INTERVAL '-1 month')::date END AS spine_date_prev\nFROM generate_series((SELECT\
   \ min_date FROM \"date_range\")::timestamp, (SELECT max_date FROM \"date_range\")::timestamp, INTERVAL '1 month') AS t(d)\n\
   ),\n\"pop_base\" AS (\nSELECT \"date_spine\".spine_date AS \"Sales Month\",\n       CAST(SUM(\"__ob_pop_src\".\"Sales__salesamount\"\
   ) AS DECIMAL(18, 2)) AS \"Total Sales\"\n  FROM (\n    SELECT date_trunc('month', \"Sales\".\"salesdate\") AS \"__ob_bucket\"\
   ,\n           \"Sales\".\"salesamount\" AS \"Sales__salesamount\"\n      FROM \"orionbelt_1\".\"sales\" AS \"Sales\"\n \
-  \     WHERE (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) >= '2021-03-01') AND (CAST(DATE_TRUNC('month', \"\
-  Sales\".\"salesdate\") AS DATE) < '2021-05-01')\n  ) AS \"__ob_pop_src\"\n  JOIN \"date_spine\"\n    ON \"__ob_pop_src\"\
+  \     WHERE (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) < '2021-05-01') AND (CAST(DATE_TRUNC('month', \"\
+  Sales\".\"salesdate\") AS DATE) >= '2021-03-01')\n  ) AS \"__ob_pop_src\"\n  JOIN \"date_spine\"\n    ON \"__ob_pop_src\"\
   .\"__ob_bucket\" = \"date_spine\".spine_date\n  GROUP BY 1\nUNION ALL\nSELECT (SELECT spine_date FROM \"date_spine\" WHERE\
   \ 1 = 0) AS \"Sales Month\",\n       CAST(SUM(\"__ob_pop_src\".\"Sales__salesamount\") AS DECIMAL(18, 2)) AS \"Total Sales\"\
   \n  FROM (\n    SELECT date_trunc('month', \"Sales\".\"salesdate\") AS \"__ob_bucket\",\n           \"Sales\".\"salesamount\"\
   \ AS \"Sales__salesamount\"\n      FROM \"orionbelt_1\".\"sales\" AS \"Sales\"\n      WHERE (CAST(DATE_TRUNC('month', \"\
-  Sales\".\"salesdate\") AS DATE) >= '2021-03-01') AND (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) < '2021-05-01')\n\
+  Sales\".\"salesdate\") AS DATE) < '2021-05-01') AND (CAST(DATE_TRUNC('month', \"Sales\".\"salesdate\") AS DATE) >= '2021-03-01')\n\
   \  ) AS \"__ob_pop_src\"\n  WHERE \"__ob_pop_src\".\"__ob_bucket\" IS NULL\n  HAVING COUNT(*) > 0\n),\n\"date_range_lookback\"\
   \ AS (\nSELECT MIN(\"__ob_pop_src\".\"__ob_bucket\") AS min_date,\n       MAX(\"__ob_pop_src\".\"__ob_bucket\") AS max_date\n\
   \  FROM (\n    SELECT date_trunc('month', \"Sales\".\"salesdate\") AS \"__ob_bucket\"\n      FROM \"orionbelt_1\".\"sales\"\
