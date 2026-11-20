@@ -49,6 +49,7 @@ def connect(
     secure: bool = False,
     # Extra clickhouse-connect kwargs
     settings: dict[str, Any] | None = None,
+    client_name: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -71,6 +72,9 @@ def connect(
         Use HTTPS (default: ``False``).
     settings : dict, optional
         Extra ClickHouse server settings.
+    client_name : str, optional
+        Put in front of the HTTP User-Agent, as ``name/version``; ClickHouse
+        shows it as ``http_user_agent`` in ``system.query_log``.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
@@ -86,6 +90,8 @@ def connect(
     }
     if settings:
         client_kwargs["settings"] = settings
+    if client_name is not None:
+        client_kwargs["client_name"] = client_name
 
     client = clickhouse_connect.get_client(**client_kwargs)
     return Connection(

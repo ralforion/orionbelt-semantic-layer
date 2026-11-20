@@ -200,6 +200,20 @@ conn = ob_duckdb.connect(ob_api_url="http://my-api:9000")
 | `ob-dremio`     | `host`, `port`, `username`, `password`, `tls`, `db_kwargs`                                |
 | `ob-databricks` | `server_hostname`, `http_path`, `access_token`, `catalog`, `schema`                       |
 
+### Client name
+
+`ob-bigquery`, `ob-clickhouse`, `ob-databricks`, `ob-duckdb`, `ob-mysql` and
+`ob-postgres` take `client_name`, a `name/version` string that the database
+shows next to the connection's queries. If you leave it unset, the driver sends
+its vendor library's default. OBSL's own connections send
+`orionbelt-semantic-layer/<version>`. The
+[Data Sources guide](guide/data-sources.md#how-obsl-names-itself-to-your-database)
+lists where each database shows it.
+
+```python
+conn = ob_postgres.connect(host="localhost", dbname="analytics", client_name="my-app/1.0")
+```
+
 ## Running Driver Tests
 
 Drivers are workspace packages. Tests run without external services — all native connectors and the REST API are mocked:

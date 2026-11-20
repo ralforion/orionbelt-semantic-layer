@@ -22,6 +22,7 @@ duckdb = pytest.importorskip("duckdb")
 from ob_flight import db_router  # noqa: E402
 from ob_flight.datasources import DataSource  # noqa: E402
 
+from orionbelt import __version__  # noqa: E402
 from orionbelt.cli import _local  # noqa: E402
 from orionbelt.models.query import QueryObject  # noqa: E402
 from orionbelt.service import duckdb_source  # noqa: E402
@@ -429,6 +430,12 @@ class TestDatabaseFile:
         spilled = value(source, "SELECT current_setting('temp_directory')")
 
         assert spilled == str(tmp_path / "spill" / f"obsl-duckdb-{source.fingerprint()}")
+
+    def test_it_names_obsl_in_duckdbs_user_agent(self, shop: str) -> None:
+        """Which MotherDuck shows in its query history, and HTTP reads send."""
+        agent = value(lake(DUCKDB_DATABASE=shop), "SELECT current_setting('custom_user_agent')")
+
+        assert agent == f"orionbelt-semantic-layer/{__version__}"
 
     def test_the_spill_limit_holds_in_duckdbs_own_directory_too(self, shop: str) -> None:
         source = lake(DUCKDB_DATABASE=shop, DUCKDB_SPILL_MAX_MB="100")
