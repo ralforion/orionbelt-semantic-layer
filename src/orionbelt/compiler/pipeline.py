@@ -11,7 +11,7 @@ from orionbelt.ast.nodes import Select
 from orionbelt.compiler import condition_order
 from orionbelt.compiler.cfl import CFLPlanner
 from orionbelt.compiler.codegen import CodeGenerator
-from orionbelt.compiler.fanout import detect_fanout
+from orionbelt.compiler.fanout import FanoutError, detect_fanout
 from orionbelt.compiler.federation import (
     FederatedPlan,
     columns_as_dimensions,
@@ -23,7 +23,12 @@ from orionbelt.compiler.grain_dedup import detect_dedup_measures, split_grain_co
 from orionbelt.compiler.graph import JoinStep, reuse_join_graphs
 from orionbelt.compiler.passes import CompileContext, apply_aggregate_passes
 from orionbelt.compiler.raw import RawPlanner
-from orionbelt.compiler.resolution import QueryResolver, ResolvedQuery, key_map_rows
+from orionbelt.compiler.resolution import (
+    QueryResolver,
+    ResolutionError,
+    ResolvedQuery,
+    key_map_rows,
+)
 from orionbelt.compiler.scope_check import out_of_scope_tables
 from orionbelt.compiler.star import QueryPlan, StarSchemaPlanner
 from orionbelt.compiler.validator import validate_sql
@@ -394,10 +399,10 @@ class CompilationPipeline:
             return None
         try:
             return self._compile(ordered, model, dialect_name).sql
-        except Exception:
-            # The query holds the same filters as one the compiler took, so this
-            # is a compiler defect. It costs the query a shared cache entry, not
-            # its result: it is keyed on its own SQL.
+        except (ResolutionError, FanoutError):
+            # It holds the same filters as a query the compiler took, so a
+            # refusal is a compiler defect. It costs the query a shared cache
+            # entry, not its result: it is keyed on its own SQL.
             logger.warning("Compiling a query with its filters reordered failed", exc_info=True)
             return None
 
