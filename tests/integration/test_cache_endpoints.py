@@ -385,6 +385,51 @@ class TestOneshotBatchCache:
         assert result["row_count"] == 2
 
 
+def _filtered(countries: tuple[str, str], *, swap: bool = False) -> dict[str, object]:
+    """The query body with two WHERE and two HAVING filters, optionally swapped."""
+    where = [
+        {"field": "Customer Country", "op": "notequals", "value": countries[0]},
+        {"field": "Customer Country", "op": "notequals", "value": countries[1]},
+    ]
+    having = [
+        {"field": "Total Revenue", "op": "gt", "value": 10},
+        {"field": "Order Count", "op": "gt", "value": 1},
+    ]
+    if swap:
+        where, having = where[::-1], having[::-1]
+    return {**_QUERY_BODY, "where": where, "having": having}
+
+
+class TestFilterOrderSharesAnEntry:
+    """Filters given in another order return the same rows: one cache entry.
+
+    The UI adds a click-filter at the end of ``where``, so clicking the same two
+    values in the other order ran the query on the database again.
+    """
+
+    async def _run(self, client: AsyncClient, sid: str, mid: str, query: object) -> bool:
+        resp = await client.post(
+            f"/v1/sessions/{sid}/query/execute",
+            json={"model_id": mid, "query": query, "dialect": "duckdb"},
+        )
+        assert resp.status_code == 200, resp.text
+        return bool(resp.json()["cached"])
+
+    async def test_swapped_filters_hit_and_other_values_miss(
+        self, cached_client: tuple[AsyncClient, FileCache]
+    ) -> None:
+        client, _ = cached_client
+        sid = (await client.post("/v1/sessions")).json()["session_id"]
+        load = await client.post(
+            f"/v1/sessions/{sid}/models", json={"model_yaml": SAMPLE_MODEL_YAML}
+        )
+        mid = load.json()["model_id"]
+
+        assert await self._run(client, sid, mid, _filtered(("FR", "DE"))) is False
+        assert await self._run(client, sid, mid, _filtered(("FR", "DE"), swap=True)) is True
+        assert await self._run(client, sid, mid, _filtered(("FR", "IT"))) is False
+
+
 class TestShortcutPlanQuery:
     async def test_shortcut_plan_returns_plan(
         self, cached_client: tuple[AsyncClient, FileCache]

@@ -463,6 +463,8 @@ def prepare_sql(
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
             source=server._source_for(model, dialect, compiled),
+            # Older orionbelt has no key_sql; the compiled SQL is the key then.
+            key_sql=getattr(compiled, "key_sql", None),
         )
         # And the same declared schema. Without it the OBML path fell back to
         # probing the rows, so a model-declared ``timestamp`` streamed with
@@ -505,6 +507,8 @@ def prepare_sql(
             context=context,
             physical_tables=list(getattr(compiled, "physical_tables", [])),
             source=server._source_for(model, dialect, compiled),
+            # Older orionbelt has no key_sql; the compiled SQL is the key then.
+            key_sql=getattr(compiled, "key_sql", None),
         )
         return sql, dialect, model, schema_hint, _MODE_SEMANTIC, cache_meta
 
@@ -666,6 +670,7 @@ def build_cache_meta(
     context: flight.ServerCallContext | None,
     physical_tables: list[str],
     source: DataSource | None = None,
+    key_sql: str | None = None,
 ) -> dict[str, Any] | None:
     """What a semantic Flight query carries from planning to execution.
 
@@ -677,6 +682,10 @@ def build_cache_meta(
     source, as REST and pgwire scope it. Read live at execution instead, a
     source that moved to another database in between would store its new
     rows under a key another source shares.
+
+    The key is built from ``key_sql`` when given: the compiled SQL with its
+    AND-ed conditions in a fixed order, as REST and pgwire key it, so filters
+    given in another order share an entry. ``compiled_sql`` is what runs.
 
     Without a cache plan (backend disabled, or the TTL resolver decides the
     query isn't cacheable: no refresh contracts + ``no_cache`` unknown
@@ -716,7 +725,7 @@ def build_cache_meta(
         store=store,
         model_id=model_id,
         dialect=dialect,
-        sql=compiled_sql,
+        sql=key_sql or compiled_sql,
         physical_tables=physical_tables,
         cache=server._cache,
         cache_config=server._cache_config,

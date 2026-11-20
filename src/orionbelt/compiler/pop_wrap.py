@@ -40,6 +40,7 @@ from orionbelt.ast.nodes import (
     RawSQL,
     Select,
 )
+from orionbelt.compiler import condition_order
 from orionbelt.compiler.expr_rewrite import collect_column_refs, map_column_refs
 from orionbelt.compiler.filters import build_exists_filter_expr
 from orionbelt.compiler.grain_dedup import GrainDedupUnsupportedError, dedup_identity
@@ -615,7 +616,13 @@ def _source_tree_sql(
         clauses.append(_join_clause(step, to_obj, model, dialect, qualify_table))
         joined.add(step.to_object)
 
-    kept = [rf.expression for rf in resolved.where_filters if rf.expression not in (without or [])]
+    # In the order the result-cache key puts them (``compiler/condition_order``):
+    # the key cannot reorder conditions written as text, so filters given in
+    # another order would not share an entry.
+    kept = condition_order.sorted_conjuncts(
+        (rf.expression for rf in resolved.where_filters if rf.expression not in (without or [])),
+        dialect,
+    )
     if kept:
         clauses.append(f"  WHERE {_conjunction(dialect.compile_expr(e) for e in kept)}")
 
