@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Scope vocabulary (enforced only in oidc mode — Phase 4). Anonymous and
-# api_key principals carry all three so existing routes keep working.
+# Scope vocabulary. Every /v1 endpoint requires one (api/route_scopes.py).
+# Anonymous and api_key principals carry all three, so the check only
+# restricts OIDC users (Phase 4b).
 SCOPE_READ = "obsl:read"
 SCOPE_WRITE = "obsl:write"
 SCOPE_ADMIN = "obsl:admin"

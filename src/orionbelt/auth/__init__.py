@@ -22,6 +22,12 @@ from orionbelt.auth.config import (
     resolve_mode,
     validate_credential,
 )
+from orionbelt.auth.context import (
+    bind_principal,
+    current_principal,
+    may_use,
+    reset_principal,
+)
 from orionbelt.auth.errors import (
     AUTH_CONFIG_ERROR,
     AUTH_INSUFFICIENT_SCOPE,
@@ -61,11 +67,15 @@ __all__ = [
     "InsufficientScopeError",
     "Principal",
     "authenticate",
+    "bind_principal",
+    "current_principal",
     "get_api_keys",
     "get_header_name",
     "get_mode",
     "init_auth",
+    "may_use",
     "reset_auth",
+    "reset_principal",
     "resolve_mode",
     "validate_credential",
 ]
