@@ -19,11 +19,11 @@ entries. When per-tenant / SSO connections land the datasource key gains the
 principal so tenants stay isolated -- see
 ``design/PLAN_multi_tenant_connections.md``.
 
-The SQL a caller passes is ``CompilationResult.key_sql``: the compiled SQL
-with the AND-ed conditions of every WHERE and HAVING in a fixed order
+The SQL a caller passes is ``CompilationResult.key_sql``: the SQL of the
+same query with its filters joined by AND in a fixed order
 (``compiler/condition_order.py``), so filters listed in another order share
 an entry. ``KEY_VERSION`` did not move for it: a key written before can only
-equal one written now for a query holding the same conditions.
+equal one written now for a query holding the same filters.
 """
 
 from __future__ import annotations

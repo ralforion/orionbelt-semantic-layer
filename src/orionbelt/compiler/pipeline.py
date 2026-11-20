@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from orionbelt.ast.nodes import Select
 from orionbelt.compiler import condition_order
@@ -33,6 +34,8 @@ from orionbelt.models.query import QueryFilter, QueryFilterGroup, QueryFilterIte
 from orionbelt.models.roles import expand_role_objects, role_object_names
 from orionbelt.models.semantic import DataObject, SemanticModel, reuse_effective_measures
 from orionbelt.models.warnings import WarningCode, warning
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -171,14 +174,14 @@ class CompilationResult:
     when it reads only one; ``sql`` is then written in that source's dialect
     where it is configured here."""
     cache_key_sql: str | None = None
-    """``sql`` with the AND-ed conditions of every WHERE and HAVING in a fixed
+    """The SQL of the same query with its filters joined by AND in a fixed
     order, when that differs from ``sql``: what the result cache keys on, so
     filters given in another order share an entry. See
     ``compiler/condition_order.py`` and :attr:`key_sql`."""
 
     @property
     def key_sql(self) -> str:
-        """The SQL the result cache keys on (``sql`` unless its conditions moved)."""
+        """The SQL the result cache keys on (``sql`` unless its filters moved)."""
         return self.cache_key_sql or self.sql
 
 
@@ -369,7 +372,34 @@ class CompilationPipeline:
                 scopes.enter_context(reuse_effective_measures())
             if self._reuse_graphs:
                 scopes.enter_context(reuse_join_graphs())
-            return self._compile(query, model, dialect_name)
+            result = self._compile(query, model, dialect_name)
+            if result.federation is not None:
+                # Keyed on its legs' SQL and the combine query as written.
+                return result
+            key_sql = self._ordered_key_sql(query, model, dialect_name)
+            if key_sql is None or key_sql == result.sql:
+                return result
+            return replace(result, cache_key_sql=key_sql)
+
+    def _ordered_key_sql(
+        self, query: QueryObject, model: SemanticModel, dialect_name: str
+    ) -> str | None:
+        """The SQL of *query* with its filters joined by AND in a fixed order.
+
+        ``None`` when they are in that order already. See
+        ``compiler/condition_order.py``.
+        """
+        ordered = condition_order.ordered_query(query)
+        if ordered == query:
+            return None
+        try:
+            return self._compile(ordered, model, dialect_name).sql
+        except Exception:
+            # The query holds the same filters as one the compiler took, so this
+            # is a compiler defect. It costs the query a shared cache entry, not
+            # its result: it is keyed on its own SQL.
+            logger.warning("Compiling a query with its filters reordered failed", exc_info=True)
+            return None
 
     def _compile(
         self,
@@ -468,9 +498,6 @@ class CompilationPipeline:
         # Phase 3: Dialect-specific SQL rendering
         codegen = CodeGenerator(dialect)
         sql = codegen.generate(wrapped_ast)
-        # The same query with its AND-ed conditions in a fixed order, which the
-        # result cache keys on: filters given in another order share an entry.
-        cache_key_sql = condition_order.key_sql(wrapped_ast, dialect)
 
         # Phase 4: SQL validation (non-blocking)
         validation_errors = validate_sql(sql, dialect_name)
@@ -528,7 +555,6 @@ class CompilationPipeline:
             sql_valid=sql_valid,
             explain=explain,
             data_source=data_source,
-            cache_key_sql=cache_key_sql if cache_key_sql != sql else None,
         )
 
     def _compile_federated(

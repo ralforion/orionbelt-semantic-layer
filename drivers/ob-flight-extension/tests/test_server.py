@@ -949,8 +949,8 @@ class TestFlightBuildCacheMeta:
         assert meta["ttl"] == 86400
 
     def test_key_is_built_from_key_sql_and_the_compiled_sql_runs(self, mock_session_manager):
-        """With ``key_sql`` (the AND-ed conditions in a fixed order) the key is
-        REST's for that SQL, so filters given in another order share an entry
+        """With ``key_sql`` (the query with its filters in a fixed order) the key
+        is REST's for that SQL, so filters given in another order share an entry
         across surfaces; ``sql``, what runs, stays the compiled SQL."""
         from orionbelt.cache.key import build_cache_key, build_datasource_key
 

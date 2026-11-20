@@ -683,9 +683,10 @@ def build_cache_meta(
     source that moved to another database in between would store its new
     rows under a key another source shares.
 
-    The key is built from ``key_sql`` when given: the compiled SQL with its
-    AND-ed conditions in a fixed order, as REST and pgwire key it, so filters
-    given in another order share an entry. ``compiled_sql`` is what runs.
+    The key is built from ``key_sql`` when given: the SQL of the same query
+    with its filters joined by AND in a fixed order, as REST and pgwire key it,
+    so filters given in another order share an entry. ``compiled_sql`` is what
+    runs.
 
     Without a cache plan (backend disabled, or the TTL resolver decides the
     query isn't cacheable: no refresh contracts + ``no_cache`` unknown

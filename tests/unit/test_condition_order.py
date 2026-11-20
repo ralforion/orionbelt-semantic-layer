@@ -1,4 +1,4 @@
-"""The result cache keys on a query's SQL with its AND-ed conditions in a fixed order.
+"""The result cache keys on the SQL of a query with its AND-ed filters in a fixed order.
 
 Filters given in another order return the same rows; they must share a cache
 entry. Anything else that tells two queries apart must still give two keys.
@@ -6,25 +6,15 @@ entry. Anything else that tells two queries apart must still give two keys.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+from typing import Any
+
 import pytest
 
-from orionbelt.ast.nodes import (
-    CTE,
-    BinaryOp,
-    ColumnRef,
-    Expr,
-    From,
-    FunctionCall,
-    Literal,
-    OrderByItem,
-    Select,
-    SubqueryExpr,
-    UnaryOp,
-    UnionAll,
-)
-from orionbelt.compiler.condition_order import _canonical, key_sql
+from orionbelt.compiler import condition_order
+from orionbelt.compiler.condition_order import ordered_query
 from orionbelt.compiler.pipeline import CompilationPipeline
-from orionbelt.dialect.registry import DialectRegistry
 from orionbelt.models.query import QueryObject
 from orionbelt.models.semantic import SemanticModel
 from orionbelt.parser.loader import TrackedLoader
@@ -32,159 +22,172 @@ from orionbelt.parser.resolver import ReferenceResolver
 from tests.conftest import SAMPLE_MODEL_YAML
 
 DIALECTS = ["postgres", "duckdb", "snowflake", "mysql", "bigquery", "clickhouse", "databricks"]
+COMMERCE_MODEL = Path(__file__).parents[2] / "examples" / "orionbelt_1_commerce.yaml"
+SELECT = {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]}
 
 
-@pytest.fixture
-def sample_model() -> SemanticModel:
-    raw, source_map = TrackedLoader().load_string(SAMPLE_MODEL_YAML)
+def _load(text: str) -> SemanticModel:
+    raw, source_map = TrackedLoader().load_string(text)
     model, result = ReferenceResolver().resolve(raw, source_map)
     assert result.valid, result.errors
     return model
 
 
-def _eq(column: str, value: str) -> Expr:
-    return BinaryOp(left=ColumnRef(name=column, table="t"), op="=", right=Literal.string(value))
+@pytest.fixture
+def sample_model() -> SemanticModel:
+    return _load(SAMPLE_MODEL_YAML)
 
 
-A, B, C = _eq("a", "1"), _eq("b", "2"), _eq("c", "3")
+def _not(value: str) -> dict[str, Any]:
+    return {"field": "Customer Country", "op": "notequals", "value": value}
 
 
-def _and(*parts: Expr) -> Expr:
-    result = parts[0]
-    for part in parts[1:]:
-        result = BinaryOp(left=result, op="AND", right=part)
-    return result
+def _query(**parts: Any) -> QueryObject:
+    return QueryObject.model_validate({"select": SELECT, **parts})
 
 
-def _select(where: Expr | None = None, having: Expr | None = None, **kw: object) -> Select:
-    return Select(
-        columns=[ColumnRef(name="a", table="t")],
-        from_=From(source="t", alias="t"),
-        where=where,
-        having=having,
-        **kw,  # type: ignore[arg-type]
-    )
+def _keys(model: SemanticModel, *queries: QueryObject) -> list[str]:
+    return [CompilationPipeline().compile(q, model, "postgres").key_sql for q in queries]
 
 
-@pytest.mark.parametrize("dialect_name", DIALECTS)
-def test_where_conditions_in_any_order_share_a_key(dialect_name: str) -> None:
-    dialect = DialectRegistry.get(dialect_name)
-    first = _select(where=_and(A, B, C))
-    second = _select(where=_and(C, A, B))
-    assert dialect.compile(first) != dialect.compile(second)
-    assert key_sql(first, dialect) == key_sql(second, dialect)
-
-
-def test_nesting_of_the_and_chain_does_not_matter() -> None:
-    dialect = DialectRegistry.get("postgres")
-    left = _select(where=BinaryOp(left=BinaryOp(left=A, op="AND", right=B), op="AND", right=C))
-    right = _select(where=BinaryOp(left=C, op="AND", right=BinaryOp(left=B, op="AND", right=A)))
-    assert key_sql(left, dialect) == key_sql(right, dialect)
-
-
-def test_having_conditions_in_any_order_share_a_key() -> None:
-    dialect = DialectRegistry.get("postgres")
-    total = FunctionCall(name="SUM", args=[ColumnRef(name="x", table="t")])
-    gt = BinaryOp(left=total, op=">", right=Literal.number(10))
-    lt = BinaryOp(left=total, op="<", right=Literal.number(99))
-    assert key_sql(_select(having=_and(gt, lt)), dialect) == key_sql(
-        _select(having=_and(lt, gt)), dialect
-    )
-
-
-def test_or_keeps_its_order() -> None:
-    """Only conjunctions are reordered."""
-    dialect = DialectRegistry.get("postgres")
-    a_or_b = _select(where=BinaryOp(left=A, op="OR", right=B))
-    b_or_a = _select(where=BinaryOp(left=B, op="OR", right=A))
-    assert key_sql(a_or_b, dialect) != key_sql(b_or_a, dialect)
-
-
-def test_a_negated_conjunction_is_not_split() -> None:
-    """NOT (a AND b) is one condition; its operands stay as they are."""
-    dialect = DialectRegistry.get("postgres")
-    query = _select(where=_and(C, UnaryOp(op="NOT", operand=_and(B, A))))
-    assert "NOT (t.b = '2' AND t.a = '1')" in key_sql(query, dialect).replace('"', "")
-
-
-def test_conditions_of_subqueries_ctes_and_union_legs_are_ordered() -> None:
-    dialect = DialectRegistry.get("postgres")
-
-    def build(order: tuple[Expr, ...]) -> Select:
-        inner = _select(where=_and(*order))
-        exists = FunctionCall(name="EXISTS", args=[SubqueryExpr(query=inner)])
-        return Select(
-            columns=[ColumnRef(name="a", table="u")],
-            from_=From(source="u", alias="u"),
-            ctes=[CTE(name="u", query=UnionAll(queries=[inner, inner]))],
-            where=_and(exists, *order),
-        )
-
-    assert key_sql(build((A, B, C)), dialect) == key_sql(build((B, C, A)), dialect)
-
-
-def test_other_differences_still_give_two_keys() -> None:
-    dialect = DialectRegistry.get("postgres")
-    base = _select(where=_and(A, B))
-    assert key_sql(base, dialect) != key_sql(_select(where=_and(A, _eq("b", "9"))), dialect)
-    assert key_sql(base, dialect) != key_sql(_select(where=_and(A, B), distinct=True), dialect)
-    assert key_sql(base, dialect) != key_sql(_select(where=_and(A, B), limit=5), dialect)
-
-
-def test_every_field_of_every_node_survives() -> None:
-    """With nothing to reorder the canonical tree is the tree, field for field.
-
-    A hand-kept list of fields (as ``ASTVisitor.visit_select`` has) drops what it
-    does not name, a DISTINCT or a GROUPING SETS, and two queries would share a key.
-    """
-    node = Select(
-        columns=[ColumnRef(name="a", table="t")],
-        from_=From(source=_select(where=A), alias="s"),
-        where=B,
-        group_by=[ColumnRef(name="a", table="t")],
-        having=C,
-        order_by=[OrderByItem(expr=ColumnRef(name="a", table="t"), desc=True, nulls_last=True)],
-        limit=10,
-        offset=5,
-        ctes=[CTE(name="x", query=UnionAll(queries=[_select(where=A)]))],
-        distinct=True,
-        grouping="ROLLUP",
-    )
-    assert _canonical(node, DialectRegistry.get("postgres")) == node
-
-
-def _two_filter_queries() -> tuple[QueryObject, QueryObject]:
-    select = {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]}
-    where = [
-        {"field": "Customer Country", "op": "notequals", "value": "FR"},
-        {"field": "Customer Country", "op": "notequals", "value": "DE"},
-    ]
-    having = [
-        {"field": "Total Revenue", "op": "gt", "value": 10},
-        {"field": "Order Count", "op": "gt", "value": 1},
-    ]
-    first = QueryObject.model_validate({"select": select, "where": where, "having": having})
-    second = QueryObject.model_validate(
-        {"select": select, "where": where[::-1], "having": having[::-1]}
-    )
-    return first, second
-
-
-@pytest.mark.parametrize("dialect_name", DIALECTS)
-def test_compiled_filters_in_another_order_share_a_key(
-    sample_model: SemanticModel, dialect_name: str
-) -> None:
-    first, second = _two_filter_queries()
-    one = CompilationPipeline().compile(first, sample_model, dialect_name)
-    two = CompilationPipeline().compile(second, sample_model, dialect_name)
+def _assert_shared_key(model: SemanticModel, first: QueryObject, second: QueryObject) -> None:
+    one, two = (CompilationPipeline().compile(q, model, "postgres") for q in (first, second))
     assert one.sql != two.sql  # the SQL that runs keeps the order given
     assert one.key_sql == two.key_sql
 
 
-def test_key_sql_is_the_sql_when_nothing_moves(sample_model: SemanticModel) -> None:
-    query = QueryObject.model_validate(
-        {"select": {"dimensions": ["Customer Country"], "measures": ["Total Revenue"]}}
+# ── Which filters move ──────────────────────────────────────────────────────
+
+
+def test_where_and_having_lists_are_ordered() -> None:
+    having = [
+        {"field": "Total Revenue", "op": "gt", "value": 10},
+        {"field": "Order Count", "op": "gt", "value": 1},
+    ]
+    first = _query(where=[_not("FR"), _not("DE")], having=having)
+    second = _query(where=[_not("DE"), _not("FR")], having=having[::-1])
+    assert first != second
+    assert ordered_query(first) == ordered_query(second)
+
+
+def test_the_filters_of_an_and_group_are_ordered_and_an_or_group_keeps_its_order() -> None:
+    def group(logic: str, *values: str) -> dict[str, Any]:
+        return {"logic": logic, "filters": [_not(v) for v in values]}
+
+    assert ordered_query(_query(where=[group("and", "FR", "DE")])) == ordered_query(
+        _query(where=[group("and", "DE", "FR")])
     )
-    result = CompilationPipeline().compile(query, sample_model, "postgres")
+    assert ordered_query(_query(where=[group("or", "FR", "DE")])) != ordered_query(
+        _query(where=[group("or", "DE", "FR")])
+    )
+
+
+def test_an_and_group_inside_an_or_group_is_ordered() -> None:
+    def query(*values: str) -> QueryObject:
+        inner = {"logic": "and", "negated": True, "filters": [_not(v) for v in values]}
+        return _query(where=[{"logic": "or", "filters": [inner, _not("IT")]}])
+
+    assert ordered_query(query("FR", "DE")) == ordered_query(query("DE", "FR"))
+
+
+def test_the_filters_of_an_exists_subquery_are_ordered() -> None:
+    def query(*values: str) -> QueryObject:
+        inner = [{"field": "Customer Country", "op": "equals", "value": v} for v in values]
+        exists = {
+            "field": "Customer Country",
+            "op": "exists",
+            "subquery": {"dataObject": "Orders", "filter": inner},
+        }
+        return _query(where=[exists])
+
+    assert ordered_query(query("FR", "DE")) == ordered_query(query("DE", "FR"))
+
+
+def test_a_query_whose_filters_are_in_order_is_returned_equal() -> None:
+    query = _query(where=[_not("DE"), _not("FR")])
+    assert ordered_query(query) == query
+
+
+# ── The key ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("dialect_name", DIALECTS)
+def test_filters_in_another_order_share_a_key(
+    sample_model: SemanticModel, dialect_name: str
+) -> None:
+    first = _query(where=[_not("FR"), _not("DE")])
+    second = _query(where=[_not("DE"), _not("FR")])
+    pipeline = CompilationPipeline()
+    one = pipeline.compile(first, sample_model, dialect_name)
+    two = pipeline.compile(second, sample_model, dialect_name)
+    assert one.sql != two.sql  # the SQL that runs keeps the order given
+    assert one.key_sql == two.key_sql
+
+
+def test_other_differences_still_give_two_keys(sample_model: SemanticModel) -> None:
+    keys = _keys(
+        sample_model,
+        _query(where=[_not("FR"), _not("DE")]),
+        _query(where=[_not("FR"), _not("IT")]),
+        _query(where=[_not("FR"), _not("DE")], limit=5),
+        _query(
+            where=[_not("FR"), _not("DE")],
+            orderBy=[{"field": "Total Revenue", "direction": "desc"}],
+        ),
+        _query(where=[{"logic": "or", "filters": [_not("FR"), _not("DE")]}]),
+    )
+    assert len(set(keys)) == len(keys)
+
+
+def test_key_sql_is_the_sql_when_nothing_moves(sample_model: SemanticModel) -> None:
+    result = CompilationPipeline().compile(_query(), sample_model, "postgres")
     assert result.cache_key_sql is None
     assert result.key_sql == result.sql
+
+
+def test_period_over_period_filters_in_another_order_share_a_key() -> None:
+    """The PoP CTEs carry the filters as text the compiler writes itself."""
+    model = _load(COMMERCE_MODEL.read_text())
+    select = {"dimensions": ["Sales Month"], "measures": ["Sales YoY Growth"]}
+    where = [
+        {"field": "Client Name", "op": "equals", "value": "Kai Garcia"},
+        {"field": "Product Name", "op": "equals", "value": "Laptop"},
+    ]
+    one, two = (
+        QueryObject.model_validate({"select": select, "where": w}) for w in (where, where[::-1])
+    )
+    _assert_shared_key(model, one, two)
+
+
+def test_deeply_grouped_filters_still_compile(sample_model: SemanticModel) -> None:
+    """The reordered query nests its groups as deep as the one written.
+
+    Four AND groups of 128 filters compile; flattened into one chain of 512
+    they would exceed the recursion limit of the SQL renderer.
+    """
+
+    def query(step: int) -> QueryObject:
+        groups = [
+            {"logic": "and", "filters": [_not(f"{g}-{i}") for i in range(128)][::step]}
+            for g in range(4)
+        ]
+        return _query(where=groups)
+
+    _assert_shared_key(sample_model, query(1), query(-1))
+
+
+def test_a_reordered_query_the_compiler_refuses_keeps_its_own_key(
+    sample_model: SemanticModel,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The key costs the query a shared entry at worst, never its result."""
+    refused = _query(where=[{"field": "No Such Field", "op": "equals", "value": 1}])
+    monkeypatch.setattr(condition_order, "ordered_query", lambda _query: refused)
+    with caplog.at_level(logging.WARNING, logger="orionbelt.compiler.pipeline"):
+        result = CompilationPipeline().compile(
+            _query(where=[_not("FR"), _not("DE")]), sample_model, "postgres"
+        )
+    assert result.cache_key_sql is None
+    assert result.key_sql == result.sql
+    assert "reordered failed" in caplog.text
