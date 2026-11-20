@@ -1,18 +1,21 @@
 """REST adapter for the shared auth subsystem.
 
 Reads the credential from the configured header (or ``Authorization:
-Bearer`` fallback), calls :func:`orionbelt.auth.authenticate`, and
-translates the result into FastAPI accept/reject. Wired as a router-level
-dependency on ``/v1`` in ``api/app.py``. See design/PLAN_authentication.md §3.1.
+Bearer`` fallback), calls :func:`orionbelt.auth.authenticate`, checks the
+scope the matched endpoint requires (``api/route_scopes.py``), and binds
+the caller for the rest of the request so the session manager can tell
+whose sessions it may show. Wired as a router-level dependency on ``/v1``
+in ``api/app.py``. See design/PLAN_authentication.md §3.1 and §5.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator
 
 from fastapi import HTTPException, Request
 
 from orionbelt import auth as auth_core
+from orionbelt.api.route_scopes import required_scope
 from orionbelt.auth import Principal
 
 
@@ -27,15 +30,11 @@ def _extract_credential(request: Request) -> str | None:
     return None
 
 
-async def require_auth(request: Request) -> Principal:
-    """FastAPI dependency: authenticate the request or raise 401/403.
-
-    Stores the resolved principal on ``request.state.principal`` for
-    downstream handlers / logging.
-    """
+def _authenticate(request: Request) -> Principal:
+    """Authenticate the request or raise 401 (no credential) / 403 (wrong one)."""
     credential = _extract_credential(request)
     try:
-        principal = auth_core.authenticate(credential)
+        return auth_core.authenticate(credential)
     except auth_core.AuthRequiredError as exc:
         raise HTTPException(
             status_code=401,
@@ -48,27 +47,28 @@ async def require_auth(request: Request) -> Principal:
             detail={"code": exc.code, "message": exc.message},
         ) from exc
 
-    request.state.principal = principal
-    return principal
 
+async def require_auth(request: Request) -> AsyncIterator[Principal]:
+    """FastAPI dependency on ``/v1``: authenticate, authorize, bind the caller.
 
-def require_scope(scope: str) -> Callable[[Request], Awaitable[Principal]]:
-    """Build a dependency that requires ``scope`` in addition to authentication.
-
-    No-op in ``none`` / ``api_key`` modes (those principals carry full
-    scopes); enforced for OIDC user principals in Phase 4.
+    Raises 401/403 when the credential is missing or wrong, and 403 when the
+    caller lacks the scope the endpoint requires. The principal is stored on
+    ``request.state.principal`` and bound with
+    :func:`orionbelt.auth.bind_principal` until the request ends.
     """
-
-    async def _checker(request: Request) -> Principal:
-        principal = await require_auth(request)
-        if not principal.has_scope(scope):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": auth_core.AUTH_INSUFFICIENT_SCOPE,
-                    "message": f"Insufficient scope: requires {scope}",
-                },
-            )
-        return principal
-
-    return _checker
+    principal = _authenticate(request)
+    scope = required_scope(request.scope.get("endpoint"))
+    if not principal.has_scope(scope):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": auth_core.AUTH_INSUFFICIENT_SCOPE,
+                "message": f"Insufficient scope: requires {scope}",
+            },
+        )
+    request.state.principal = principal
+    token = auth_core.bind_principal(principal)
+    try:
+        yield principal
+    finally:
+        auth_core.reset_principal(token)
