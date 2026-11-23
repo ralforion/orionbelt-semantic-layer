@@ -69,11 +69,8 @@ async def start_pgwire(
     # Before the listener binds: a misconfiguration stops startup rather than
     # quietly answering ``N`` to every SSLRequest, which would leave clients
     # connecting in the clear against a configuration that reads as encrypted.
-    from orionbelt.auth import require_service_keys
+    from orionbelt.auth import MODE_OIDC, AuthConfigError, get_api_keys, get_mode
     from orionbelt.service.tls import TLSConfigError, load_listener_tls
-
-    # pgwire takes API keys only, also under AUTH_MODE=oidc.
-    require_service_keys("PGWIRE_ENABLED")
 
     try:
         tls = load_listener_tls(
@@ -84,6 +81,14 @@ async def start_pgwire(
         )
     except TLSConfigError as exc:
         raise RuntimeError(f"pgwire TLS configuration is unusable: {exc}") from None
+
+    # Under AUTH_MODE=oidc a client logs in with an API key, or with an access
+    # token over TLS. With neither available nobody could connect.
+    if get_mode() == MODE_OIDC and not get_api_keys() and tls is None:
+        raise AuthConfigError(
+            "PGWIRE_ENABLED with AUTH_MODE=oidc needs API_KEYS or PGWIRE_TLS_CERT: "
+            "an access token is accepted only over TLS."
+        )
 
     server = PgWireServer(
         host=settings.pgwire_host,

@@ -290,8 +290,8 @@ LOG_LEVEL=INFO
 # --- Arrow Flight SQL ---
 FLIGHT_ENABLED=true
 FLIGHT_PORT=8815
-FLIGHT_AUTH_MODE=none          # "none" or "token"
-# FLIGHT_API_TOKEN=changeme   # required when FLIGHT_AUTH_MODE=token
+# AUTH_MODE=api_key            # require a key on every surface, Flight included
+# API_KEYS=obsl_pat_...
 
 # --- Database vendor ---
 DB_VENDOR=postgres             # which driver to use for query execution
@@ -310,8 +310,6 @@ POSTGRES_PASSWORD=secret
 | ------------------ | -------- | ----------------------------------------- |
 | `FLIGHT_ENABLED`   | `false`  | Enable the Flight SQL server              |
 | `FLIGHT_PORT`      | `8815`   | gRPC listen port                          |
-| `FLIGHT_AUTH_MODE` | `none`   | `none` (open) or `token` (static bearer)  |
-| `FLIGHT_API_TOKEN` | —        | Required when `FLIGHT_AUTH_MODE=token`    |
 | `DB_VENDOR`        | `duckdb` | Default vendor driver for query execution |
 
 ### DB_VENDOR and Credentials
@@ -441,7 +439,7 @@ The Flight extension is **not needed** for Cloud Run deployments. Cloud Run uses
 3. **Host:** your Docker host IP or `localhost`
 4. **Port:** `8815`
 5. **Database** (multi-model only): the model name (one of `GET /v1/models`). Leave empty in single-model mode — auto-resolve picks the only loaded model. The driver maps this field to the gRPC `database` metadata header.
-6. **Authentication:** leave empty (or use token if `FLIGHT_AUTH_MODE=token`)
+6. **Authentication:** leave empty without auth; with `AUTH_MODE` on, any username and an API key (or, under `oidc`, an access token) as the password ([authentication](guide/authentication.md))
 7. **Test Connection** > should show "Connected", `Server: OrionBelt Semantic Layer`, and the driver version.
 8. In the SQL editor, write [OrionBelt Semantic QL](guide/semantic-ql.md):
 

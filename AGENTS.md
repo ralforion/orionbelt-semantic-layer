@@ -119,7 +119,7 @@ Top-level shortcuts (`/v1/query/execute`, `/v1/schema`, `/v1/dimensions`, ...) a
 Env vars / `.env` via pydantic-settings (the `Settings` model is the source of truth). Most are self-explanatory; the load-bearing / non-obvious ones:
 
 - `MODEL_FILES` — comma-separated OBML YAML paths for admin-curated mode. Each loads into its own *named protected session*, addressable by the OBML `name:` (fallback: filename stem, normalized to `[a-z][a-z0-9_]{0,62}`). BI tools select via Flight `database` catalog or pgwire `database=`. (Legacy `MODEL_FILE` removed in v2.7.0.)
-- `AUTH_MODE` — `none` | `api_key` | `oidc` (oidc not yet implemented). `API_KEYS` required for `api_key`; key sent via `API_KEY_HEADER` (default `X-API-Key`; `Authorization: Bearer` also accepted). `AUTH_ENABLED` is a deprecated alias.
+- `AUTH_MODE` — `none` | `api_key` | `oidc`. `API_KEYS` required for `api_key`; key sent via `API_KEY_HEADER` (default `X-API-Key`; `Authorization: Bearer` also accepted). `oidc` needs `OIDC_ISSUER` + `OIDC_AUDIENCE` (keys stay valid as service keys). `AUTH_ENABLED`, `FLIGHT_AUTH_MODE` and `FLIGHT_API_TOKEN` were removed: set to turn auth on, they refuse to start.
 - `LOG_FORMAT` — `console` | `json` | `cloudrun` (cloudrun = JSON, no access logs).
 - `EXPOSE_API_DOCS` / `EXPOSE_OPENAPI_SCHEMA` — toggle `/docs`+`/redoc` and `/openapi.json` (hide on non-demo deploys).
 - `PORT` (Cloud Run override), `SESSION_TTL_SECONDS` (1800), `DEFAULT_LOCALE`, `API_BASE_URL` / `ROOT_PATH` (standalone UI behind a load balancer).

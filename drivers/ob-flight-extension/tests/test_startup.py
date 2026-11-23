@@ -15,7 +15,7 @@ class TestStartFlightBackground:
 
         mock_server = MagicMock()
         with patch("ob_flight.server.OBFlightServer", return_value=mock_server):
-            with patch("ob_flight.auth.create_auth_handler", return_value=MagicMock()):
+            with patch("ob_flight.auth.NoopAuthHandler", return_value=MagicMock()):
                 thread = start_flight_background(session_manager=MagicMock())
                 assert thread.daemon is True
                 assert thread.name == "ob-flight-server"
@@ -23,10 +23,18 @@ class TestStartFlightBackground:
     def test_custom_port(self):
         mock_server = MagicMock()
         with patch("ob_flight.server.OBFlightServer", return_value=mock_server) as mock_cls:
-            with patch("ob_flight.auth.create_auth_handler", return_value=MagicMock()):
+            with patch("ob_flight.auth.NoopAuthHandler", return_value=MagicMock()):
                 start_flight_background(session_manager=MagicMock(), port=12345)
                 call_args = mock_cls.call_args
                 assert "grpc://0.0.0.0:12345" in call_args.args
+
+    def test_no_auth_handler_means_no_auth(self):
+        from ob_flight.auth import NoopAuthHandler
+
+        mock_server = MagicMock()
+        with patch("ob_flight.server.OBFlightServer", return_value=mock_server) as mock_cls:
+            start_flight_background(session_manager=MagicMock())
+            assert isinstance(mock_cls.call_args.kwargs["auth_handler"], NoopAuthHandler)
 
     def test_custom_auth_handler(self):
         mock_server = MagicMock()
@@ -40,7 +48,7 @@ class TestStartFlightBackground:
         monkeypatch.setenv("FLIGHT_PORT", "7777")
         mock_server = MagicMock()
         with patch("ob_flight.server.OBFlightServer", return_value=mock_server) as mock_cls:
-            with patch("ob_flight.auth.create_auth_handler", return_value=MagicMock()):
+            with patch("ob_flight.auth.NoopAuthHandler", return_value=MagicMock()):
                 start_flight_background(session_manager=MagicMock())
                 call_args = mock_cls.call_args
                 assert "grpc://0.0.0.0:7777" in call_args.args
@@ -49,7 +57,7 @@ class TestStartFlightBackground:
         monkeypatch.setenv("DB_VENDOR", "snowflake")
         mock_server = MagicMock()
         with patch("ob_flight.server.OBFlightServer", return_value=mock_server) as mock_cls:
-            with patch("ob_flight.auth.create_auth_handler", return_value=MagicMock()):
+            with patch("ob_flight.auth.NoopAuthHandler", return_value=MagicMock()):
                 start_flight_background(session_manager=MagicMock())
                 call_kwargs = mock_cls.call_args.kwargs
                 assert call_kwargs["default_dialect"] == "snowflake"
@@ -58,7 +66,7 @@ class TestStartFlightBackground:
         mock_server = MagicMock()
         mock_mgr = MagicMock()
         with patch("ob_flight.server.OBFlightServer", return_value=mock_server) as mock_cls:
-            with patch("ob_flight.auth.create_auth_handler", return_value=MagicMock()):
+            with patch("ob_flight.auth.NoopAuthHandler", return_value=MagicMock()):
                 start_flight_background(session_manager=mock_mgr)
                 call_kwargs = mock_cls.call_args.kwargs
                 assert call_kwargs["session_manager"] is mock_mgr

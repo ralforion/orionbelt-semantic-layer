@@ -23,9 +23,12 @@ import struct
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from orionbelt.auth import bind_principal
+from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.auth import (
     MECH_CLEARTEXT,
+    AuthResult,
     auth_required,
     authenticate,
     scram_candidate_keys,
@@ -258,12 +261,13 @@ class PgWireServer:
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
-    ) -> protocol.StartupMessage | None:
+    ) -> tuple[protocol.StartupMessage, AuthResult] | None:
         """Read the StartupMessage (handling SSLRequest) and authenticate.
 
-        Returns the StartupMessage on success, or ``None`` when auth was
-        rejected (a FATAL ErrorResponse has already been written). Run under a
-        wait_for deadline by the caller so a stalled client cannot pin a slot.
+        Returns the StartupMessage and the successful auth result (its caller)
+        on success, or ``None`` when auth was rejected (a FATAL ErrorResponse
+        has already been written). Run under a wait_for deadline by the caller
+        so a stalled client cannot pin a slot.
         """
         startup = await protocol.read_startup_message(reader.readexactly)
         if startup is None:
@@ -282,29 +286,33 @@ class PgWireServer:
             if startup is None:
                 raise protocol.ProtocolError("Repeated SSLRequest on same socket")
 
-        if not await self._authenticate(reader, writer, startup):
+        result = await self._authenticate(reader, writer, startup)
+        if not result.ok:
             return None
-        return startup
+        return startup, result
 
     async def _authenticate(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         startup: protocol.StartupMessage,
-    ) -> bool:
+    ) -> AuthResult:
         """Run the auth handshake for the connection.
 
-        Returns True when the connection is authenticated (and AuthenticationOk
-        has NOT yet been written — the caller emits it). Returns False after
-        writing a FATAL ErrorResponse on rejection.
+        Returns an ok result, carrying the caller, when the connection is
+        authenticated (and AuthenticationOk has NOT yet been written — the
+        caller emits it). Returns a refused result after writing a FATAL
+        ErrorResponse on rejection.
         """
         if not auth_required():
             # trust mode — validate (always ok) for symmetry, no exchange.
-            return authenticate(startup=startup, password=None).ok
+            return authenticate(startup=startup, password=None)
 
-        mechanism = select_mechanism(self.auth_mode)
+        # After an SSLRequest the writer's transport is the TLS one.
+        tls = writer.get_extra_info("ssl_object") is not None
+        mechanism = select_mechanism(self.auth_mode, tls=tls)
         if mechanism == MECH_CLEARTEXT:
-            return await self._run_cleartext(reader, writer, startup)
+            return await self._run_cleartext(reader, writer, startup, tls=tls)
         return await self._run_scram(reader, writer)
 
     async def _run_cleartext(
@@ -312,7 +320,9 @@ class PgWireServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         startup: protocol.StartupMessage,
-    ) -> bool:
+        *,
+        tls: bool,
+    ) -> AuthResult:
         writer.write(protocol.build_authentication_cleartext_password())
         await self._drain(writer)
         tag, body = await protocol.read_message(
@@ -320,17 +330,19 @@ class PgWireServer:
         )
         if tag != b"p":
             await self._send_fatal(writer, code="08P01", message="expected PasswordMessage")
-            return False
+            return AuthResult(ok=False)
         password = protocol.parse_password_message(body)
-        result = authenticate(startup=startup, password=password)
+        # Verifying a token may fetch the issuer's keys: keep it off the loop.
+        result = await asyncio.to_thread(authenticate, startup=startup, password=password, tls=tls)
         if not result.ok:
             await self._send_fatal(
                 writer, code="28P01", message=result.error_message or "authentication failed"
             )
-            return False
-        return True
+        return result
 
-    async def _run_scram(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+    async def _run_scram(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> AuthResult:
         """Drive the server side of a SCRAM-SHA-256 SASL exchange."""
         exchange = ScramServerExchange(scram_candidate_keys())
 
@@ -344,18 +356,18 @@ class PgWireServer:
         )
         if tag != b"p":
             await self._send_fatal(writer, code="08P01", message="expected SASLInitialResponse")
-            return False
+            return AuthResult(ok=False)
         mechanism, client_first = protocol.parse_sasl_initial_response(body)
         if mechanism != SCRAM_SHA_256:
             await self._send_fatal(
                 writer, code="28P01", message=f"unsupported SASL mechanism: {mechanism}"
             )
-            return False
+            return AuthResult(ok=False)
         try:
             server_first = exchange.handle_client_first(client_first)
         except ScramError:
             await self._send_fatal(writer, code="08P01", message="malformed SCRAM client-first")
-            return False
+            return AuthResult(ok=False)
         writer.write(protocol.build_authentication_sasl_continue(server_first.encode("utf-8")))
         await self._drain(writer)
 
@@ -365,18 +377,18 @@ class PgWireServer:
         )
         if tag != b"p":
             await self._send_fatal(writer, code="08P01", message="expected SASLResponse")
-            return False
+            return AuthResult(ok=False)
         client_final = protocol.parse_sasl_response(body)
         try:
             server_final = exchange.handle_client_final(client_final)
         except ScramError:
             await self._send_fatal(writer, code="28P01", message="SCRAM authentication failed")
-            return False
+            return AuthResult(ok=False)
 
         # 4. SASLFinal with the server signature; AuthenticationOk follows.
         writer.write(protocol.build_authentication_sasl_final(server_final.encode("utf-8")))
         await self._drain(writer)
-        return True
+        return AuthResult(ok=True, principal=API_KEY_PRINCIPAL)
 
     async def _handle_connection(
         self,
@@ -431,7 +443,7 @@ class PgWireServer:
         # forever; with PGWIRE_MAX_CONNECTIONS such clients could exhaust
         # all slots and lock out legitimate users.
         try:
-            startup = await asyncio.wait_for(
+            handshake = await asyncio.wait_for(
                 self._handshake(reader, writer),
                 timeout=self.auth_timeout,
             )
@@ -443,9 +455,16 @@ class PgWireServer:
                 message="authentication handshake timed out",
             )
             return
-        if startup is None:
+        if handshake is None:
             # SSLRequest loop exhausted or auth rejected — error already sent.
             return
+        startup, auth = handshake
+        if auth.principal is not None:
+            # This connection's task runs as its caller from here on, so the
+            # session manager shows it only its own sessions, as on REST. The
+            # connection was authenticated once: it stays open after a token
+            # expires, as a Postgres connection does.
+            bind_principal(auth.principal)
 
         # Handshake complete: AuthOk + a small set of ParameterStatus
         # frames + BackendKeyData + ReadyForQuery.

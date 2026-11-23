@@ -57,9 +57,10 @@ class Settings(BaseSettings):
     # Optional IdP name -> OBSL scope pairs, e.g. "analysts=obsl:read,admins=obsl:admin".
     oidc_scope_map: str = ""
     oidc_clock_skew_seconds: int = 60  # leeway on exp / nbf / iat
-    # Legacy alias for auth_mode=api_key. Deprecated; honoured one release with
-    # a startup warning. Only takes effect when AUTH_MODE is left at "none".
-    auth_enabled: bool = False
+    # Removed settings, read only so the server can refuse to start when one
+    # is still set to turn auth on: ignoring it would start without auth.
+    # See refuse_removed_auth_settings() in api/app.py.
+    auth_enabled: bool = False  # was an alias for AUTH_MODE=api_key
 
     # Public-doc surfaces. Default True preserves current public-demo behaviour.
     # Set EXPOSE_API_DOCS=false on non-demo deployments to disable Swagger UI,
@@ -143,8 +144,8 @@ class Settings(BaseSettings):
     # Arrow Flight SQL server (requires ob-flight-extension)
     flight_enabled: bool = False  # start gRPC Flight server on FLIGHT_PORT (implies query_execute)
     flight_port: int = 8815
-    flight_auth_mode: str = "none"  # "none" or "token"
-    flight_api_token: str | None = None
+    flight_auth_mode: str = "none"  # removed (was "token"); see auth_enabled above
+    flight_api_token: str | None = None  # removed; see auth_enabled above
     # TLS for the Flight listener. Paths, not PEM content: a private key in the
     # environment is readable by ``docker inspect`` and by a crash dump.
     # Both or neither - a cert without a key is a configuration error rather

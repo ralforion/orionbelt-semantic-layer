@@ -19,7 +19,6 @@ from orionbelt.auth import (
     init_auth,
     parse_scope_claims,
     parse_scope_map,
-    require_service_keys,
     reset_auth,
     validate_api_key,
 )
@@ -132,10 +131,10 @@ class TestKeysNextToTokens:
         with pytest.raises(AuthRequiredError):
             authenticate(None)
 
-    def test_flight_and_pgwire_take_the_key_but_not_a_token(self, idp: FakeIssuer) -> None:
+    def test_validate_api_key_checks_keys_only(self, idp: FakeIssuer) -> None:
+        # What pgwire uses where a token may not be accepted (no TLS).
         assert validate_api_key(SERVICE_KEY)
         assert not validate_api_key(idp.token())
-        require_service_keys("FLIGHT_ENABLED")  # keys are configured: no refusal
 
 
 @pytest.mark.usefixtures("oidc_without_keys")
@@ -143,12 +142,6 @@ class TestTokensOnly:
     def test_non_token_credential_is_a_bad_token(self) -> None:
         with pytest.raises(TokenInvalidError, match="malformed"):
             authenticate(SERVICE_KEY)
-
-    def test_flight_and_pgwire_refuse_to_start(self) -> None:
-        with pytest.raises(
-            AuthConfigError, match="PGWIRE_ENABLED with AUTH_MODE=oidc needs API_KEYS"
-        ):
-            require_service_keys("PGWIRE_ENABLED")
 
 
 class TestStartup:

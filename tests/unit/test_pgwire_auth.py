@@ -71,6 +71,7 @@ class TestOidcMode:
             oidc=config,
             verifier=JwtVerifier(config, fetch=CountingFetch(idp)),
         )
+        self.idp = idp
         self.token = idp.token()
 
     def test_password_required(self) -> None:
@@ -80,10 +81,40 @@ class TestOidcMode:
     def test_service_key(self) -> None:
         assert authenticate(startup=STARTUP, password=API_KEY).ok is True
 
-    def test_a_valid_token_is_not_a_password(self) -> None:
-        result = authenticate(startup=STARTUP, password=self.token)
+    def test_service_key_is_the_api_key_caller(self) -> None:
+        result = authenticate(startup=STARTUP, password=API_KEY)
+        assert result.principal is not None and result.principal.kind == "api_key"
+
+    def test_a_token_over_tls_is_its_user(self) -> None:
+        result = authenticate(startup=STARTUP, password=self.token, tls=True)
+        assert result.ok is True
+        assert result.principal is not None and result.principal.sub == "alice"
+
+    def test_a_token_without_tls_is_refused_and_says_why(self) -> None:
+        result = authenticate(startup=STARTUP, password=self.token, tls=False)
         assert result.ok is False
-        assert result.error_message == "invalid API key"
+        assert "accepted only over TLS" in result.error_message
+
+    def test_a_bad_token_says_why(self) -> None:
+        result = authenticate(startup=STARTUP, password=self.idp.token(expires_in=-300), tls=True)
+        assert (result.ok, result.error_message) == (False, "Token has expired")
+
+    def test_a_token_needs_obsl_read(self) -> None:
+        result = authenticate(startup=STARTUP, password=self.idp.token(scope="openid"), tls=True)
+        assert (result.ok, result.error_message) == (
+            False,
+            "insufficient scope: requires obsl:read",
+        )
+
+    def test_tls_gets_cleartext_so_a_token_can_be_sent(self) -> None:
+        assert select_mechanism("trust", tls=True) == MECH_CLEARTEXT
+        assert select_mechanism("trust", tls=False) == MECH_SCRAM
+
+
+class TestSelectMechanismUnderApiKey:
+    def test_tls_does_not_change_the_mechanism(self) -> None:
+        init_auth(auth_mode="api_key", api_keys=API_KEY)
+        assert select_mechanism("trust", tls=True) == MECH_SCRAM
 
 
 class TestSelectMechanism:

@@ -136,7 +136,6 @@ def init_session_manager(
     auth_mode: str = "none",
     api_keys: str = "",
     api_key_header: str = "X-API-Key",
-    auth_enabled: bool = False,
     oidc: OidcConfig | None = None,
 ) -> AppRuntime:
     """Build the process runtime and initialise the auth subsystem.
@@ -174,7 +173,6 @@ def init_session_manager(
         auth_mode=auth_mode,
         api_keys=api_keys,
         header_name=api_key_header,
-        auth_enabled=auth_enabled,
         oidc=oidc,
     )
     return _runtime

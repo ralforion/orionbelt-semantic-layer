@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import threading
 import time
 import uuid
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import Any, cast
 
 import pyarrow as pa
+from orionbelt.auth import bind_principal, reset_principal
 from orionbelt.compiler.sql_translator import (
     SQLTranslationError,
     bind_placeholders,
@@ -19,6 +23,7 @@ from orionbelt.compiler.sql_translator import (
 from pyarrow import flight
 
 from ob_flight import server_catalog, server_execution, server_routing
+from ob_flight.auth import caller_of
 from ob_flight.datasources import DataSource
 from ob_flight.db_router import connect as db_connect
 from ob_flight.flight_sql import (
@@ -143,6 +148,55 @@ def _bound_values(table: Any) -> list[Any]:
             "are not supported - execute once per row instead."
         )
     return [table.column(i)[0].as_py() for i in range(table.num_columns)]
+
+
+def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
+    """Run a Flight RPC as the caller its credential authenticated as.
+
+    Binds the caller (``orionbelt.auth.bind_principal``) so the session
+    manager only shows the caller's own sessions, as on REST. Without auth
+    there is no caller and nothing is bound.
+
+    A generator RPC (``do_action``, ``list_flights``) is bound one step at a
+    time: pyarrow runs each ``next()`` in a context of its own, so a binding
+    made in one step is gone in the next and cannot be reset there.
+    """
+    if inspect.isgeneratorfunction(method):
+
+        @functools.wraps(method)
+        def generator(self: Any, context: Any, *args: Any, **kwargs: Any) -> Iterator[Any]:
+            caller = caller_of(context)
+            inner = method(self, context, *args, **kwargs)
+            if caller is None:
+                yield from inner
+                return
+            try:
+                while True:
+                    token = bind_principal(caller)
+                    try:
+                        item = next(inner)
+                    except StopIteration:
+                        return
+                    finally:
+                        reset_principal(token)
+                    yield item
+            finally:
+                inner.close()
+
+        return cast(RPC, generator)
+
+    @functools.wraps(method)
+    def call(self: Any, context: Any, *args: Any, **kwargs: Any) -> Any:
+        caller = caller_of(context)
+        if caller is None:
+            return method(self, context, *args, **kwargs)
+        token = bind_principal(caller)
+        try:
+            return method(self, context, *args, **kwargs)
+        finally:
+            reset_principal(token)
+
+    return cast(RPC, call)
 
 
 class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
@@ -441,6 +495,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     # ------------------------------------------------------------------
     # Flight protocol overrides — stay on the server class.
     # ------------------------------------------------------------------
+    @_as_caller
     def get_flight_info(
         self, context: flight.ServerCallContext, descriptor: flight.FlightDescriptor
     ) -> flight.FlightInfo:
@@ -586,6 +641,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         endpoint = flight.FlightEndpoint(ticket, [])
         return flight.FlightInfo(schema, descriptor, [endpoint], -1, -1)
 
+    @_as_caller
     def do_get(
         self, context: flight.ServerCallContext, ticket: flight.Ticket
     ) -> flight.RecordBatchStream:
@@ -627,6 +683,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         result_schema: pa.Schema | None = schema_raw if isinstance(schema_raw, pa.Schema) else None
         return self._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=result_schema)
 
+    @_as_caller
     def do_put(
         self,
         context: flight.ServerCallContext,
@@ -722,6 +779,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 len(entry[2]),
             )
 
+    @_as_caller
     def do_action(self, context: flight.ServerCallContext, action: flight.Action) -> Any:
         """Handle Flight SQL actions (CreatePreparedStatement, ClosePreparedStatement)."""
         action_type = action.type
@@ -859,6 +917,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         else:
             raise flight.FlightServerError(f"Unsupported action: {action_type}")
 
+    @_as_caller
     def list_flights(self, context: flight.ServerCallContext, _criteria: bytes) -> Any:
         """List the semantic virtual table + metadata views."""
         from ob_flight.catalog import model_to_flight_infos

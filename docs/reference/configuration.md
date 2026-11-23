@@ -41,8 +41,6 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `METRICS_PORT`             | `9090`      | Metrics port                              |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution       |
 | `FLIGHT_PORT`              | `8815`      | Arrow Flight SQL gRPC port                |
-| `FLIGHT_AUTH_MODE`         | `none`      | Deprecated: `token` with `FLIGHT_API_TOKEN`; use `AUTH_MODE` + `API_KEYS` |
-| `FLIGHT_API_TOKEN`         | —           | Deprecated static token (when `FLIGHT_AUTH_MODE=token`) |
 | `PGWIRE_ENABLED`           | `false`     | Enable PostgreSQL wire-protocol surface (v2.5.0+) — connect any Postgres client (Tableau, DBeaver, Superset, Power BI, `psql`, Dremio's Postgres source) |
 | `PGWIRE_HOST`              | `0.0.0.0`   | pgwire bind address                       |
 | `PGWIRE_PORT`              | `5432`      | pgwire TCP port                           |
