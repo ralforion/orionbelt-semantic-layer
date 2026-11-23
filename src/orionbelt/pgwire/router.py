@@ -79,6 +79,7 @@ from orionbelt.service.result_schema import (
     reconcile_to_declared,
 )
 from orionbelt.service.session_manager import SessionManager
+from orionbelt.service.user_login import DataSourceSignInError
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +435,15 @@ class SemanticRouter:
             elif cached is not None:
                 assert cached.exec_result is not None  # a miss always executed
                 result = cached.exec_result
+        except DataSourceSignInError as exc:
+            # The data source logs in as the user and could not: a sign-in
+            # problem, not a warehouse failure.
+            unavailable = exc.status == 503
+            return protocol.build_error_response(
+                severity="ERROR",
+                code=SQLSTATE_CANNOT_CONNECT_NOW if unavailable else SQLSTATE_INVALID_AUTHORIZATION,
+                message=str(exc),
+            )
         except ExecutionUnavailableError as exc:
             return protocol.build_error_response(
                 severity="ERROR",

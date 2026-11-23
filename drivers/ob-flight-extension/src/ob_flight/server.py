@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 import pyarrow as pa
-from orionbelt.auth import bind_principal, current_principal, reset_principal
+from orionbelt.auth import Binding, bind_principal, current_principal, reset_principal
 from orionbelt.compiler.sql_translator import (
     SQLTranslationError,
     bind_placeholders,
@@ -20,10 +20,11 @@ from orionbelt.compiler.sql_translator import (
     placeholder_arrow_schema,
     strip_where_for_schema,
 )
+from orionbelt.service.user_login import DataSourceSignInError
 from pyarrow import flight
 
 from ob_flight import server_catalog, server_execution, server_routing
-from ob_flight.auth import caller_of
+from ob_flight.auth import caller_of, user_credential_of
 from ob_flight.datasources import DataSource
 from ob_flight.db_router import connect as db_connect
 from ob_flight.flight_sql import (
@@ -150,6 +151,23 @@ def _bound_values(table: Any) -> list[Any]:
     return [table.column(i)[0].as_py() for i in range(table.num_columns)]
 
 
+def _bind_caller(context: Any) -> Binding | None:
+    """Bind the call's caller and, for a signed-in user, their token; None without auth."""
+    caller = caller_of(context)
+    if caller is None:
+        return None
+    return bind_principal(caller, user_credential_of(context))
+
+
+def _flight_error(exc: DataSourceSignInError) -> flight.FlightError:
+    """The Flight error for a data source that could not log in as the user."""
+    if exc.status == 401:
+        return flight.FlightUnauthenticatedError(str(exc))
+    if exc.status == 503:
+        return flight.FlightUnavailableError(str(exc))
+    return flight.FlightUnauthorizedError(str(exc))
+
+
 def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
     """Run a Flight RPC as the caller its credential authenticated as.
 
@@ -160,25 +178,27 @@ def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
     A generator RPC (``do_action``, ``list_flights``) is bound one step at a
     time: pyarrow runs each ``next()`` in a context of its own, so a binding
     made in one step is gone in the next and cannot be reset there.
+
+    A data source that logs in as the user and cannot (no signed-in user, or
+    the warehouse refused) answers with the matching Flight error.
     """
     if inspect.isgeneratorfunction(method):
 
         @functools.wraps(method)
         def generator(self: Any, context: Any, *args: Any, **kwargs: Any) -> Iterator[Any]:
-            caller = caller_of(context)
             inner = method(self, context, *args, **kwargs)
-            if caller is None:
-                yield from inner
-                return
             try:
                 while True:
-                    token = bind_principal(caller)
+                    binding = _bind_caller(context)
                     try:
                         item = next(inner)
                     except StopIteration:
                         return
+                    except DataSourceSignInError as exc:
+                        raise _flight_error(exc) from None
                     finally:
-                        reset_principal(token)
+                        if binding is not None:
+                            reset_principal(binding)
                     yield item
             finally:
                 inner.close()
@@ -187,14 +207,14 @@ def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
 
     @functools.wraps(method)
     def call(self: Any, context: Any, *args: Any, **kwargs: Any) -> Any:
-        caller = caller_of(context)
-        if caller is None:
-            return method(self, context, *args, **kwargs)
-        token = bind_principal(caller)
+        binding = _bind_caller(context)
         try:
             return method(self, context, *args, **kwargs)
+        except DataSourceSignInError as exc:
+            raise _flight_error(exc) from None
         finally:
-            reset_principal(token)
+            if binding is not None:
+                reset_principal(binding)
 
     return cast(RPC, call)
 

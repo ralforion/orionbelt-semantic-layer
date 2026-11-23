@@ -50,6 +50,9 @@ class AuthResult:
     ok: bool
     error_message: str = ""
     principal: Principal | None = None
+    # The access token a signed-in user logged in with (never an API key), for
+    # a data source that logs in as the user.
+    credential: str | None = None
 
 
 def auth_required() -> bool:
@@ -118,4 +121,4 @@ def authenticate(
         return _refused(exc.message)
     if not principal.has_scope(SCOPE_READ):
         return _refused(f"insufficient scope: requires {SCOPE_READ}")
-    return AuthResult(ok=True, principal=principal)
+    return AuthResult(ok=True, principal=principal, credential=password)

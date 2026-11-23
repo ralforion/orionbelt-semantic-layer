@@ -47,6 +47,7 @@ from orionbelt.service.db_executor import (
     session_timezone,
 )
 from orionbelt.service.query_execution import resolve_cache_plan, resolve_effective_ttl
+from orionbelt.service.user_login import max_cache_ttl
 
 if TYPE_CHECKING:
     # ob_flight is an optional extra: imported for the annotation only.
@@ -439,6 +440,7 @@ async def execute_query_with_cache(
     expires_by: Callable[[], datetime | None] | None = None,
     sink: Callable[[Any], Any] | None = None,
     cache_if: Callable[[], bool] | None = None,
+    max_ttl: float | None = None,
 ) -> CachedExecution:
     """Run a compiled query through the result cache, executing on a miss.
 
@@ -475,6 +477,10 @@ async def execute_query_with_cache(
     :func:`~orionbelt.service.db_executor.execute_sql`), and ``cache_if``,
     asked once the result is computed, may decline to store it.
 
+    A source that logs in as the user caps the TTL (``max_cache_ttl``);
+    ``max_ttl`` caps it too, for a result that has no one source: a federated
+    one passes the strictest cap among its legs' sources.
+
     A hit labels its timestamps without a zone as the run would have
     (:func:`hit_timezone`); one ``run`` computes, with ``tz``.
     """
@@ -485,6 +491,8 @@ async def execute_query_with_cache(
     ds = datasource or (
         datasource_key_for(source) if source is not None else build_datasource_key(dialect)
     )
+    caps = [max_ttl, max_cache_ttl(source) if source is not None else None]
+    max_ttl = min((cap for cap in caps if cap is not None), default=None)
     cache_key: str | None = None
     ttl_outcome: TtlResult | None = None
 
@@ -501,6 +509,7 @@ async def execute_query_with_cache(
             cache=cache,
             cache_config=cache_config,
             datasource=ds,
+            max_ttl=max_ttl,
         )
         ds = plan.datasource
         cache_key = plan.cache_key
@@ -715,6 +724,10 @@ async def execute_federated_with_cache(
         datasource_key_for(source) if source is not None else build_datasource_key(leg.dialect)
         for leg, source in zip(plan.legs, sources, strict=True)
     ]
+    # The combined rows are as much each signed-in user's as their legs' are,
+    # so they are cached no longer than the strictest of those sources allows.
+    leg_caps = [max_cache_ttl(source) for source in sources if source is not None]
+    max_ttl = min((cap for cap in leg_caps if cap is not None), default=None)
     key_sql = "\n;\n".join(
         [
             plan.combine_sql,
@@ -860,6 +873,7 @@ async def execute_federated_with_cache(
         key_sql=key_sql,
         run=run_legs,
         expires_by=lambda: min(leg_expiries, default=None),
+        max_ttl=max_ttl,
     )
 
 

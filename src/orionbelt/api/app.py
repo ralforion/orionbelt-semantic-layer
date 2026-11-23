@@ -71,6 +71,7 @@ from orionbelt.auth import (
     MODE_OIDC,
     AuthConfigError,
     OidcConfig,
+    get_mode,
     parse_scope_claims,
     parse_scope_map,
     resolve_mode,
@@ -81,6 +82,7 @@ from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.federated_executor import FederationLimits, spill_directory
 from orionbelt.service.federated_executor import configure as configure_federation
 from orionbelt.service.session_manager import SessionManager
+from orionbelt.service.user_login import DataSourceSignInError
 from orionbelt.service.value_search import ValueSearchConfig
 from orionbelt.settings import Settings
 
@@ -234,6 +236,34 @@ def refuse_removed_auth_settings(settings: Settings) -> None:
             "These settings were removed and would no longer turn authentication on: "
             + "; ".join(removed)
             + ". Remove them. See docs/guide/authentication.md."
+        )
+
+
+def _refuse_user_login_without_oidc() -> None:
+    """Refuse to start when a data source logs in as the user but nobody can sign in.
+
+    ``DB_<NAME>_AUTH=user`` needs the caller's identity provider token, which
+    only ``AUTH_MODE=oidc`` carries. A data-source configuration error is left
+    to surface where the source is used, as before.
+    """
+    try:
+        from ob_flight.datasources import (
+            USER_LOGIN,
+            DataSourceConfigError,
+            configured_datasources,
+        )
+    except ImportError:  # no ob-flight-extension: no named data sources
+        return
+    try:
+        sources = configured_datasources()
+    except DataSourceConfigError as exc:
+        logger.warning("Data source configuration: %s", exc)
+        return
+    user_login = [s.name for s in sources if s.login == USER_LOGIN]
+    if user_login and get_mode() != MODE_OIDC:
+        raise AuthConfigError(
+            f"Data source(s) {', '.join(user_login)} log in as the user (DB_<NAME>_AUTH=user), "
+            "which needs AUTH_MODE=oidc: only a signed-in user's token can be exchanged."
         )
 
 
@@ -487,6 +517,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         api_key_header=settings.api_key_header,
         oidc=oidc_config(settings),
     )
+    _refuse_user_login_without_oidc()
 
     # Start Arrow Flight SQL server only when FLIGHT_ENABLED=true. It is an
     # extra network surface (binds 0.0.0.0), so it must be opted into
@@ -701,6 +732,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # branch on the code instead of pattern-matching English. Non-extra errors
     # are passed through unchanged so other validators (e.g. missing fields)
     # keep their default form.
+    @app.exception_handler(DataSourceSignInError)
+    async def _data_source_sign_in_error(request: Request, exc: Exception) -> Response:
+        # A data source that logs in as the user could not: no signed-in user
+        # (401), the warehouse refused them (403), or its sign-in service was
+        # unreachable (503). Not a warehouse failure.
+        if not isinstance(exc, DataSourceSignInError):
+            raise exc
+        headers = {"WWW-Authenticate": 'Bearer realm="obsl"'} if exc.status == 401 else None
+        return JSONResponse(
+            status_code=exc.status,
+            content={"detail": {"code": exc.code, "message": exc.message}},
+            headers=headers,
+        )
+
     @app.exception_handler(RequestValidationError)
     async def _request_validation_error(request: Request, exc: RequestValidationError) -> Response:
         unknown_property_errors: list[dict[str, object]] = []

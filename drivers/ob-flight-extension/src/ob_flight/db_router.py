@@ -25,6 +25,7 @@ from ob_flight.datasources import (
     _ENV_TO_KWARG,
     _MOTHERDUCK_PREFIX,
     _MOTHERDUCK_URI_TOKEN_PARAMS,
+    USER_LOGIN,
     DataSource,
     MotherDuckTokenMissingError,
     _apply_motherduck_token,
@@ -118,6 +119,13 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
             duckdb_source.prepare(cursor, datasource, config)
 
         return module.Connection(native, init=prepare)
+    if datasource.login == USER_LOGIN:
+        # Logged in as the caller: their token for the warehouse, issued by an
+        # exchange of the token they called with. Raises when there is no
+        # signed-in caller or the warehouse refuses them.
+        from orionbelt.service.user_login import connect_overrides
+
+        overrides = {**connect_overrides(datasource), **overrides}
     kwargs = datasource.credentials(**overrides)
     if dialect in _CLIENT_NAMED:
         kwargs.setdefault("client_name", _CLIENT_NAME)
@@ -305,16 +313,20 @@ def get_connection(
         DataSourceBusyError: Every connection the source allows stayed in use
             for its ``ACQUIRE_TIMEOUT_SECONDS``.
     """
-    pool = _get_pool(_source(source))
+    datasource = _source(source)
+    pool = _get_pool(datasource)
+    # A source that logs in as the caller never shares a connection: a pooled
+    # one may be signed in as someone else. Opened for the caller, closed after.
+    per_user = datasource.login == USER_LOGIN
     pool.slots.acquire(wait=wait)
     try:
-        conn = pool.acquire(**overrides)
+        conn = connect(datasource, **overrides) if per_user else pool.acquire(**overrides)
         ok = False
         try:
             yield conn
             ok = True
         finally:
-            if ok:
+            if ok and not per_user:
                 pool.release(conn)
             else:
                 with contextlib.suppress(Exception):

@@ -158,6 +158,10 @@ export API_KEYS="$SERVICE_KEY"   # optional: service keys next to the tokens
 | `OIDC_SWAGGER_SCOPES` | `openid` | Scopes `/docs` asks for at sign-in, space-separated. |
 | `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT` | from discovery | Where users sign in and codes are exchanged. Only needed with `OIDC_JWKS_URI` or `OIDC_JWKS_FILE`, which skip the discovery document. |
 
+A data source can also **log in to the database as the signed-in user**, so the
+database applies that user's own grants and row-level security: see
+[Logging in as the signed-in user](data-sources.md#logging-in-as-the-signed-in-user).
+
 ### What a token must pass
 
 - A signature by one of the issuer's keys, with RS256, PS256, ES256 or EdDSA. `none` and

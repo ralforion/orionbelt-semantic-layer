@@ -16,27 +16,51 @@ existed. See design/PLAN_authentication.md §6, Phase 4a.
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
 
 from orionbelt.auth.principal import SCOPE_ADMIN, Principal
 
 _current_principal: ContextVar[Principal | None] = ContextVar(
     "orionbelt_current_principal", default=None
 )
+# The token a signed-in user called with, so a data source that logs in as
+# the user can exchange it. Never logged, cached or stored.
+_current_credential: ContextVar[str | None] = ContextVar(
+    "orionbelt_current_credential", default=None
+)
 
 
-def bind_principal(principal: Principal) -> Token[Principal | None]:
-    """Bind ``principal`` as the caller of the current request."""
-    return _current_principal.set(principal)
+@dataclass(frozen=True)
+class Binding:
+    """What :func:`bind_principal` set, for :func:`reset_principal` to undo."""
+
+    principal: Token[Principal | None]
+    credential: Token[str | None]
 
 
-def reset_principal(token: Token[Principal | None]) -> None:
+def bind_principal(principal: Principal, credential: str | None = None) -> Binding:
+    """Bind ``principal`` as the caller of the current request.
+
+    ``credential`` is the identity provider token a signed-in user called
+    with; None for an API key or no auth.
+    """
+    return Binding(_current_principal.set(principal), _current_credential.set(credential))
+
+
+def reset_principal(binding: Binding) -> None:
     """Undo a :func:`bind_principal` binding."""
-    _current_principal.reset(token)
+    _current_credential.reset(binding.credential)
+    _current_principal.reset(binding.principal)
 
 
 def current_principal() -> Principal | None:
     """Return the caller of the current request, or ``None`` when none is bound."""
     return _current_principal.get()
+
+
+def current_credential() -> str | None:
+    """The signed-in user's token for the current request, or None."""
+    return _current_credential.get()
 
 
 def may_use(principal: Principal | None, owner: str | None) -> bool:

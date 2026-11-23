@@ -54,7 +54,8 @@ class TtlComputation:
     seconds: int
     derived_seconds: int
     caller_seconds: int | None
-    source: str  # "freshness_derived" | "caller_capped" | "default_unknown" | "all_static"
+    # "freshness_derived" | "caller_capped" | "user_login_capped" | "default_unknown" | "all_static"
+    source: str
     limiting_table: str | None
     limiting_reason: str | None  # "interval" | "heartbeat" | "default_unknown"
 

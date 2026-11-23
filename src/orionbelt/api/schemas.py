@@ -177,7 +177,7 @@ class QueryExecuteResponse(BaseModel):
         default=None,
         description=(
             "Where the TTL came from: freshness_derived | caller_capped | "
-            "default_unknown | no_cache | floor_below_min."
+            "user_login_capped | default_unknown | no_cache | floor_below_min."
         ),
     )
     ttl_limiting_table: str | None = Field(

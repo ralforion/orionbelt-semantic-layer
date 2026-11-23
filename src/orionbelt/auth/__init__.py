@@ -25,7 +25,9 @@ from orionbelt.auth.config import (
     validate_credential,
 )
 from orionbelt.auth.context import (
+    Binding,
     bind_principal,
+    current_credential,
     current_principal,
     may_use,
     reset_principal,
@@ -73,7 +75,9 @@ __all__ = [
     "Principal",
     "TokenInvalidError",
     "authenticate",
+    "Binding",
     "bind_principal",
+    "current_credential",
     "current_principal",
     "get_api_keys",
     "get_header_name",

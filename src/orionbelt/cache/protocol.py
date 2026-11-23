@@ -88,7 +88,9 @@ class Cache(Protocol):
 
         Used to evict a tenant / connection's cache when its credentials or
         connection target change. With global per-dialect connections the
-        datasource is the dialect.
+        datasource is the dialect. For a source that logs in as the user it
+        drops every user's entries too (``<datasource>`` + ``USER_SEP`` + a
+        user hash).
         """
 
     async def invalidate_table(self, table_ref: str) -> int:

@@ -19,7 +19,7 @@ the shared cache *plan* (key + TTL) lives here.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -104,6 +104,7 @@ def resolve_cache_plan(
     cache: Cache,
     cache_config: Any,
     datasource: str | None = None,
+    max_ttl: float | None = None,
 ) -> CachePlan:
     """Derive the shared cache key + TTL for a compiled query.
 
@@ -143,6 +144,8 @@ def resolve_cache_plan(
         cache_config=cache_config,
         physical_tables=physical_tables,
     )
+    if max_ttl is not None:
+        ttl_outcome = cap_ttl(ttl_outcome, max_ttl, cache_config.min_ttl_seconds)
     return CachePlan(
         cacheable=ttl_outcome.ttl is not None,
         cache_key=cache_key,
@@ -151,8 +154,24 @@ def resolve_cache_plan(
     )
 
 
+def cap_ttl(outcome: TtlResult, max_ttl: float, min_ttl_seconds: int) -> TtlResult:
+    """Cap a TTL at ``max_ttl`` (a source that logs in as the user).
+
+    OBSL is not told when a user's grants change; the cap bounds how long a
+    user may still get their own cached rows afterwards. A cap below the
+    minimum TTL means the source is not cached.
+    """
+    if outcome.ttl is None or outcome.ttl.seconds <= max_ttl:
+        return outcome
+    if max_ttl < min_ttl_seconds:
+        return TtlResult(ttl=None, no_cache_reason=NoCacheReason.BELOW_MIN_TTL)
+    capped = replace(outcome.ttl, seconds=int(max_ttl), source="user_login_capped")
+    return replace(outcome, ttl=capped)
+
+
 __all__ = [
     "CachePlan",
+    "cap_ttl",
     "resolve_cache_plan",
     "resolve_effective_ttl",
 ]

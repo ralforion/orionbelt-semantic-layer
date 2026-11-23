@@ -32,6 +32,7 @@ from typing import Any
 
 import duckdb
 
+from orionbelt.cache.key import USER_SEP
 from orionbelt.cache.protocol import Cache, CachedResult, CacheStats
 
 logger = logging.getLogger(__name__)
@@ -410,11 +411,14 @@ class FileCache(Cache):
         return len(rows)
 
     async def delete_datasource(self, datasource: str) -> int:
+        # The data source's own entries, and those of each of its users when it
+        # logs in as the user (``<datasource>`` + USER_SEP + a user hash).
         try:
             with self._transaction() as meta:
                 rows = meta.execute(
-                    "DELETE FROM cache_entries WHERE datasource = ? RETURNING cache_key, file_path",
-                    [datasource],
+                    "DELETE FROM cache_entries WHERE datasource = ? OR starts_with(datasource, ?) "
+                    "RETURNING cache_key, file_path",
+                    [datasource, datasource + USER_SEP],
                 ).fetchall()
                 keys = [r[0] for r in rows]
                 if keys:

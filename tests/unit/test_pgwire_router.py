@@ -778,6 +778,38 @@ def test_execution_unavailable_surfaces_as_57p03(monkeypatch: pytest.MonkeyPatch
     assert b"C57P03\x00" in frames[0][1]
 
 
+@pytest.mark.parametrize(
+    ("error", "sqlstate"),
+    [
+        ("SignInRequiredError", b"28000"),
+        ("SignInRefusedError", b"28000"),
+        ("SignInUnavailableError", b"57P03"),
+    ],
+)
+def test_a_data_source_sign_in_failure_is_an_authorization_error(
+    monkeypatch: pytest.MonkeyPatch, error: str, sqlstate: bytes
+) -> None:
+    # A source that logs in as the user and could not: a sign-in problem
+    # (28000), or its sign-in service unreachable (57P03), not a query failure.
+    from orionbelt.service import user_login
+
+    mgr, _ = _make_manager_with_model()
+    router = SemanticRouter(session_manager=mgr, default_dialect="duckdb")
+
+    def fake_execute(*_args: Any, **_kwargs: Any) -> ExecutionResult:
+        raise getattr(user_login, error)("needs the signed-in user")
+
+    monkeypatch.setattr("orionbelt.pgwire.router.execute_sql", fake_execute)
+
+    reply = asyncio.run(
+        router.handle('SELECT "Customer Country" FROM commerce', database="commerce")
+    )
+    frames = _parse_frames(reply)
+    assert frames[0][0] == b"E"
+    assert b"C" + sqlstate + b"\x00" in frames[0][1]
+    assert b"needs the signed-in user" in frames[0][1]
+
+
 def test_execution_error_surfaces_as_22000(monkeypatch: pytest.MonkeyPatch) -> None:
     from orionbelt.service.db_executor import ExecutionError
 
