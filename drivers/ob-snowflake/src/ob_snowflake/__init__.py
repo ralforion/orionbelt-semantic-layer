@@ -55,6 +55,7 @@ def connect(
     warehouse: str | None = None,
     role: str | None = None,
     authenticator: str | None = None,
+    token: str | None = None,
     # OrionBelt parameters
     ob_api_url: str = "http://localhost:8000",
     ob_timeout: int = 30,
@@ -78,7 +79,12 @@ def connect(
     role : str, optional
         Snowflake role.
     authenticator : str, optional
-        Authentication method (e.g. ``"externalbrowser"`` for SSO).
+        Authentication method (e.g. ``"externalbrowser"`` for SSO, ``"oauth"``
+        with ``token``).
+    token : str, optional
+        OAuth access token, with ``authenticator="oauth"`` (External OAuth:
+        a token the identity provider issued for Snowflake). The token says
+        who connects, so ``user`` and ``password`` may be left out.
     ob_api_url : str
         OrionBelt REST API URL (must be running in single-model mode).
     ob_timeout : int
@@ -99,6 +105,8 @@ def connect(
         connect_kwargs["role"] = role
     if authenticator is not None:
         connect_kwargs["authenticator"] = authenticator
+    if token is not None:
+        connect_kwargs["token"] = token
 
     # Without this, the connector converts every NUMBER with a scale to a
     # float on the Arrow path: ``CAST(2.55 AS NUMBER(18, 2))`` comes back as

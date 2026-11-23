@@ -24,6 +24,20 @@ DEFAULT_SCOPE_CLAIMS = ("scope", "scp", "roles")
 
 
 @dataclass(frozen=True)
+class OidcClient:
+    """OBSL's own confidential client at the identity provider.
+
+    Asks the identity provider for a warehouse token on a signed-in user's
+    behalf, where the identity provider issues it (Snowflake: Entra's
+    on-behalf-of flow). The secret is left out of ``repr``, so it reaches no
+    log line through this object.
+    """
+
+    client_id: str
+    client_secret: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class OidcConfig:
     """What ``AUTH_MODE=oidc`` verifies tokens against."""
 
@@ -37,6 +51,12 @@ class OidcConfig:
     # IdP value (a scope or role name) -> the OBSL scopes it grants.
     scope_map: Mapping[str, frozenset[str]] = field(default_factory=dict)
     clock_skew_seconds: int = 60
+    # The sign-in and token endpoints when set (OIDC_AUTHORIZATION_ENDPOINT,
+    # OIDC_TOKEN_ENDPOINT), else the discovery document's; and OBSL's own
+    # client there, when one is configured.
+    authorization_endpoint: str = ""
+    token_endpoint: str = ""
+    client: OidcClient | None = None
 
     def __post_init__(self) -> None:
         if not self.issuer.strip():

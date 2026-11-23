@@ -36,6 +36,8 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `OIDC_SWAGGER_CLIENT_ID`   | —           | Public client for signing in on `/docs` ([Swagger UI](../guide/authentication.md#swagger-ui-docs)) |
 | `OIDC_SWAGGER_SCOPES`      | `openid`    | Scopes `/docs` asks for at sign-in |
 | `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT` | from discovery | The IdP's sign-in and token endpoints; only needed without discovery |
+| `OIDC_CLIENT_ID`           | —           | OrionBelt's own client at the IdP, which asks it for a Snowflake token on a signed-in user's behalf ([Snowflake through Entra ID](../guide/data-sources.md#snowflake-through-entra-id)) |
+| `OIDC_CLIENT_SECRET`, `OIDC_CLIENT_SECRET_FILE` | — | That client's secret, or a file holding it; one of them with `OIDC_CLIENT_ID` |
 | `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode. Each file is loaded into its own named protected session (addressing name = OBML `name:` field or filename stem). A single path is fine. |
 | `API_BASE_URL`             | —           | API URL for standalone UI                 |
 | `ROOT_PATH`                | —           | ASGI root path for UI behind LB           |
@@ -73,8 +75,10 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `DUCKDB_SPILL_DIR`         | see guide   | Where a DuckDB source spills what outgrows its memory limit; `off` turns spilling off. Unset, a source without a database file spills under the system's temp directory unless it is in memory, and a database file beside itself |
 | `DUCKDB_SPILL_MAX_MB`      | 90% of free disk | The most a DuckDB source may spill |
 | `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE`, `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS`, `DB_<NAME>_KEY_INJECTION_MAX_KEYS`, `DB_<NAME>_TIMEZONE` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
-| `DB_<NAME>_AUTH`           | `service`   | `user`: the source logs in as the signed-in caller, by exchanging their identity provider token (Databricks; needs `AUTH_MODE=oidc`). See [logging in as the user](../guide/data-sources.md#logging-in-as-the-signed-in-user) |
+| `DB_<NAME>_AUTH`           | `service`   | `user`: the source logs in as the signed-in caller, by exchanging their identity provider token (Databricks, Snowflake; needs `AUTH_MODE=oidc`). See [logging in as the user](../guide/data-sources.md#logging-in-as-the-signed-in-user) |
 | `DB_<NAME>_OAUTH_CLIENT_ID` | —          | The client a token exchange names, when the vendor's policy needs one (a Databricks service-principal federation policy). Part of the source's identity: two sources that differ only in their client share no token and no cached result |
+| `DB_<NAME>_OAUTH_EXCHANGE` | —          | Snowflake with `AUTH=user`: how the IdP is asked for the user's token; `entra_obo` (Entra ID's on-behalf-of flow) |
+| `DB_<NAME>_OAUTH_SCOPE`    | —           | Snowflake with `AUTH=user`: the scope the token is issued for, e.g. `api://<Snowflake app ID>/session:role-any`. Part of the source's identity |
 | `DB_<NAME>_CACHE_MAX_TTL_SECONDS` | `300` | For a source with `AUTH=user`: the longest its results stay cached; 0 turns caching off |
 | `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/federation.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
 | `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |

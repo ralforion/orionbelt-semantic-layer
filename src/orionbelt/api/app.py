@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import importlib.util
 import logging
@@ -70,8 +71,12 @@ from orionbelt.api.schemas import HealthResponse
 from orionbelt.auth import (
     MODE_OIDC,
     AuthConfigError,
+    OidcClient,
     OidcConfig,
+    get_authorization_endpoint,
     get_mode,
+    get_oidc_client,
+    get_token_endpoint,
     parse_scope_claims,
     parse_scope_map,
     resolve_mode,
@@ -82,7 +87,7 @@ from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.federated_executor import FederationLimits, spill_directory
 from orionbelt.service.federated_executor import configure as configure_federation
 from orionbelt.service.session_manager import SessionManager
-from orionbelt.service.user_login import DataSourceSignInError
+from orionbelt.service.user_login import DataSourceSignInError, SignInInteractionRequiredError
 from orionbelt.service.value_search import ValueSearchConfig
 from orionbelt.settings import Settings
 
@@ -214,7 +219,63 @@ def oidc_config(settings: Settings) -> OidcConfig | None:
         scope_claims=parse_scope_claims(settings.oidc_scope_claims),
         scope_map=parse_scope_map(settings.oidc_scope_map),
         clock_skew_seconds=settings.oidc_clock_skew_seconds,
+        authorization_endpoint=settings.oidc_authorization_endpoint.strip(),
+        token_endpoint=settings.oidc_token_endpoint.strip(),
+        client=_oidc_client(settings),
     )
+
+
+def _oidc_client(settings: Settings) -> OidcClient | None:
+    """OBSL's own client at the IdP (``OIDC_CLIENT_ID`` and its secret), if configured.
+
+    Raises ``AuthConfigError`` when only half of it is set, both secret
+    settings are, or the secret file cannot be read.
+    """
+    client_id = settings.oidc_client_id.strip()
+    secret = settings.oidc_client_secret.get_secret_value().strip()
+    secret_file = settings.oidc_client_secret_file.strip()
+    if secret and secret_file:
+        raise AuthConfigError("Set OIDC_CLIENT_SECRET or OIDC_CLIENT_SECRET_FILE, not both.")
+    if secret_file:
+        try:
+            secret = Path(secret_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise AuthConfigError(
+                f"OIDC_CLIENT_SECRET_FILE {secret_file!r} cannot be read ({exc.strerror})."
+            ) from None
+        if not secret:
+            raise AuthConfigError(f"OIDC_CLIENT_SECRET_FILE {secret_file!r} is empty.")
+    if not client_id and not secret:
+        return None
+    if not client_id:
+        raise AuthConfigError("OIDC_CLIENT_SECRET is set without OIDC_CLIENT_ID.")
+    if not secret:
+        raise AuthConfigError(
+            "OIDC_CLIENT_ID is set without OIDC_CLIENT_SECRET or OIDC_CLIENT_SECRET_FILE."
+        )
+    return OidcClient(client_id=client_id, client_secret=secret)
+
+
+def _sign_in_challenge(error: DataSourceSignInError) -> str:
+    """``WWW-Authenticate`` for a 401 from a data source that logs in as the user.
+
+    When the identity provider wants the user to sign in again (MFA,
+    conditional access, consent), it says where, in Microsoft's claims
+    challenge format: ``authorization_uri`` (``OIDC_AUTHORIZATION_ENDPOINT``,
+    else the discovered one, so the tenant's own) and, when the identity
+    provider sent one, its claims challenge, base64-encoded as Microsoft's
+    clients read it. The realm is OBSL's, as on every challenge it sends.
+    """
+    if not isinstance(error, SignInInteractionRequiredError):
+        return 'Bearer realm="obsl"'
+    params = ['realm="obsl"']
+    sign_in_at = get_authorization_endpoint()
+    if sign_in_at:
+        params.append(f'authorization_uri="{sign_in_at}"')
+    if error.claims:
+        encoded = base64.b64encode(error.claims.encode("utf-8")).decode("ascii")
+        params += ['error="insufficient_claims"', f'claims="{encoded}"']
+    return "Bearer " + ", ".join(params)
 
 
 def refuse_removed_auth_settings(settings: Settings) -> None:
@@ -239,12 +300,14 @@ def refuse_removed_auth_settings(settings: Settings) -> None:
         )
 
 
-def _refuse_user_login_without_oidc() -> None:
-    """Refuse to start when a data source logs in as the user but nobody can sign in.
+def _refuse_unusable_user_login() -> None:
+    """Refuse to start when a data source logs in as the user and cannot.
 
     ``DB_<NAME>_AUTH=user`` needs the caller's identity provider token, which
-    only ``AUTH_MODE=oidc`` carries. A data-source configuration error is left
-    to surface where the source is used, as before.
+    only ``AUTH_MODE=oidc`` carries. A source whose user token the identity
+    provider issues (Snowflake) also needs OBSL's own client there and its
+    token endpoint. A data-source configuration error is left to surface
+    where the source is used, as before.
     """
     try:
         from ob_flight.datasources import (
@@ -264,6 +327,19 @@ def _refuse_user_login_without_oidc() -> None:
         raise AuthConfigError(
             f"Data source(s) {', '.join(user_login)} log in as the user (DB_<NAME>_AUTH=user), "
             "which needs AUTH_MODE=oidc: only a signed-in user's token can be exchanged."
+        )
+    idp_issued = ", ".join(s.name for s in sources if s.idp_issues_token)
+    if idp_issued and get_oidc_client() is None:
+        raise AuthConfigError(
+            f"Data source(s) {idp_issued} log in as the user with a token the identity "
+            "provider issues, which OBSL asks for as its own client there: set "
+            "OIDC_CLIENT_ID and OIDC_CLIENT_SECRET (or OIDC_CLIENT_SECRET_FILE)."
+        )
+    if idp_issued and get_token_endpoint() is None:
+        raise AuthConfigError(
+            f"Data source(s) {idp_issued} log in as the user, and the identity provider's "
+            "token endpoint is unknown: set OIDC_TOKEN_ENDPOINT (OIDC_JWKS_URI and "
+            "OIDC_JWKS_FILE skip the discovery document that names it)."
         )
 
 
@@ -517,7 +593,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         api_key_header=settings.api_key_header,
         oidc=oidc_config(settings),
     )
-    _refuse_user_login_without_oidc()
+    _refuse_unusable_user_login()
 
     # Start Arrow Flight SQL server only when FLIGHT_ENABLED=true. It is an
     # extra network surface (binds 0.0.0.0), so it must be opted into
@@ -739,7 +815,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # unreachable (503). Not a warehouse failure.
         if not isinstance(exc, DataSourceSignInError):
             raise exc
-        headers = {"WWW-Authenticate": 'Bearer realm="obsl"'} if exc.status == 401 else None
+        headers = {"WWW-Authenticate": _sign_in_challenge(exc)} if exc.status == 401 else None
         return JSONResponse(
             status_code=exc.status,
             content={"detail": {"code": exc.code, "message": exc.message}},

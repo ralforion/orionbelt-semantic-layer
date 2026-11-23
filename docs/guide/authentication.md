@@ -156,6 +156,7 @@ export API_KEYS="$SERVICE_KEY"   # optional: service keys next to the tokens
 | `OIDC_CLOCK_SKEW_SECONDS` | `60` | Leeway on the token's expiry and not-before times. |
 | `OIDC_SWAGGER_CLIENT_ID` | — | A public client at the IdP for signing in on `/docs`. See [Swagger UI](#swagger-ui-docs). |
 | `OIDC_SWAGGER_SCOPES` | `openid` | Scopes `/docs` asks for at sign-in, space-separated. |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` or `OIDC_CLIENT_SECRET_FILE` | — | OrionBelt's own confidential client at the IdP. It asks for a Snowflake token on a signed-in user's behalf: see [Snowflake through Entra ID](data-sources.md#snowflake-through-entra-id). |
 | `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT` | from discovery | Where users sign in and codes are exchanged. Only needed with `OIDC_JWKS_URI` or `OIDC_JWKS_FILE`, which skip the discovery document. |
 
 A data source can also **log in to the database as the signed-in user**, so the

@@ -83,6 +83,17 @@ def test_connect_returns_connection() -> None:
         assert kwargs["password"] == "secret"
 
 
+def test_connect_with_an_oauth_token() -> None:
+    """External OAuth: the token says who connects, so no user or password goes along."""
+    with patch("snowflake.connector.connect") as mock_connect:
+        mock_connect.return_value = _make_mock_native()
+        ob_snowflake.connect(account="xy12345", authenticator="oauth", token="the-token")
+        kwargs = mock_connect.call_args.kwargs
+        assert (kwargs["authenticator"], kwargs["token"]) == ("oauth", "the-token")
+        assert "user" not in kwargs
+        assert "password" not in kwargs
+
+
 def test_connect_asks_for_exact_decimals() -> None:
     """NUMBER with a scale must arrive as ``decimal128``, not as a float.
 

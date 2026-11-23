@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from orionbelt.api.app import _refuse_user_login_without_oidc, create_app
-from orionbelt.auth import AuthConfigError, OidcConfig, init_auth, reset_auth
+from orionbelt.api.app import _refuse_unusable_user_login, create_app, oidc_config
+from orionbelt.auth import AuthConfigError, OidcClient, OidcConfig, init_auth, reset_auth
 from orionbelt.auth.jwt_verify import JwtVerifier
 from orionbelt.service import user_login
 from orionbelt.settings import Settings
@@ -37,6 +41,7 @@ class TestRest:
             ("SignInRequiredError", 401, "SIGN_IN_REQUIRED"),
             ("SignInRefusedError", 403, "DATA_SOURCE_SIGN_IN_REFUSED"),
             ("SignInUnavailableError", 503, "DATA_SOURCE_SIGN_IN_UNAVAILABLE"),
+            ("SignInInteractionRequiredError", 401, "DATA_SOURCE_SIGN_IN_INTERACTION_REQUIRED"),
         ],
     )
     async def test_a_sign_in_failure_has_its_status_and_code(
@@ -55,13 +60,45 @@ class TestRest:
         if status == 401:
             assert resp.headers["www-authenticate"] == 'Bearer realm="obsl"'
 
+    @pytest.mark.parametrize(
+        "explicit", ["https://login.example.test/tenant-id/oauth2/v2.0/authorize", ""]
+    )
+    async def test_the_identity_providers_claims_challenge_reaches_the_client(
+        self, explicit: str
+    ) -> None:
+        """Entra asks the caller to sign in again with these claims (MFA, conditional
+        access); its guidance is a 401 whose WWW-Authenticate carries them, and where
+        to sign in (``OIDC_AUTHORIZATION_ENDPOINT``, else the discovered one)."""
+        claims = '{"access_token":{"polids":{"essential":true,"values":["p1"]}}}'
+        app = create_app(settings=Settings())
+        config = OidcConfig(issuer=ISSUER, audience=AUDIENCE, authorization_endpoint=explicit)
+        init_auth(
+            auth_mode="oidc",
+            oidc=config,
+            verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+        )
+
+        @app.get("/probe")
+        async def probe() -> None:
+            raise user_login.SignInInteractionRequiredError("sign in again", claims=claims)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/probe")
+        assert resp.status_code == 401
+        sign_in_at = explicit or FakeIssuer().discovery()["authorization_endpoint"]
+        encoded = base64.b64encode(claims.encode()).decode()
+        assert resp.headers["www-authenticate"] == (
+            f'Bearer realm="obsl", authorization_uri="{sign_in_at}", '
+            f'error="insufficient_claims", claims="{encoded}"'
+        )
+
 
 class TestStartup:
     def test_a_user_login_source_needs_oidc(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for name, value in USER_LOGIN_ENV.items():
             monkeypatch.setenv(name, value)
         with pytest.raises(AuthConfigError, match="crm log in as the user"):
-            _refuse_user_login_without_oidc()
+            _refuse_unusable_user_login()
 
     def test_with_oidc_it_starts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for name, value in USER_LOGIN_ENV.items():
@@ -72,14 +109,112 @@ class TestStartup:
             oidc=config,
             verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
         )
-        _refuse_user_login_without_oidc()
+        _refuse_unusable_user_login()
 
     def test_a_configuration_error_is_left_to_where_the_source_is_used(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         monkeypatch.setenv("OBSL_DATABASES", "crm")  # no DB_CRM_TYPE
-        _refuse_user_login_without_oidc()
+        _refuse_unusable_user_login()
         assert "has no type" in caplog.text
+
+
+SNOWFLAKE_ENV = {
+    "OBSL_DATABASES": "lake",
+    "DB_LAKE_TYPE": "snowflake",
+    "DB_LAKE_AUTH": "user",
+    "DB_LAKE_OAUTH_EXCHANGE": "entra_obo",
+    "DB_LAKE_OAUTH_SCOPE": "api://snowflake-app/session:role-any",
+    "DB_LAKE_SNOWFLAKE_ACCOUNT": "xy12345",
+}
+CLIENT = OidcClient(client_id="obsl-app", client_secret="the-obsl-client-secret")
+
+
+class TestSnowflakeStartup:
+    """A Snowflake user login needs OBSL's own client at the identity provider, and
+    the token endpoint it asks there."""
+
+    def _oidc(self, *, client: OidcClient | None, jwks_file: str = "") -> None:
+        config = OidcConfig(issuer=ISSUER, audience=AUDIENCE, jwks_file=jwks_file, client=client)
+        init_auth(
+            auth_mode="oidc",
+            oidc=config,
+            verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+        )
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name, value in SNOWFLAKE_ENV.items():
+            monkeypatch.setenv(name, value)
+
+    def test_without_obsl_s_client_it_refuses(self) -> None:
+        self._oidc(client=None)
+        with pytest.raises(AuthConfigError, match="lake .*set OIDC_CLIENT_ID"):
+            _refuse_unusable_user_login()
+
+    def test_without_a_token_endpoint_it_refuses(self, tmp_path: Path) -> None:
+        jwks = tmp_path / "jwks.json"
+        jwks.write_text(json.dumps(FakeIssuer().jwks()))  # no discovery document read
+        self._oidc(client=CLIENT, jwks_file=str(jwks))
+        with pytest.raises(AuthConfigError, match="set OIDC_TOKEN_ENDPOINT"):
+            _refuse_unusable_user_login()
+
+    def test_with_both_it_starts(self) -> None:
+        self._oidc(client=CLIENT)
+        _refuse_unusable_user_login()
+
+
+class TestObslClient:
+    """``OIDC_CLIENT_ID`` with ``OIDC_CLIENT_SECRET`` or ``OIDC_CLIENT_SECRET_FILE``."""
+
+    @staticmethod
+    def _client(**settings: Any) -> OidcClient | None:
+        config = oidc_config(
+            Settings(auth_mode="oidc", oidc_issuer=ISSUER, oidc_audience=AUDIENCE, **settings)
+        )
+        assert config is not None
+        return config.client
+
+    def test_none_by_default(self) -> None:
+        assert self._client() is None
+
+    def test_from_the_secret(self) -> None:
+        client = self._client(oidc_client_id="obsl-app", oidc_client_secret="s3cret-value")
+        assert client == OidcClient(client_id="obsl-app", client_secret="s3cret-value")
+        assert "s3cret-value" not in repr(client)
+
+    def test_from_a_file(self, tmp_path: Path) -> None:
+        secret = tmp_path / "client-secret"
+        secret.write_text("s3cret-value\n")
+        client = self._client(oidc_client_id="obsl-app", oidc_client_secret_file=str(secret))
+        assert client is not None
+        assert client.client_secret == "s3cret-value"
+
+    @pytest.mark.parametrize(
+        ("settings", "match"),
+        [
+            ({"oidc_client_secret": "s3cret-value"}, "without OIDC_CLIENT_ID"),
+            ({"oidc_client_id": "obsl-app"}, "without OIDC_CLIENT_SECRET"),
+            (
+                {
+                    "oidc_client_id": "obsl-app",
+                    "oidc_client_secret": "s3cret-value",
+                    "oidc_client_secret_file": "/run/secrets/obsl",
+                },
+                "not both",
+            ),
+            (
+                {"oidc_client_id": "obsl-app", "oidc_client_secret_file": "/no/such/file"},
+                "cannot be read",
+            ),
+        ],
+    )
+    def test_half_a_client_refuses_to_start(self, settings: dict[str, str], match: str) -> None:
+        with pytest.raises(AuthConfigError, match=match):
+            self._client(**settings)
+
+    def test_the_secret_is_not_in_the_settings_repr(self) -> None:
+        assert "s3cret-value" not in repr(Settings(oidc_client_secret="s3cret-value"))
 
 
 class TestFlight:
@@ -87,6 +222,7 @@ class TestFlight:
         ("error", "flight_error"),
         [
             ("SignInRequiredError", "FlightUnauthenticatedError"),
+            ("SignInInteractionRequiredError", "FlightUnauthenticatedError"),
             ("SignInRefusedError", "FlightUnauthorizedError"),
             ("SignInUnavailableError", "FlightUnavailableError"),
         ],
@@ -104,13 +240,9 @@ class TestFlight:
 
 # --- End to end: REST, two signed-in users, a real file cache --------------------
 
-import json  # noqa: E402
 import sys  # noqa: E402
-from pathlib import Path  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
-from typing import Any  # noqa: E402
 
-from orionbelt.api.app import oidc_config  # noqa: E402
 from orionbelt.api.deps import (  # noqa: E402
     CacheRuntimeConfig,
     init_session_manager,
