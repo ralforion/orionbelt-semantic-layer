@@ -60,16 +60,18 @@ def _origin(url: str) -> str | None:
 
 
 def docs_connect_sources(settings: Settings) -> tuple[str, ...]:
-    """Origins /docs must be allowed to fetch: the IdP's token endpoint.
+    """Origins /docs must be allowed to fetch: the issuer's and the token endpoint's.
 
-    Swagger UI exchanges the code for a token from the browser. The token
-    endpoint lives on the issuer's origin with every common IdP; an explicit
-    ``OIDC_TOKEN_ENDPOINT`` adds its own.
+    Swagger UI exchanges the code for a token from the browser, at the token
+    endpoint the OpenAPI document advertises: ``OIDC_TOKEN_ENDPOINT``, else the
+    one discovery found, which may be on another host than the issuer. Read
+    per request, because discovery happens at startup, after the app is built.
     """
     if not _swagger_sign_in(settings):
         return ()
-    urls = (settings.oidc_issuer, settings.oidc_token_endpoint)
-    return tuple(dict.fromkeys(o for o in (_origin(u.strip()) for u in urls if u.strip()) if o))
+    token_url = _endpoint(settings.oidc_token_endpoint, "token_endpoint") or ""
+    urls = (settings.oidc_issuer.strip(), token_url)
+    return tuple(dict.fromkeys(o for o in (_origin(u) for u in urls if u) if o))
 
 
 def _endpoint(explicit: str, discovered: str) -> str | None:

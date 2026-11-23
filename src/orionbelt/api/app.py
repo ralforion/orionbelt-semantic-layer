@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib.util
 import logging
 import os
@@ -743,7 +744,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Middleware (order matters: last added = first to execute)
     app.add_middleware(RequestTimingMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware, docs_connect_src=docs_connect_sources(settings))
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        docs_connect_src=functools.partial(docs_connect_sources, settings),
+    )
     app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(
         SessionRateLimitMiddleware,

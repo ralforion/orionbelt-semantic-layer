@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterable
 
 import structlog
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -151,14 +152,18 @@ def _declared_templates(app: object) -> frozenset[str]:
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add standard security headers to every response.
 
-    ``docs_connect_src`` names the origins Swagger UI may fetch from: the
+    ``docs_connect_src`` returns the origins Swagger UI may fetch from: the
     identity provider's, when /docs signs in with it (the browser exchanges
-    the sign-in code for a token there).
+    the sign-in code for a token there). It is called per /docs request, since
+    the token endpoint may only be known once startup has read the IdP's
+    discovery document.
     """
 
-    def __init__(self, app: ASGIApp, docs_connect_src: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, app: ASGIApp, docs_connect_src: Callable[[], Iterable[str]] | None = None
+    ) -> None:
         super().__init__(app)
-        self._docs_connect_src = " ".join(("'self'", *docs_connect_src))
+        self._docs_connect_src = docs_connect_src
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
@@ -181,6 +186,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "frame-ancestors 'none'"
             )
         elif path in ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"):
+            extra = self._docs_connect_src() if self._docs_connect_src is not None else ()
+            connect_src = " ".join(("'self'", *extra))
             # /docs/oauth2-redirect is the page the IdP sends the sign-in popup
             # back to; its inline script hands the code to Swagger UI.
             response.headers["Content-Security-Policy"] = (
@@ -188,7 +195,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                 "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                 "img-src 'self' https://fastapi.tiangolo.com data:; "
-                f"connect-src {self._docs_connect_src}; "
+                f"connect-src {connect_src}; "
                 "worker-src 'self' blob:; "
                 "frame-ancestors 'none'"
             )

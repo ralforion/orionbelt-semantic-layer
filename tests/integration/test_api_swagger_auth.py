@@ -157,6 +157,35 @@ class TestOidc:
         assert flow["authorizationUrl"] == idp.discovery()["authorization_endpoint"]
         assert flow["tokenUrl"] == idp.discovery()["token_endpoint"]
 
+    async def test_csp_allows_a_discovered_token_endpoint_on_another_origin(self) -> None:
+        # Some IdPs serve tokens from another host than the issuer. The CSP must
+        # follow the endpoint discovery found, not only the issuer's origin.
+        idp = FakeIssuer()
+        discovery = {**idp.discovery(), "token_endpoint": "https://tokens.example/oauth/token"}
+
+        def fetch(url: str) -> dict[str, Any]:
+            return discovery if url.endswith("/openid-configuration") else idp.jwks()
+
+        settings_kwargs = {
+            "auth_mode": "oidc",
+            "oidc_issuer": ISSUER,
+            "oidc_audience": AUDIENCE,
+            "oidc_swagger_client_id": "obsl-swagger",
+        }
+        app = create_app(settings=Settings(**settings_kwargs))
+        init_session_manager(SessionManager(ttl_seconds=3600, cleanup_interval=9999))
+        config = oidc_config(Settings(**settings_kwargs))
+        assert config is not None
+        init_auth(auth_mode="oidc", oidc=config, verifier=JwtVerifier(config, fetch=fetch))
+
+        schema = (await _get(app, "/openapi.json")).json()
+        token_url = schema["components"]["securitySchemes"]["OpenIdConnect"]["flows"][
+            "authorizationCode"
+        ]["tokenUrl"]
+        assert token_url == "https://tokens.example/oauth/token"
+        csp = (await _get(app, "/docs")).headers["content-security-policy"]
+        assert "connect-src 'self' https://idp.test https://tokens.example;" in csp
+
     async def test_without_a_client_a_token_or_key_is_pasted(self, jwks_file: str) -> None:
         app = self._oidc(jwks_file)
         schema = (await _get(app, "/openapi.json")).json()
