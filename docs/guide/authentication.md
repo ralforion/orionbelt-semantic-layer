@@ -250,8 +250,21 @@ For the sign-in, register a **public client** at the IdP:
 
 ```bash
 export OIDC_SWAGGER_CLIENT_ID=obsl-swagger
-export OIDC_SWAGGER_SCOPES="openid"   # Entra ID: "openid api://<API app ID>/<scope>"
+export OIDC_SWAGGER_SCOPES="openid"
 ```
+
+What to ask for depends on the IdP, because the token must be issued **for
+OrionBelt** (its `aud` is `OIDC_AUDIENCE`):
+
+| IdP | `OIDC_SWAGGER_SCOPES` |
+|-----|-----------------------|
+| Microsoft Entra ID | `openid api://<OrionBelt app ID>/<scope>`: a scope the OrionBelt app registration exposes. With `openid` alone Entra issues a token for Microsoft Graph, which OrionBelt refuses for its audience. |
+| Okta | `openid` plus the scopes of the custom authorization server whose audience is `OIDC_AUDIENCE` |
+| Keycloak | `openid`; the audience comes from the client's *Audience* mapper |
+| Auth0 | `openid`; OrionBelt sends `OIDC_AUDIENCE` as the `audience` parameter |
+
+A token from this sign-in is also the quickest way to try OrionBelt as a
+signed-in user, for example to run a query as yourself.
 
 The authorization and token endpoints are read from the discovery document.
 The page's Content-Security-Policy lets `/docs` reach the issuer's origin (and
