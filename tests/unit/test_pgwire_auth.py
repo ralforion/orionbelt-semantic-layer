@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from orionbelt.auth import init_auth, reset_auth
+from orionbelt.auth import OidcConfig, init_auth, reset_auth
+from orionbelt.auth.jwt_verify import JwtVerifier
 from orionbelt.pgwire.auth import (
     MECH_CLEARTEXT,
     MECH_SCRAM,
@@ -13,6 +14,7 @@ from orionbelt.pgwire.auth import (
     select_mechanism,
 )
 from orionbelt.pgwire.protocol import StartupMessage
+from tests.oidc_tokens import AUDIENCE, ISSUER, CountingFetch, FakeIssuer
 
 API_KEY = "obsl_pat_unit_test_key_0123456789ab"
 STARTUP = StartupMessage(protocol_version=196608, parameters={"user": "obsl"})
@@ -54,6 +56,34 @@ class TestApiKeyMode:
         init_auth(auth_mode="api_key", api_keys=API_KEY)
         result = authenticate(startup=STARTUP, password=None)
         assert result.ok is False
+
+
+class TestOidcMode:
+    """Under AUTH_MODE=oidc pgwire still requires a credential: a service key."""
+
+    @pytest.fixture(autouse=True)
+    def _oidc(self) -> None:
+        idp = FakeIssuer()
+        config = OidcConfig(issuer=ISSUER, audience=AUDIENCE)
+        init_auth(
+            auth_mode="oidc",
+            api_keys=API_KEY,
+            oidc=config,
+            verifier=JwtVerifier(config, fetch=CountingFetch(idp)),
+        )
+        self.token = idp.token()
+
+    def test_password_required(self) -> None:
+        # Not trust: before this change any non-api_key mode fell through to it.
+        assert password_required() is True
+
+    def test_service_key(self) -> None:
+        assert authenticate(startup=STARTUP, password=API_KEY).ok is True
+
+    def test_a_valid_token_is_not_a_password(self) -> None:
+        result = authenticate(startup=STARTUP, password=self.token)
+        assert result.ok is False
+        assert result.error_message == "invalid API key"
 
 
 class TestSelectMechanism:

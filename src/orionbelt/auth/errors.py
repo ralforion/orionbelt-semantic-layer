@@ -44,6 +44,14 @@ class AuthInvalidError(AuthError):
     code = AUTH_INVALID
 
 
+class TokenInvalidError(AuthInvalidError):
+    """An OIDC access token did not verify (expired, wrong issuer, bad signature...).
+
+    REST answers it with 401 and ``WWW-Authenticate: Bearer error="invalid_token"``
+    (RFC 6750); a wrong API key stays 403.
+    """
+
+
 class InsufficientScopeError(AuthError):
     """The principal authenticated but lacks a required scope (oidc)."""
 

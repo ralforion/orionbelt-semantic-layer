@@ -5,13 +5,14 @@ pgwire defers to the shared auth subsystem (``orionbelt.auth``) so a single
 ``PGWIRE_AUTH_MODE`` setting) drives behaviour:
 
 * ``none``    → trust: accept every StartupMessage, no password exchange.
-* ``api_key`` → the server requires a credential. The mechanism is chosen by
+* ``api_key`` / ``oidc`` → the server requires an API key (under ``oidc``,
+                one of the service keys: pgwire does not take the IdP's tokens).
+                The mechanism is chosen by
                 :func:`select_mechanism`: SCRAM-SHA-256 by default (never sends
                 the key on the wire), or cleartext password when the operator
                 sets ``PGWIRE_AUTH_MODE=password``. Either way the "password"
                 is the OBSL API key and the ``user`` field is ignored for
                 validation (stored only for logging).
-* ``oidc``    → Phase 4 (unreachable — ``init_auth`` refuses to start).
 
 Cleartext sends the API key in plaintext on the wire, so untrusted networks
 must terminate TLS in front of pgwire (reverse proxy / platform LB). SCRAM
@@ -24,11 +25,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from orionbelt.auth import (
-    MODE_API_KEY,
     MODE_NONE,
     get_api_keys,
     get_mode,
-    validate_credential,
+    validate_api_key,
 )
 from orionbelt.pgwire.protocol import StartupMessage
 
@@ -47,7 +47,7 @@ class AuthResult:
 
 def auth_required() -> bool:
     """Return True when the current auth mode needs a credential exchange."""
-    return get_mode() == MODE_API_KEY
+    return get_mode() != MODE_NONE
 
 
 # Back-compat alias (Phase 2 cleartext-only name).
@@ -83,17 +83,10 @@ def authenticate(
     client's ``PasswordMessage`` first whenever :func:`password_required`
     returns True, then pass the password here.
     """
-    mode = get_mode()
-
-    if mode == MODE_NONE:
+    if get_mode() == MODE_NONE:
         return AuthResult(ok=True)
-
-    if mode == MODE_API_KEY:
-        if not password:
-            return AuthResult(ok=False, error_message="password authentication required")
-        if validate_credential(password):
-            return AuthResult(ok=True)
-        return AuthResult(ok=False, error_message="invalid API key")
-
-    # oidc — unreachable in Phase 1/2 (init_auth refuses this mode).
-    return AuthResult(ok=False, error_message=f"unsupported auth mode: {mode!r}")
+    if not password:
+        return AuthResult(ok=False, error_message="password authentication required")
+    if validate_api_key(password):
+        return AuthResult(ok=True)
+    return AuthResult(ok=False, error_message="invalid API key")

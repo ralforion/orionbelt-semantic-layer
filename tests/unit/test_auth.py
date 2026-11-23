@@ -126,8 +126,8 @@ class TestInitAuth:
             init_auth(auth_mode="api_key", api_keys=secret)
         assert secret not in str(exc.value)
 
-    def test_oidc_mode_rejected_in_phase1(self) -> None:
-        with pytest.raises(AuthConfigError, match="oidc is not implemented"):
+    def test_oidc_mode_without_its_settings_refuses_to_start(self) -> None:
+        with pytest.raises(AuthConfigError, match="requires OIDC_ISSUER and OIDC_AUDIENCE"):
             init_auth(auth_mode="oidc")
 
     def test_invalid_mode_raises(self) -> None:

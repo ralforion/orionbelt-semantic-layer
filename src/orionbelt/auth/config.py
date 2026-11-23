@@ -16,8 +16,11 @@ from orionbelt.auth.errors import (
     AuthError,
     AuthInvalidError,
     AuthRequiredError,
+    TokenInvalidError,
 )
+from orionbelt.auth.jwt_verify import JwtVerifier, looks_like_jwt
 from orionbelt.auth.keys import KeyStore, find_low_strength_keys, find_weak_keys, parse_keys
+from orionbelt.auth.oidc import OidcConfig
 from orionbelt.auth.principal import ANONYMOUS, API_KEY_PRINCIPAL, Principal
 
 logger = logging.getLogger("orionbelt.auth")
@@ -33,6 +36,7 @@ DEFAULT_HEADER_NAME = "X-API-Key"
 _mode: str = MODE_NONE
 _key_store: KeyStore = KeyStore(frozenset())
 _header_name: str = DEFAULT_HEADER_NAME
+_verifier: JwtVerifier | None = None
 
 
 def resolve_mode(auth_mode: str, auth_enabled: bool) -> str:
@@ -58,9 +62,15 @@ def init_auth(
     api_keys: str = "",
     header_name: str = DEFAULT_HEADER_NAME,
     auth_enabled: bool = False,
+    oidc: OidcConfig | None = None,
+    verifier: JwtVerifier | None = None,
 ) -> None:
-    """Configure auth state at startup. Raises ``AuthConfigError`` on bad config."""
-    global _mode, _key_store, _header_name  # noqa: PLW0603
+    """Configure auth state at startup. Raises ``AuthConfigError`` on bad config.
+
+    ``oidc`` is required for ``AUTH_MODE=oidc``; ``verifier`` replaces the
+    default :class:`JwtVerifier` built from it (tests inject a fetch).
+    """
+    global _mode, _key_store, _header_name, _verifier  # noqa: PLW0603
 
     mode = resolve_mode(auth_mode, auth_enabled)
     if mode not in _VALID_MODES:
@@ -70,6 +80,7 @@ def init_auth(
 
     header = (header_name or DEFAULT_HEADER_NAME).strip() or DEFAULT_HEADER_NAME
 
+    new_verifier: JwtVerifier | None = None
     if mode == MODE_API_KEY:
         keys = parse_keys(api_keys)
         if not keys:
@@ -77,43 +88,60 @@ def init_auth(
                 "AUTH_MODE=api_key but API_KEYS is empty. Set API_KEYS to a "
                 "comma-separated list of strong keys (>=32 chars, high-entropy)."
             )
-        weak = find_weak_keys(keys)
-        if weak:
-            raise AuthConfigError(
-                f"API keys must be at least 16 characters. Found {len(weak)} weak key(s): "
-                f"{', '.join(weak)}."
-            )
-        weak_strength = find_low_strength_keys(keys)
-        if weak_strength:
-            raise AuthConfigError(
-                f"{len(weak_strength)} API key(s) are too weak ({', '.join(weak_strength)}): "
-                "keys must be at least 32 characters and high-entropy (short / low-entropy keys "
-                "are vulnerable to offline attack on captured SCRAM transcripts). Generate one "
-                "with: python3 -c \"import secrets; print(f'obsl_pat_{secrets.token_hex(20)}')\"."
-            )
+        _check_key_strength(keys)
         _key_store = KeyStore(keys)
         logger.info("Auth: api_key mode; %d key(s) loaded", len(keys))
     elif mode == MODE_OIDC:
-        # Phase 1 has no OIDC verifier — fail loudly rather than silently
-        # accepting nothing. Phase 4 wires jwt_verify.py + OIDC_* settings.
-        raise AuthConfigError(
-            "AUTH_MODE=oidc is not implemented yet (Phase 4). "
-            "Use AUTH_MODE=api_key or AUTH_MODE=none."
-        )
+        if oidc is None:
+            raise AuthConfigError("AUTH_MODE=oidc requires OIDC_ISSUER and OIDC_AUDIENCE.")
+        # API keys are optional here: service keys next to the IdP's tokens.
+        keys = parse_keys(api_keys)
+        if keys:
+            _check_key_strength(keys)
+            dotted = [f"{k[:4]}..." for k in sorted(keys) if "." in k]
+            if dotted:
+                raise AuthConfigError(
+                    f"With AUTH_MODE=oidc an API key may not contain '.', since a key "
+                    f"shaped like a JWT would be read as one. Found: {', '.join(dotted)}."
+                )
+        new_verifier = verifier or JwtVerifier(oidc)
+        new_verifier.load()
+        _key_store = KeyStore(keys)
+        logger.info("Auth: oidc mode; issuer %s; %d service key(s) loaded", oidc.issuer, len(keys))
     else:
         _key_store = KeyStore(frozenset())
         logger.info("Auth: disabled (AUTH_MODE=none)")
 
     _mode = mode
     _header_name = header
+    _verifier = new_verifier
+
+
+def _check_key_strength(keys: frozenset[str]) -> None:
+    """Refuse short or low-entropy API keys (names them by a 4-char prefix only)."""
+    weak = find_weak_keys(keys)
+    if weak:
+        raise AuthConfigError(
+            f"API keys must be at least 16 characters. Found {len(weak)} weak key(s): "
+            f"{', '.join(weak)}."
+        )
+    weak_strength = find_low_strength_keys(keys)
+    if weak_strength:
+        raise AuthConfigError(
+            f"{len(weak_strength)} API key(s) are too weak ({', '.join(weak_strength)}): "
+            "keys must be at least 32 characters and high-entropy (short / low-entropy keys "
+            "are vulnerable to offline attack on captured SCRAM transcripts). Generate one "
+            "with: python3 -c \"import secrets; print(f'obsl_pat_{secrets.token_hex(20)}')\"."
+        )
 
 
 def reset_auth() -> None:
     """Reset auth state to defaults (for tests / shutdown)."""
-    global _mode, _key_store, _header_name  # noqa: PLW0603
+    global _mode, _key_store, _header_name, _verifier  # noqa: PLW0603
     _mode = MODE_NONE
     _key_store = KeyStore(frozenset())
     _header_name = DEFAULT_HEADER_NAME
+    _verifier = None
 
 
 def get_mode() -> str:
@@ -129,7 +157,8 @@ def get_header_name() -> str:
 def get_api_keys() -> frozenset[str]:
     """Return the configured API keys.
 
-    Only meaningful in ``api_key`` mode. Exposed for the pgwire SCRAM exchange,
+    Set in ``api_key`` mode, and in ``oidc`` mode when service keys are
+    configured. Exposed for the pgwire SCRAM exchange,
     which must know the cleartext keys to verify a client proof (the server
     process already holds them — same trust boundary).
     """
@@ -150,13 +179,38 @@ def validate_credential(credential: str | None) -> bool:
         return False
 
 
+def validate_api_key(credential: str | None) -> bool:
+    """Return True when ``credential`` is one of the configured API keys.
+
+    For Flight and pgwire, which accept API keys only (also in ``oidc`` mode,
+    until they accept the IdP's tokens). False in ``none`` mode, where callers
+    do not ask.
+    """
+    return _key_store.validate(credential or "")
+
+
+def require_service_keys(surface: str) -> None:
+    """Refuse to start ``surface`` (Flight SQL, pgwire) when it could admit nobody.
+
+    Those surfaces accept API keys only, also under ``AUTH_MODE=oidc``; there
+    an empty ``API_KEYS`` would open a listener no client can use.
+    """
+    if _mode == MODE_OIDC and not len(_key_store):
+        raise AuthConfigError(
+            f"{surface} with AUTH_MODE=oidc needs API_KEYS: it accepts API keys only, "
+            "not the IdP's tokens."
+        )
+
+
 def authenticate(credential: str | None) -> Principal:
     """Validate a bare credential and return the resulting Principal.
 
     - ``none``: always returns the anonymous principal (credential ignored).
     - ``api_key``: missing credential → ``AuthRequiredError``; wrong key →
       ``AuthInvalidError``; valid key → the api_key principal.
-    - ``oidc``: Phase 4 (never reached — init refuses to start in this mode).
+    - ``oidc``: a JWT-shaped credential is verified as the IdP's access token
+      (``TokenInvalidError`` when it does not verify); anything else is
+      checked against the service keys, when any are configured.
     """
     if _mode == MODE_NONE:
         return ANONYMOUS
@@ -168,9 +222,14 @@ def authenticate(credential: str | None) -> Principal:
             raise AuthInvalidError("Invalid API key")
         return API_KEY_PRINCIPAL
 
-    # _mode == MODE_OIDC — unreachable in Phase 1 (init_auth refuses it).
-    from orionbelt.auth.jwt_verify import verify_jwt
-
     if not credential:
         raise AuthRequiredError("Bearer token required")
-    return verify_jwt(credential)
+    if looks_like_jwt(credential):
+        if _verifier is None:  # init_auth always sets it in oidc mode
+            raise AuthConfigError("AUTH_MODE=oidc is not initialised")
+        return _verifier.verify(credential)
+    if len(_key_store):
+        if _key_store.validate(credential):
+            return API_KEY_PRINCIPAL
+        raise AuthInvalidError("Invalid API key")
+    raise TokenInvalidError("Token is malformed")

@@ -23,6 +23,16 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `MAX_MODELS_PER_SESSION`   | `10`        | Max models a single session may hold      |
 | `SESSION_RATE_LIMIT`       | `10`        | Max `POST /sessions` per IP per minute    |
 | `TRUSTED_PROXY_COUNT`      | `0`         | Number of trusted reverse proxies (for X-Forwarded-For) |
+| `AUTH_MODE`                | `none`      | `none`, `api_key` or `oidc`, for every surface ([authentication](../guide/authentication.md)) |
+| `API_KEYS`                 | —           | Comma-separated API keys (32+ characters, high-entropy). Required for `api_key`; under `oidc`, service keys |
+| `API_KEY_HEADER`           | `X-API-Key` | REST header the key is read from; `Authorization: Bearer` always works too |
+| `OIDC_ISSUER`, `OIDC_AUDIENCE` | —       | Required for `oidc`: the tokens' issuer and the API's audience ([OpenID Connect](../guide/authentication.md#openid-connect)) |
+| `OIDC_JWKS_URI`, `OIDC_JWKS_FILE` | from discovery | Where the signing keys come from; a file for air-gapped installs |
+| `OIDC_JWKS_CACHE_TTL`      | `86400`     | Seconds before the signing keys are fetched again |
+| `OIDC_JWKS_MIN_REFETCH_SECONDS` | `60`   | A token with an unknown key fetches the keys again at most this often |
+| `OIDC_SCOPE_CLAIMS`        | `scope,scp,roles` | Claims that carry scopes or roles; dot paths reach into objects |
+| `OIDC_SCOPE_MAP`           | —           | IdP names that grant OrionBelt scopes, e.g. `analysts=obsl:read` |
+| `OIDC_CLOCK_SKEW_SECONDS`  | `60`        | Leeway on token expiry |
 | `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode. Each file is loaded into its own named protected session (addressing name = OBML `name:` field or filename stem). A single path is fine. |
 | `API_BASE_URL`             | —           | API URL for standalone UI                 |
 | `ROOT_PATH`                | —           | ASGI root path for UI behind LB           |
@@ -31,12 +41,12 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `METRICS_PORT`             | `9090`      | Metrics port                              |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution       |
 | `FLIGHT_PORT`              | `8815`      | Arrow Flight SQL gRPC port                |
-| `FLIGHT_AUTH_MODE`         | `none`      | `none` or `token`                         |
-| `FLIGHT_API_TOKEN`         | —           | Static token (when auth mode = token)     |
+| `FLIGHT_AUTH_MODE`         | `none`      | Deprecated: `token` with `FLIGHT_API_TOKEN`; use `AUTH_MODE` + `API_KEYS` |
+| `FLIGHT_API_TOKEN`         | —           | Deprecated static token (when `FLIGHT_AUTH_MODE=token`) |
 | `PGWIRE_ENABLED`           | `false`     | Enable PostgreSQL wire-protocol surface (v2.5.0+) — connect any Postgres client (Tableau, DBeaver, Superset, Power BI, `psql`, Dremio's Postgres source) |
 | `PGWIRE_HOST`              | `0.0.0.0`   | pgwire bind address                       |
 | `PGWIRE_PORT`              | `5432`      | pgwire TCP port                           |
-| `PGWIRE_AUTH_MODE`         | `trust`     | `trust` today; `password` / `scram-sha-256` planned alongside the unified-auth subsystem |
+| `PGWIRE_AUTH_MODE`         | `trust`     | With `AUTH_MODE` on: SCRAM-SHA-256, or cleartext with `password` (then use TLS) |
 | `PGWIRE_MAX_CONNECTIONS`   | `64`        | Concurrent connection cap                 |
 | `PGWIRE_QUERY_TIMEOUT_SECONDS` | `60`    | Per-query wall-clock timeout              |
 | `API_TLS_CERT`             | —           | PEM certificate; with `API_TLS_KEY` the REST API serves HTTPS (v2.29.0+) |
