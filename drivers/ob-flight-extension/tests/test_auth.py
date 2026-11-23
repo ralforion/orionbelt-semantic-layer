@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -289,3 +290,32 @@ class TestOfferingNoKeyIsNotTheSameAsOfferingNothing:
         assert _presents_a_credential({"authorization": ""})
         assert _presents_a_credential({"X-Api-Key": "anything"})
         assert not _presents_a_credential({"user-agent": "adbc"})
+
+
+class TestNoKeyInLogsOrErrors:
+    """A refused key appears in no log line and no error (PLAN_authentication.md §9)."""
+
+    GOOD = "obsl_pat_flight_redaction_0123456789abcd"
+    NEAR_MISS = "obsl_pat_flight_redaction_0123456789abcX"
+
+    def test_refusals_do_not_repeat_the_key(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        handler, middleware = build_api_key_auth(lambda key: key == self.GOOD)
+        factory = middleware[AUTH_MIDDLEWARE_KEY]
+        errors: list[str] = []
+        for headers in (
+            {"x-api-key": self.NEAR_MISS},
+            {"authorization": f"Bearer {self.NEAR_MISS}"},
+            {"authorization": "Basic " + _b64(f"token:{self.NEAR_MISS}")},
+        ):
+            with pytest.raises(flight.FlightUnauthenticatedError) as excinfo:
+                factory.start_call(MagicMock(), headers)
+            errors.append(str(excinfo.value))
+        with pytest.raises(flight.FlightUnauthenticatedError) as excinfo:
+            handler.is_valid(self.NEAR_MISS.encode())
+        errors.append(str(excinfo.value))
+        factory.start_call(MagicMock(), {"x-api-key": self.GOOD})
+
+        for text in (*errors, caplog.text):
+            assert self.GOOD not in text
+            assert self.NEAR_MISS not in text

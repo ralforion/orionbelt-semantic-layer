@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from orionbelt.auth.context import current_principal, may_use
 from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.model_cache import ModelCache
 from orionbelt.service.model_store import ModelStore
@@ -45,6 +46,8 @@ class SessionInfo:
     metadata: dict[str, str]
     expires_at: datetime
     max_expires_at: datetime
+    # ``sub`` of the principal that created the session; None means shared.
+    owner: str | None = None
 
 
 @dataclass
@@ -64,6 +67,9 @@ class _Session:
     # pre-loaded model — exempt from idle TTL and absolute max-age, never
     # listed by ``list_sessions``. Admin-managed.
     protected: bool = False
+    # ``sub`` of the principal that created the session. Only that principal
+    # and admins see it; None (API keys, no auth, the server) means shared.
+    owner: str | None = None
 
 
 class SessionManager:
@@ -182,9 +188,14 @@ class SessionManager:
     def create_session(self, metadata: dict[str, str] | None = None) -> SessionInfo:
         """Create a new session and return its info.
 
+        The session belongs to the current caller (see
+        :func:`orionbelt.auth.current_principal`); a caller without a
+        ``sub`` creates a shared session.
+
         Raises :class:`SessionCapacityError` when the global session cap
         is reached.
         """
+        caller = current_principal()
         now_mono = time.monotonic()
         now_wall = datetime.now(UTC)
         session_id = secrets.token_hex(16)  # 32-char hex (128-bit)
@@ -201,6 +212,7 @@ class SessionManager:
             metadata=metadata or {},
             created_at_wall=now_wall,
             last_accessed_wall=now_wall,
+            owner=caller.sub if caller is not None else None,
         )
         with self._lock:
             # Count only non-default, non-expired sessions toward the cap.
@@ -226,12 +238,13 @@ class SessionManager:
         """Get the ModelStore for a session, updating its last-accessed time.
 
         Raises :class:`SessionExpiredError` if the session has expired.
-        Raises :class:`SessionNotFoundError` if the session ID is unknown.
+        Raises :class:`SessionNotFoundError` if the session ID is unknown or
+        belongs to someone other than the current caller.
         """
         now_mono = time.monotonic()
         with self._lock:
             session = self._sessions.get(session_id)
-            if session is None:
+            if session is None or not self._visible(session):
                 raise SessionNotFoundError(f"Session '{session_id}' not found")
             if self._is_expired(session, now_mono):
                 reason = self._expiry_reason(session, now_mono)
@@ -248,7 +261,7 @@ class SessionManager:
         now_mono = time.monotonic()
         with self._lock:
             session = self._sessions.get(session_id)
-            if session is None:
+            if session is None or not self._visible(session):
                 raise SessionNotFoundError(f"Session '{session_id}' not found")
             if self._is_expired(session, now_mono):
                 reason = self._expiry_reason(session, now_mono)
@@ -264,7 +277,7 @@ class SessionManager:
         """Explicitly close a session."""
         with self._lock:
             session = self._sessions.get(session_id)
-            if session is None:
+            if session is None or not self._visible(session):
                 raise SessionNotFoundError(f"Session '{session_id}' not found")
             if session.protected:
                 raise ProtectedSessionError(
@@ -277,8 +290,9 @@ class SessionManager:
     def list_sessions(self) -> list[SessionInfo]:
         """Return info for all non-expired user sessions.
 
-        Excludes the default session and any admin-managed (protected)
-        sessions created by the multi-model startup loader.
+        Excludes the default session, any admin-managed (protected)
+        sessions created by the multi-model startup loader, and sessions
+        that belong to someone other than the current caller.
         """
         now_mono = time.monotonic()
         result: list[SessionInfo] = []
@@ -287,6 +301,8 @@ class SessionManager:
                 if session.session_id == _DEFAULT_SESSION_ID:
                     continue
                 if session.protected:
+                    continue
+                if not self._visible(session):
                     continue
                 if not self._is_expired(session, now_mono):
                     result.append(self._session_info(session))
@@ -378,6 +394,15 @@ class SessionManager:
 
     # -- internal ------------------------------------------------------------
 
+    @staticmethod
+    def _visible(session: _Session) -> bool:
+        """Whether the current caller may see ``session`` (owner or admin).
+
+        A session that is not visible is reported as not found, so its
+        existence does not leak to other callers.
+        """
+        return may_use(current_principal(), session.owner)
+
     def _is_expired(self, session: _Session, now_mono: float) -> bool:
         """Check if a session has exceeded idle TTL or absolute max-age.
 
@@ -419,6 +444,7 @@ class SessionManager:
             metadata=session.metadata,
             expires_at=expires_at,
             max_expires_at=max_expires_at,
+            owner=session.owner,
         )
 
     def _purge_expired(self) -> None:
