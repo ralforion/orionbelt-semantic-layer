@@ -196,6 +196,27 @@ class TestTheExchange:
             user_login.database_token(crm)
         assert tokens.requests[0][1]["client_id"] == "sp-client"
 
+    def test_another_client_is_another_identity(self, tokens: TokenService) -> None:
+        """The client names the federation policy, which decides who the user is
+        at the warehouse: two sources on one workspace that differ only in their
+        client share no exchanged token and no cache scope."""
+        env = {"OBSL_DATABASES": "admin,reader"}
+        for name, client in (("ADMIN", "sp-admin"), ("READER", "sp-reader")):
+            env |= {
+                f"DB_{name}_TYPE": "databricks",
+                f"DB_{name}_AUTH": "user",
+                f"DB_{name}_DATABRICKS_SERVER_HOSTNAME": HOST,
+                f"DB_{name}_DATABRICKS_HTTP_PATH": "/sql/1.0/warehouses/abc",
+                f"DB_{name}_OAUTH_CLIENT_ID": client,
+            }
+        admin, reader = configured_datasources(env)
+        assert admin.fingerprint() != reader.fingerprint()
+        with signed_in("alice"):
+            user_login.database_token(admin)
+            user_login.database_token(reader)
+            assert datasource_key_for(admin) != datasource_key_for(reader)
+        assert [form["client_id"] for _, form in tokens.requests] == ["sp-admin", "sp-reader"]
+
     def test_a_token_is_reused_per_user_until_it_nears_expiry(
         self, crm: DataSource, tokens: TokenService, monkeypatch: pytest.MonkeyPatch
     ) -> None:

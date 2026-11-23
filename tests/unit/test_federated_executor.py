@@ -1260,6 +1260,62 @@ class TestCachedLegs:
             assert not (await run(reordered)).cached
 
 
+class TestUserLoginCap:
+    """A leg on a source that logs in as the user caps the combined result too.
+
+    The combined rows are that user's as much as the leg's are, so they are
+    cached no longer than the strictest such source allows, and not at all
+    when one of them turns caching off. (DuckDB legs cannot log in as a user;
+    the cap stands in for one on ``crm``, as ``query_cache`` reads it.)
+    """
+
+    @pytest.mark.parametrize(("cap", "expected"), [(300.0, 300), (0.0, None)])
+    async def test_the_combined_result_obeys_the_strictest_source_cap(
+        self,
+        sources: dict[str, str],
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        cap: float,
+        expected: int | None,
+    ) -> None:
+        from orionbelt.api import query_cache
+
+        monkeypatch.setattr(
+            query_cache, "max_cache_ttl", lambda source: cap if source.name == "crm" else None
+        )
+        store, model_id, compiled = compiled_federated(REVENUE_BY_REGION)
+        cache = FileCache(
+            cache_dir=str(tmp_path / "capped"),
+            max_value_bytes=10 * 1024 * 1024,
+            max_disk_bytes=50 * 1024 * 1024,
+            max_ttl_seconds=86400,
+            sweep_interval_seconds=3600,
+        )
+        config = CacheRuntimeConfig(
+            backend="file",
+            min_ttl_seconds=1,
+            unknown_policy="default_ttl",
+            unknown_default_ttl_seconds=3600,
+        )
+
+        async def run() -> Any:
+            return await query_cache.execute_federated_with_cache(
+                store=store,
+                model=store.get_model(model_id),
+                compile_result=compiled,
+                model_id=model_id,
+                cache=cache,
+                cache_config=config,
+            )
+
+        first = await run()
+        ttl = first.ttl_outcome.ttl
+        assert (ttl.seconds if ttl is not None else None) == expected
+        if ttl is not None:
+            assert ttl.source == "user_login_capped"
+        assert (await run()).cached is (expected is not None)
+
+
 class TestCancellation:
     async def test_a_cancelled_query_keeps_its_slot_until_its_legs_finish(
         self, sources: dict[str, str]

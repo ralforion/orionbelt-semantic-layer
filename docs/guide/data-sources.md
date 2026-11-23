@@ -284,8 +284,9 @@ What changes for such a source:
 - **Cached at most five minutes** (`DB_<NAME>_CACHE_MAX_TTL_SECONDS`, default
   300; 0 turns caching off for the source). OrionBelt is not told when a
   user's grants change, so a revoked user may still get **their own** cached
-  rows until then, never anyone else's. Responses show `ttl_source:
-  user_login_capped` when the cap applied.
+  rows until then, never anyone else's. A query across data sources is cached
+  no longer than the strictest source it reads allows. Responses show
+  `ttl_source: user_login_capped` when the cap applied.
 - **Every caller must be a signed-in user.** An API key, or no
   authentication, is refused with 401 `SIGN_IN_REQUIRED`, before any cache
   lookup. When the database's token service refuses the user, the answer is

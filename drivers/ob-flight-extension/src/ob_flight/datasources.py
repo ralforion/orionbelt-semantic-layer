@@ -414,6 +414,12 @@ class DataSource:
             # target. Only added for a user login, so every existing
             # fingerprint, and the cache keys built on it, stay as they were.
             material["AUTH"] = USER_LOGIN
+            client_id = self.oauth_client_id()
+            if client_id:
+                # The client names the federation policy the user's token is
+                # exchanged under, and with it who the user is at the
+                # warehouse: another client shares no token and no cache scope.
+                material["OAUTH_CLIENT_ID"] = client_id
         for variable in _FINGERPRINT_SETTINGS.get(self.dialect, ()):
             value = self.getenv(variable)
             if value is not None:

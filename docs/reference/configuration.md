@@ -74,7 +74,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `DUCKDB_SPILL_MAX_MB`      | 90% of free disk | The most a DuckDB source may spill |
 | `OBSL_DATABASES`           | —           | Comma-separated names of [named data sources](../guide/data-sources.md); each reads `DB_<NAME>_TYPE`, `DB_<NAME>_DESCRIPTION`, `DB_<NAME>_POOL_SIZE`, `DB_<NAME>_MAX_CONNECTIONS`, `DB_<NAME>_ACQUIRE_TIMEOUT_SECONDS`, `DB_<NAME>_KEY_INJECTION_MAX_KEYS`, `DB_<NAME>_TIMEZONE` and its dialect's variables behind the `DB_<NAME>_` prefix. A model picks one with `settings.defaultDataSource` |
 | `DB_<NAME>_AUTH`           | `service`   | `user`: the source logs in as the signed-in caller, by exchanging their identity provider token (Databricks; needs `AUTH_MODE=oidc`). See [logging in as the user](../guide/data-sources.md#logging-in-as-the-signed-in-user) |
-| `DB_<NAME>_OAUTH_CLIENT_ID` | —          | The client a token exchange names, when the vendor's policy needs one (a Databricks service-principal federation policy) |
+| `DB_<NAME>_OAUTH_CLIENT_ID` | —          | The client a token exchange names, when the vendor's policy needs one (a Databricks service-principal federation policy). Part of the source's identity: two sources that differ only in their client share no token and no cached result |
 | `DB_<NAME>_CACHE_MAX_TTL_SECONDS` | `300` | For a source with `AUTH=user`: the longest its results stay cached; 0 turns caching off |
 | `FEDERATION_MAX_CONCURRENT` | `4`       | [Queries across data sources](../guide/federation.md#running-a-federated-query) running at once per process; the others wait in order of arrival |
 | `FEDERATION_QUEUE_TIMEOUT_SECONDS` | `30` | How long a federated query waits for a slot before `FEDERATION_BUSY` (503) |
