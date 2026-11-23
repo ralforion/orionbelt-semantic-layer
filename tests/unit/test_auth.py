@@ -71,20 +71,14 @@ class TestKeyStore:
 
 class TestResolveMode:
     def test_default_none(self) -> None:
-        assert resolve_mode("none", False) == "none"
+        assert resolve_mode("none") == "none"
+        assert resolve_mode("") == "none"
 
     def test_explicit_api_key(self) -> None:
-        assert resolve_mode("api_key", False) == "api_key"
+        assert resolve_mode("api_key") == "api_key"
 
-    def test_auth_enabled_alias(self) -> None:
-        assert resolve_mode("none", True) == "api_key"
-
-    def test_explicit_mode_wins_over_alias(self) -> None:
-        # AUTH_MODE explicitly set is honoured even with the legacy flag on.
-        assert resolve_mode("oidc", True) == "oidc"
-
-    def test_case_insensitive(self) -> None:
-        assert resolve_mode("API_KEY", False) == "api_key"
+    def test_case_and_whitespace_insensitive(self) -> None:
+        assert resolve_mode(" API_KEY ") == "api_key"
 
 
 # --- init_auth validation ---
@@ -133,10 +127,6 @@ class TestInitAuth:
     def test_invalid_mode_raises(self) -> None:
         with pytest.raises(AuthConfigError, match="Invalid AUTH_MODE"):
             init_auth(auth_mode="bogus")
-
-    def test_legacy_auth_enabled_alias(self) -> None:
-        init_auth(auth_mode="none", api_keys=VALID_KEY, auth_enabled=True)
-        assert get_mode() == "api_key"
 
 
 # --- authenticate dispatch ---

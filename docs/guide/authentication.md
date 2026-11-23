@@ -42,10 +42,16 @@ with a comma-separated second key.
 | `AUTH_MODE` | `none` | `none`, `api_key`, or `oidc`. |
 | `API_KEYS` | — | Comma-separated valid keys (≥32 chars, high-entropy). Required when `AUTH_MODE=api_key`. |
 | `API_KEY_HEADER` | `X-API-Key` | REST header name. `Authorization: Bearer` is always accepted as a fallback. |
-| `AUTH_ENABLED` | `false` | Deprecated alias for `AUTH_MODE=api_key` (honoured one release with a startup warning). |
 
 Startup fails fast (refuses to boot) if `AUTH_MODE=api_key` with an empty
 `API_KEYS`, or if any key is shorter than 32 characters or low-entropy.
+
+!!! note "Removed settings"
+    `AUTH_ENABLED`, `FLIGHT_AUTH_MODE` and `FLIGHT_API_TOKEN` were removed. If
+    one is still set to turn authentication on (`AUTH_ENABLED=true`,
+    `FLIGHT_AUTH_MODE=token`, any `FLIGHT_API_TOKEN`), OrionBelt refuses to
+    start and names it, rather than starting without the authentication it
+    asked for. Use `AUTH_MODE=api_key`, and put a Flight token into `API_KEYS`.
 
 ## Transport security (TLS)
 
@@ -200,14 +206,25 @@ The response body names the reason too: `{"detail": {"code": "AUTH_INVALID", "me
 
 ### The other surfaces under `oidc`
 
-- **Arrow Flight SQL and the Postgres wire protocol accept API keys only**, not
-  the IdP's tokens: use a key from `API_KEYS`, as in `api_key` mode. With
-  `FLIGHT_ENABLED` or `PGWIRE_ENABLED` and no `API_KEYS`, OrionBelt refuses to
-  start rather than open a listener nobody can use.
-- **The Gradio UI and the MCP server** use a service key as `OBSL_API_KEY`.
-  Signing in to the UI with the IdP is not available yet.
-- An API key may not contain a `.` under `oidc` (a key shaped like a JWT would
-  be read as one).
+Arrow Flight SQL and the Postgres wire protocol take the same access token as
+the password (or a service key from `API_KEYS`), need `obsl:read`, and run as
+the token's user: one user's session is not reachable by another there either.
+A Flight ticket or prepared statement works only for the caller it was issued
+to; anyone else presenting it gets "unknown", as for one that does not exist.
+
+| Surface | Token | API key | When the token expires |
+|---------|-------|---------|------------------------|
+| Arrow Flight SQL | As the password of a Basic credential, or `Authorization: Bearer` | Yes | Every call checks it, so the next call fails. BI tools cannot refresh a token: give a long-running BI connection a service key |
+| Postgres wire | As the password, **over TLS only** (`sslmode=require`; needs `PGWIRE_TLS_CERT`). On TLS, pgwire asks for a cleartext password, which TLS protects; SCRAM cannot check a token | Yes, with or without TLS | The connection was authenticated when it opened and stays open, as a Postgres connection does |
+
+With `PGWIRE_ENABLED`, OrionBelt refuses to start under `oidc` without either
+`API_KEYS` or `PGWIRE_TLS_CERT`, since no client could log in.
+
+The **Gradio UI** and the **MCP server** use a service key as `OBSL_API_KEY`.
+Signing in to the UI with the IdP is not available yet.
+
+An API key may not contain a `.` under `oidc` (a key shaped like a JWT would be
+read as one).
 
 ### Identity provider notes
 
@@ -246,18 +263,16 @@ options = flight.FlightCallOptions(headers=[token])
 # pass options on every call
 ```
 
-The legacy `FLIGHT_AUTH_MODE=token` / `FLIGHT_API_TOKEN` still works for one
-release with a deprecation warning. Migrate to `AUTH_MODE=api_key` + `API_KEYS`.
+Under `AUTH_MODE=oidc` the password may be an access token instead; see
+[the other surfaces under `oidc`](#the-other-surfaces-under-oidc).
 
 !!! warning "Flight can run unauthenticated"
     The Flight server is opt-in: it starts only when `FLIGHT_ENABLED=true` (it
     does not auto-start just because `ob-flight-extension` is installed). Once
-    enabled it binds `0.0.0.0`, and unless `AUTH_MODE` is `api_key` or `oidc` (or the legacy
-    `FLIGHT_AUTH_MODE=token` **with** `FLIGHT_API_TOKEN`) is set it accepts every
-    client (the server logs a loud warning). Setting `FLIGHT_API_TOKEN` alone,
-    without `FLIGHT_AUTH_MODE=token`, does **not** enable auth. For any non-local
-    deployment, set `AUTH_MODE=api_key` (Flight then validates against the shared
-    key store) or restrict access to the Flight port at the network layer.
+    enabled it binds `0.0.0.0`, and unless `AUTH_MODE` is `api_key` or `oidc` it
+    accepts every client (the server logs a loud warning). For any non-local
+    deployment, set `AUTH_MODE` (Flight then authenticates every call the way
+    REST does) or restrict access to the Flight port at the network layer.
 
 ### Postgres wire (psql, Tableau, Power BI, Metabase, DBeaver)
 
@@ -270,8 +285,14 @@ psql "postgresql://obsl:$KEY@localhost:5432/__default__"
 
 By default pgwire uses **SCRAM-SHA-256**, which never sends the key on the
 wire. Clients that lack SCRAM support can fall back to cleartext password auth
-by setting `PGWIRE_AUTH_MODE=password` on the server — in that case terminate
-TLS in front of pgwire on untrusted networks, since the key is sent in plain.
+by setting `PGWIRE_AUTH_MODE=password` on the server — in that case use TLS
+(`PGWIRE_TLS_CERT`) on untrusted networks, since the key is sent in plain.
+
+Under `AUTH_MODE=oidc` the password may be an access token, over TLS:
+
+```bash
+psql "postgresql://obsl:$ACCESS_TOKEN@localhost:5432/__default__?sslmode=require"
+```
 
 ### Gradio UI
 

@@ -39,21 +39,9 @@ _header_name: str = DEFAULT_HEADER_NAME
 _verifier: JwtVerifier | None = None
 
 
-def resolve_mode(auth_mode: str, auth_enabled: bool) -> str:
-    """Resolve the effective mode from ``AUTH_MODE`` + the legacy alias.
-
-    ``AUTH_ENABLED=true`` is a deprecated alias for ``AUTH_MODE=api_key``.
-    It only takes effect when ``AUTH_MODE`` is left at its ``none`` default,
-    so an explicit ``AUTH_MODE`` always wins.
-    """
-    mode = (auth_mode or MODE_NONE).strip().lower()
-    if auth_enabled and mode == MODE_NONE:
-        logger.warning(
-            "AUTH_ENABLED=true is deprecated; use AUTH_MODE=api_key. "
-            "Honouring it as api_key for this release."
-        )
-        return MODE_API_KEY
-    return mode
+def resolve_mode(auth_mode: str) -> str:
+    """Normalise ``AUTH_MODE`` (case, whitespace; empty means ``none``)."""
+    return (auth_mode or MODE_NONE).strip().lower()
 
 
 def init_auth(
@@ -61,7 +49,6 @@ def init_auth(
     auth_mode: str = MODE_NONE,
     api_keys: str = "",
     header_name: str = DEFAULT_HEADER_NAME,
-    auth_enabled: bool = False,
     oidc: OidcConfig | None = None,
     verifier: JwtVerifier | None = None,
 ) -> None:
@@ -72,7 +59,7 @@ def init_auth(
     """
     global _mode, _key_store, _header_name, _verifier  # noqa: PLW0603
 
-    mode = resolve_mode(auth_mode, auth_enabled)
+    mode = resolve_mode(auth_mode)
     if mode not in _VALID_MODES:
         raise AuthConfigError(
             f"Invalid AUTH_MODE '{mode}'. Expected one of: {', '.join(sorted(_VALID_MODES))}."
@@ -187,19 +174,6 @@ def validate_api_key(credential: str | None) -> bool:
     do not ask.
     """
     return _key_store.validate(credential or "")
-
-
-def require_service_keys(surface: str) -> None:
-    """Refuse to start ``surface`` (Flight SQL, pgwire) when it could admit nobody.
-
-    Those surfaces accept API keys only, also under ``AUTH_MODE=oidc``; there
-    an empty ``API_KEYS`` would open a listener no client can use.
-    """
-    if _mode == MODE_OIDC and not len(_key_store):
-        raise AuthConfigError(
-            f"{surface} with AUTH_MODE=oidc needs API_KEYS: it accepts API keys only, "
-            "not the IdP's tokens."
-        )
 
 
 def authenticate(credential: str | None) -> Principal:

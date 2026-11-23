@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import threading
 import time
 import uuid
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import Any, cast
 
 import pyarrow as pa
+from orionbelt.auth import bind_principal, current_principal, reset_principal
 from orionbelt.compiler.sql_translator import (
     SQLTranslationError,
     bind_placeholders,
@@ -19,6 +23,7 @@ from orionbelt.compiler.sql_translator import (
 from pyarrow import flight
 
 from ob_flight import server_catalog, server_execution, server_routing
+from ob_flight.auth import caller_of
 from ob_flight.datasources import DataSource
 from ob_flight.db_router import connect as db_connect
 from ob_flight.flight_sql import (
@@ -145,6 +150,55 @@ def _bound_values(table: Any) -> list[Any]:
     return [table.column(i)[0].as_py() for i in range(table.num_columns)]
 
 
+def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
+    """Run a Flight RPC as the caller its credential authenticated as.
+
+    Binds the caller (``orionbelt.auth.bind_principal``) so the session
+    manager only shows the caller's own sessions, as on REST. Without auth
+    there is no caller and nothing is bound.
+
+    A generator RPC (``do_action``, ``list_flights``) is bound one step at a
+    time: pyarrow runs each ``next()`` in a context of its own, so a binding
+    made in one step is gone in the next and cannot be reset there.
+    """
+    if inspect.isgeneratorfunction(method):
+
+        @functools.wraps(method)
+        def generator(self: Any, context: Any, *args: Any, **kwargs: Any) -> Iterator[Any]:
+            caller = caller_of(context)
+            inner = method(self, context, *args, **kwargs)
+            if caller is None:
+                yield from inner
+                return
+            try:
+                while True:
+                    token = bind_principal(caller)
+                    try:
+                        item = next(inner)
+                    except StopIteration:
+                        return
+                    finally:
+                        reset_principal(token)
+                    yield item
+            finally:
+                inner.close()
+
+        return cast(RPC, generator)
+
+    @functools.wraps(method)
+    def call(self: Any, context: Any, *args: Any, **kwargs: Any) -> Any:
+        caller = caller_of(context)
+        if caller is None:
+            return method(self, context, *args, **kwargs)
+        token = bind_principal(caller)
+        try:
+            return method(self, context, *args, **kwargs)
+        finally:
+            reset_principal(token)
+
+    return cast(RPC, call)
+
+
 class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     """Arrow Flight server that compiles OBML queries via the OrionBelt pipeline.
 
@@ -204,12 +258,12 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         self._cache = cache
         self._cache_config = cache_config
         self._lock = threading.Lock()
-        # Pending queries: ticket_id -> (payload, timestamp). Payload is one
+        # Pending queries: ticket_id -> (payload, timestamp, owner). Payload is one
         # of: ``("sql", sql, dialect, cache_meta|None, advertised_schema|None)``,
         # ``("catalog", type_url, body_hex)``, or
         # ``("obsql_catalog_table", pa.Table)`` — so the element types are
         # heterogeneous (str / dict / pa.Schema / pa.Table). Use ``tuple[Any, ...]``.
-        self._pending: dict[str, tuple[tuple[Any, ...], float]] = {}
+        self._pending: dict[str, tuple[tuple[Any, ...], float, Any]] = {}
         # Prepared statements: handle_hex -> (kind_or_sql, dialect_or_table,
         # schema, cache_meta|None). Element 2 is either the dialect string
         # (regular SQL) or a precomputed ``pa.Table`` (catalog mode marked
@@ -222,30 +276,67 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         # executed more than once, and overwriting the entry with its first
         # bound form made the second execute fail with "takes no parameters".
         self._bound: dict[str, tuple[Any, ...]] = {}
+        # Who created each prepared statement: handle_hex -> caller. A ticket
+        # carries its creator in ``_pending``. Both are usable by that caller
+        # only, so one user cannot redeem, bind, run or close another's - the
+        # ids are random but they travel (logs, a shared notebook).
+        self._prepared_owner: dict[str, Any] = {}
         # TTL for pending tickets (seconds) — entries older than this are evicted
         self._pending_ttl = 300
 
+    @staticmethod
+    def _caller() -> Any:
+        """The caller this RPC runs as (bound by ``_as_caller``); None without auth."""
+        return current_principal()
+
     def _store_pending(self, ticket_id: str, payload: tuple[Any, ...]) -> None:
-        """Store a pending query with timestamp, evicting stale entries."""
+        """Store a pending query for the current caller, evicting stale entries."""
         now = time.monotonic()
         with self._lock:
             # Evict expired entries
-            expired = [k for k, (_, ts) in self._pending.items() if now - ts > self._pending_ttl]
+            expired = [
+                k for k, (_, ts, _o) in self._pending.items() if now - ts > self._pending_ttl
+            ]
             for k in expired:
                 del self._pending[k]
-            self._pending[ticket_id] = (payload, now)
+            self._pending[ticket_id] = (payload, now, self._caller())
 
     def _pop_pending(self, ticket_id: str) -> tuple[str, ...] | None:
-        """Pop a pending query by ticket ID, returning None if not found or expired."""
+        """Pop the current caller's pending query; None if not found, expired or not theirs.
+
+        Another caller's ticket is answered as unknown and left in place: it is
+        not theirs to redeem, nor to use up.
+        """
         now = time.monotonic()
         with self._lock:
-            entry = self._pending.pop(ticket_id, None)
-        if entry is None:
-            return None
-        payload, ts = entry
+            entry = self._pending.get(ticket_id)
+            if entry is None or entry[2] != self._caller():
+                return None
+            del self._pending[ticket_id]
+        payload, ts, _owner = entry
         if now - ts > self._pending_ttl:
             return None
         return payload
+
+    def _put_prepared(self, handle_hex: str, entry: tuple[Any, ...]) -> None:
+        """Register a prepared statement as the current caller's."""
+        self._prepared[handle_hex] = entry
+        self._prepared_owner[handle_hex] = self._caller()
+
+    def _own_prepared(self, handle_hex: str) -> tuple[Any, ...] | None:
+        """The prepared statement behind ``handle_hex`` if it is the caller's, else None."""
+        entry = self._prepared.get(handle_hex)
+        if entry is None or self._prepared_owner.get(handle_hex) != self._caller():
+            return None
+        return entry
+
+    def _close_prepared(self, handle_hex: str) -> None:
+        """Drop the caller's prepared statement; another caller's is left alone."""
+        if self._own_prepared(handle_hex) is None:
+            return
+        self._prepared.pop(handle_hex, None)
+        self._bound.pop(handle_hex, None)
+        self._prepared_owner.pop(handle_hex, None)
 
     # ------------------------------------------------------------------
     # Session / model routing — delegates to ``server_routing``.
@@ -441,6 +532,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
     # ------------------------------------------------------------------
     # Flight protocol overrides — stay on the server class.
     # ------------------------------------------------------------------
+    @_as_caller
     def get_flight_info(
         self, context: flight.ServerCallContext, descriptor: flight.FlightDescriptor
     ) -> flight.FlightInfo:
@@ -497,9 +589,9 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 if handle is None:
                     raise flight.FlightServerError("Invalid prepared statement handle")
                 handle_hex = handle.hex()
-                if handle_hex not in self._prepared:
+                entry = self._own_prepared(handle_hex)
+                if entry is None:
                     raise flight.FlightServerError(f"Unknown prepared statement: {handle_hex}")
-                entry = self._prepared[handle_hex]
                 first, payload, schema = entry[0], entry[1], entry[2]
                 cache_meta_pp = entry[3] if len(entry) > 3 else None
                 if first == _UNBOUND:
@@ -586,6 +678,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         endpoint = flight.FlightEndpoint(ticket, [])
         return flight.FlightInfo(schema, descriptor, [endpoint], -1, -1)
 
+    @_as_caller
     def do_get(
         self, context: flight.ServerCallContext, ticket: flight.Ticket
     ) -> flight.RecordBatchStream:
@@ -627,6 +720,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         result_schema: pa.Schema | None = schema_raw if isinstance(schema_raw, pa.Schema) else None
         return self._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=result_schema)
 
+    @_as_caller
     def do_put(
         self,
         context: flight.ServerCallContext,
@@ -660,7 +754,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         if handle is None:
             raise flight.FlightServerError("Invalid prepared statement handle")
         handle_hex = handle.hex()
-        entry = self._prepared.get(handle_hex)
+        entry = self._own_prepared(handle_hex)
         if entry is None:
             raise flight.FlightServerError(f"Unknown prepared statement: {handle_hex}")
         if entry[0] != _UNBOUND:
@@ -722,6 +816,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 len(entry[2]),
             )
 
+    @_as_caller
     def do_action(self, context: flight.ServerCallContext, action: flight.Action) -> Any:
         """Handle Flight SQL actions (CreatePreparedStatement, ClosePreparedStatement)."""
         action_type = action.type
@@ -765,13 +860,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                     # recomputes the rows. Kept unbound rather than
                     # materialised: materialising the WHERE-stripped form
                     # returned every row as though the filter had matched.
-                    self._prepared[handle_hex] = (
-                        _UNBOUND,
-                        sql,
-                        schema,
-                        None,
-                        parameter_count,
-                    )
+                    self._put_prepared(handle_hex, (_UNBOUND, sql, schema, None, parameter_count))
                     # Typed from the catalog view, not the model: a catalog
                     # predicate compares against a catalog column, and the
                     # model knows nothing called ``ordinal_position`` - so
@@ -797,7 +886,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                 # 4th slot is cache_meta for SQL prepared statements; catalog
                 # prepared statements have no cache plumbing — pad with None
                 # so the tuple shape matches ``self._prepared``'s annotation.
-                self._prepared[handle_hex] = ("__catalog__", catalog_table, schema, None)
+                self._put_prepared(handle_hex, ("__catalog__", catalog_table, schema, None))
             else:
                 sql_for_entry = prepared_sql
                 schema = (
@@ -814,17 +903,11 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
                     # WHERE-less statement - the right schema and the wrong
                     # query. Keep the client's original text instead; do_put
                     # binds it and prepares the result properly.
-                    self._prepared[handle_hex] = (
-                        _UNBOUND,
-                        sql,
-                        schema,
-                        None,
-                        parameter_count,
-                    )
+                    self._put_prepared(handle_hex, (_UNBOUND, sql, schema, None, parameter_count))
                 else:
                     # Stash cache_meta on the prepared entry under a 4th slot
                     # so CMD_PREPARED_STATEMENT_QUERY can forward it to do_get.
-                    self._prepared[handle_hex] = (sql_for_entry, dialect, schema, cache_meta)
+                    self._put_prepared(handle_hex, (sql_for_entry, dialect, schema, cache_meta))
 
             logger.debug(
                 "Created prepared statement %s (mode=%s, %d cols)",
@@ -849,8 +932,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
             try:
                 handle = action.body.to_pybytes()
                 handle_hex = handle.hex()
-                self._prepared.pop(handle_hex, None)
-                self._bound.pop(handle_hex, None)
+                self._close_prepared(handle_hex)
                 logger.debug("Closed prepared statement %s", handle_hex)
             except Exception:
                 pass
@@ -859,6 +941,7 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         else:
             raise flight.FlightServerError(f"Unsupported action: {action_type}")
 
+    @_as_caller
     def list_flights(self, context: flight.ServerCallContext, _criteria: bytes) -> Any:
         """List the semantic virtual table + metadata views."""
         from ob_flight.catalog import model_to_flight_infos

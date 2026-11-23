@@ -29,15 +29,19 @@ In orionbelt/api/app.py, modify create_app():
 from contextlib import asynccontextmanager
 import os
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if os.getenv("FLIGHT_ENABLED", "false").lower() == "true":
         from ob_flight.startup import start_flight_background
+
         flight_thread = start_flight_background()
     yield
     if os.getenv("FLIGHT_ENABLED", "false").lower() == "true":
         from ob_flight.startup import stop_flight_server
+
         stop_flight_server()
+
 
 app = FastAPI(lifespan=lifespan)
 ```
@@ -114,16 +118,17 @@ def do_get(self, context, ticket):
 
     # Stream as Arrow record batches
     schema = pa.Schema.from_pandas(...)  # or from cursor.description
+
     def record_batch_generator():
         while True:
             rows = cursor.fetchmany(1000)
             if not rows:
                 break
             yield pa.RecordBatch.from_pydict(
-                {col: [r[i] for r in rows]
-                 for i, col in enumerate(col_names)},
+                {col: [r[i] for r in rows] for i, col in enumerate(col_names)},
                 schema=schema,
             )
+
     return pa.flight.RecordBatchStream(
         pa.RecordBatchReader.from_batches(schema, record_batch_generator())
     )
@@ -140,13 +145,9 @@ Map OB model data objects → Flight "tables":
 def list_flights(self, context, criteria):
     for model_id, model in self._model_cache.items():
         for obj_name, obj in model.data_objects.items():
-            descriptor = pa.flight.FlightDescriptor.for_path(
-                model_id, obj_name
-            )
+            descriptor = pa.flight.FlightDescriptor.for_path(model_id, obj_name)
             schema = self._schema_for_object(obj)
-            yield pa.flight.FlightInfo(
-                schema, descriptor, [], -1, -1
-            )
+            yield pa.flight.FlightInfo(schema, descriptor, [], -1, -1)
 ```
 
 This makes DBeaver show the OB model's data objects as browsable tables,
@@ -161,12 +162,13 @@ declared dialect or an explicit env override:
 
 ```python
 VENDOR_MAP = {
-    "snowflake":  "ob_snowflake",
-    "postgres":   "ob_postgres",
+    "snowflake": "ob_snowflake",
+    "postgres": "ob_postgres",
     "clickhouse": "ob_clickhouse",
-    "dremio":     "ob_dremio",
+    "dremio": "ob_dremio",
     "databricks": "ob_databricks",
 }
+
 
 def connect(model: SemanticModel) -> Connection:
     dialect = model.dialect or os.getenv("DB_VENDOR", "snowflake")
@@ -189,18 +191,20 @@ import pyarrow.flight as flight
 
 _server: flight.FlightServerBase | None = None
 
+
 def start_flight_background() -> threading.Thread:
     global _server
     port = int(os.getenv("FLIGHT_PORT", "8815"))
     _server = OBFlightServer(location=f"grpc://0.0.0.0:{port}")
-    _server.init()   # load models, init cache
+    _server.init()  # load models, init cache
     thread = threading.Thread(
         target=_server.serve,
         name="ob-flight-server",
-        daemon=True,   # dies with the main process
+        daemon=True,  # dies with the main process
     )
     thread.start()
     return thread
+
 
 def stop_flight_server() -> None:
     if _server:
@@ -232,8 +236,6 @@ error names that case.
 |---|---|---|
 | FLIGHT_ENABLED | false | Set to "true" to activate |
 | FLIGHT_PORT | 8815 | gRPC listen port |
-| FLIGHT_AUTH_MODE | none | "none" or "token" |
-| FLIGHT_API_TOKEN | | Static token for auth mode "token" |
 | FLIGHT_TLS_CERT | | PEM certificate path; with the key, serves grpc+tls |
 | FLIGHT_TLS_KEY | | PEM private key path. Both or neither - one alone refuses to start rather than serving plaintext |
 | FLIGHT_TLS_CLIENT_CA | | PEM CA path; turns on mutual TLS (requires cert + key) |
@@ -288,7 +290,7 @@ function form) is supported end-to-end — see
 1. New Connection → Apache Arrow Flight SQL
 2. Host: <docker-host-ip>  Port: 8815
 3. Database: <model_name_or_id>   (e.g. "orionbelt_1")
-4. Authentication: leave empty (FLIGHT_AUTH_MODE=none on LAN)
+4. Authentication: leave empty without auth; with AUTH_MODE on, an API key (or under oidc an access token) as the password
 5. Test Connection → should show "Connected"
 6. In SQL editor, write either:
    - Plain SQL:  SELECT * FROM ORDERS LIMIT 10

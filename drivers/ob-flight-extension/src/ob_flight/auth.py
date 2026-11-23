@@ -1,31 +1,54 @@
 """Authentication handlers for the Flight SQL server.
 
-When OBSL's shared auth subsystem is in ``api_key`` mode, the Flight server
-validates the API key against the shared key store two ways, because clients
-differ on how they send it:
+When OBSL's shared auth subsystem is on (``AUTH_MODE=api_key`` or ``oidc``),
+the Flight server authenticates each call's credential (an API key, or under
+``oidc`` also the IdP's access token) two ways, because clients differ on how
+they send it:
 
 * :class:`AuthMiddlewareFactory` reads it from the call headers. This is the
-  path every current client takes - see the long note below.
+  path every current client takes - see the long note below. It keeps the
+  authenticated caller for the call (:func:`caller_of`), so the server can
+  run the call as that caller and session ownership holds on Flight too.
 * :class:`SharedKeyAuthHandler` answers Flight's legacy ``Handshake``, kept for
   anything that still speaks it.
 
-The legacy ``FLIGHT_AUTH_MODE=token`` / ``FLIGHT_API_TOKEN`` path still works
-for one release with a deprecation warning. See design/PLAN_authentication.md
-§3.2.
+Both take an *authenticate* function: it returns the caller, or raises
+:class:`CredentialRejected` (refused: gRPC ``UNAUTHENTICATED``) or
+:class:`ScopeMissing` (``PERMISSION_DENIED``), whose message the client sees.
+See docs/guide/authentication.md.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
-import logging
-import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from pyarrow import flight
 
-logger = logging.getLogger("ob_flight.auth")
+
+class CredentialRejected(Exception):
+    """The credential did not authenticate. The message is sent to the client."""
+
+
+class ScopeMissing(Exception):
+    """The caller authenticated but may not use Flight. Sent to the client."""
+
+
+#: Returns the caller a credential authenticates as; raises CredentialRejected
+#: or ScopeMissing.
+Authenticate = Callable[[str], Any]
+
+
+def _check(authenticate: Authenticate, credential: str) -> Any:
+    """Run ``authenticate``, turning its refusals into Flight errors."""
+    try:
+        return authenticate(credential)
+    except CredentialRejected as exc:
+        raise flight.FlightUnauthenticatedError(str(exc)) from None
+    except ScopeMissing as exc:
+        raise flight.FlightUnauthorizedError(str(exc)) from None
 
 
 def _decode_token(token: Any) -> str:
@@ -46,41 +69,18 @@ class NoopAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
         return ""
 
 
-class TokenAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
-    """Simple static bearer token authentication (legacy FLIGHT_API_TOKEN)."""
-
-    def __init__(self, token: str) -> None:
-        super().__init__()
-        self._token = token.encode("utf-8")
-
-    def authenticate(self, outgoing: Any, incoming: Any) -> None:
-        """Validate the token from the client."""
-        buf = incoming.read()
-        if buf != self._token:
-            raise flight.FlightUnauthenticatedError("Invalid token")
-        outgoing.write(self._token)
-
-    def is_valid(self, token: bytes) -> str:
-        """Check if the token matches."""
-        if token != self._token:
-            raise flight.FlightUnauthenticatedError("Invalid token")
-        return "authenticated"
-
-
 class SharedKeyAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
-    """Validate the handshake credential against OBSL's shared key store.
+    """Authenticate the legacy handshake's credential against OBSL's auth.
 
-    The client sends its API key as the Basic-auth password (the username is
-    ignored) or as the raw handshake token; ``validate_fn`` returns whether
-    it matches a configured key. On success the echoed token is reused as the
-    session token, which ``is_valid`` re-checks on every subsequent call.
+    The client sends its credential as the Basic-auth password (the username
+    is ignored) or as the raw handshake token. On success the echoed token is
+    reused as the session token, which ``is_valid`` re-checks on every
+    subsequent call.
     """
 
-    def __init__(
-        self, validate_fn: Callable[[str], bool], *, header_auth_installed: bool = False
-    ) -> None:
+    def __init__(self, authenticate: Authenticate, *, header_auth_installed: bool = False) -> None:
         super().__init__()
-        self._validate = validate_fn
+        self._authenticate = authenticate
         self._header_auth_installed = header_auth_installed
 
     def authenticate(self, outgoing: Any, incoming: Any) -> None:
@@ -103,8 +103,7 @@ class SharedKeyAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
                 "No API key on the handshake stream. This server accepts the "
                 "legacy handshake only; enable api_key mode for header auth."
             )
-        if not self._validate(_decode_token(token)):
-            raise flight.FlightUnauthenticatedError("Invalid API key")
+        _check(self._authenticate, _decode_token(token))
         outgoing.write(token)
 
     def is_valid(self, token: bytes) -> str:
@@ -114,39 +113,11 @@ class SharedKeyAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
             # client - which is exactly what this server did. The middleware
             # has already accepted or refused this call; say nothing and let
             # its answer stand. Never reachable unless that middleware is
-            # installed: ``build_api_key_auth`` is the only way to set this,
+            # installed: ``build_shared_auth`` is the only way to set this,
             # and it builds the pair together.
             return ""
-        if not self._validate(_decode_token(token)):
-            raise flight.FlightUnauthenticatedError("Invalid API key")
+        _check(self._authenticate, _decode_token(token))
         return "authenticated"
-
-
-def create_auth_handler(
-    validate_fn: Callable[[str], bool] | None = None,
-) -> flight.ServerAuthHandler:
-    """Create an auth handler for the Flight server.
-
-    Priority:
-    1. ``validate_fn`` supplied (shared auth in api_key mode) → SharedKeyAuthHandler.
-    2. ``FLIGHT_AUTH_MODE=token`` (legacy) → TokenAuthHandler + deprecation warning.
-    3. Otherwise → NoopAuthHandler (no auth).
-    """
-    if validate_fn is not None:
-        return SharedKeyAuthHandler(validate_fn)
-
-    mode = os.getenv("FLIGHT_AUTH_MODE", "none").lower()
-    if mode == "token":
-        token = os.getenv("FLIGHT_API_TOKEN", "")
-        if not token:
-            raise ValueError("FLIGHT_AUTH_MODE=token requires FLIGHT_API_TOKEN to be set")
-        logger.warning(
-            "FLIGHT_AUTH_MODE=token / FLIGHT_API_TOKEN is deprecated and will be removed "
-            "in a future release. Migrate to AUTH_MODE=api_key + API_KEYS (one shared key "
-            "store across REST, Flight, and pgwire). See design/PLAN_authentication.md."
-        )
-        return TokenAuthHandler(token)
-    return NoopAuthHandler()
 
 
 # ---------------------------------------------------------------------------
@@ -262,11 +233,12 @@ def _credential_from_headers(headers: Mapping[str, Any]) -> str | None:
 
 
 class _AuthMiddleware(flight.ServerMiddleware):  # type: ignore[misc]
-    """Carries the issued bearer token back to the client."""
+    """Carries the issued bearer token back to the client, and the call's caller."""
 
-    def __init__(self, token: str | None) -> None:
+    def __init__(self, token: str | None, caller: Any = None) -> None:
         super().__init__()
         self._token = token
+        self.caller = caller
 
     def sending_headers(self) -> dict[str, str]:
         if not self._token:
@@ -287,10 +259,10 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
     """
 
     def __init__(
-        self, validate_fn: Callable[[str], bool], *, handshake_handler_installed: bool = False
+        self, authenticate: Authenticate, *, handshake_handler_installed: bool = False
     ) -> None:
         super().__init__()
-        self._validate = validate_fn
+        self._authenticate = authenticate
         self._handshake_handler_installed = handshake_handler_installed
 
     def start_call(self, info: Any, headers: Mapping[str, Any]) -> Any:
@@ -318,15 +290,39 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
                 "Missing API key. Send it as 'authorization: Bearer <key>', "
                 "'x-api-key: <key>', or the password of a Basic credential."
             )
-        if not self._validate(credential):
-            raise flight.FlightUnauthenticatedError("Invalid API key")
-        return _AuthMiddleware(credential)
+        caller = _check(self._authenticate, credential)
+        return _AuthMiddleware(credential, caller)
 
 
-def build_api_key_auth(
-    validate_fn: Callable[[str], bool] | None = None,
+def caller_of(context: Any) -> Any:
+    """The caller this call authenticated as, or None (no auth on this server).
+
+    Only OBSL's own auth middleware is trusted to say who the caller is.
+    """
+    middleware = context.get_middleware(AUTH_MIDDLEWARE_KEY)
+    return middleware.caller if isinstance(middleware, _AuthMiddleware) else None
+
+
+def _authenticate_with_orionbelt(credential: str) -> Any:
+    """OBSL's shared auth: an API key, or under ``oidc`` the IdP's token.
+
+    Every Flight call reads, so the caller must hold ``obsl:read``.
+    """
+    from orionbelt.auth import SCOPE_READ, AuthError, authenticate
+
+    try:
+        principal = authenticate(credential)
+    except AuthError as exc:
+        raise CredentialRejected(exc.message) from None
+    if not principal.has_scope(SCOPE_READ):
+        raise ScopeMissing(f"Insufficient scope: requires {SCOPE_READ}")
+    return principal
+
+
+def build_shared_auth(
+    authenticate: Authenticate | None = None,
 ) -> tuple[SharedKeyAuthHandler, dict[str, Any]]:
-    """The handler and middleware for ``api_key`` mode, built as one pair.
+    """The handler and middleware for shared auth, built as one pair.
 
     They are returned together because neither is correct alone here. The
     handler must not veto calls that carry no handshake token, and the
@@ -336,15 +332,9 @@ def build_api_key_auth(
     how the production wiring came to refuse every client while the parts
     passed their own tests.
     """
-    if validate_fn is None:
-        # Imported lazily so this module stays importable when ``orionbelt``
-        # is not installed (standalone Flight use).
-        from orionbelt.auth import validate_credential
-
-        validate_fn = validate_credential
-
-    handler = SharedKeyAuthHandler(validate_fn, header_auth_installed=True)
+    check = authenticate or _authenticate_with_orionbelt
+    handler = SharedKeyAuthHandler(check, header_auth_installed=True)
     middleware = {
-        AUTH_MIDDLEWARE_KEY: AuthMiddlewareFactory(validate_fn, handshake_handler_installed=True)
+        AUTH_MIDDLEWARE_KEY: AuthMiddlewareFactory(check, handshake_handler_installed=True)
     }
     return handler, middleware

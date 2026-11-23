@@ -40,9 +40,11 @@ def start_flight_background(
     from ob_flight.server import OBFlightServer
 
     if auth_handler is None:
-        from ob_flight.auth import create_auth_handler
+        # No auth unless the caller passes it: OBSL's app decides it from
+        # AUTH_MODE and always does (``build_shared_auth``).
+        from ob_flight.auth import NoopAuthHandler
 
-        auth_handler = create_auth_handler()
+        auth_handler = NoopAuthHandler()
 
     if port is None:
         port = int(os.getenv("FLIGHT_PORT", "8815"))

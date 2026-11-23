@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,19 +13,35 @@ from pyarrow import flight
 from ob_flight.auth import (
     AUTH_MIDDLEWARE_KEY,
     AuthMiddlewareFactory,
+    CredentialRejected,
     NoopAuthHandler,
+    ScopeMissing,
     SharedKeyAuthHandler,
-    TokenAuthHandler,
     _credential_from_headers,
     _presents_a_credential,
-    build_api_key_auth,
-    create_auth_handler,
+    build_shared_auth,
+    caller_of,
 )
 
 
 def _b64(raw: str) -> str:
     """Base64 as a client sends it - unpadded, the way ADBC does."""
     return base64.b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _accept(good: str) -> Callable[[str], str]:
+    """An authenticate function admitting only ``good``, as the caller ``good``."""
+
+    def authenticate(key: str) -> str:
+        if key != good:
+            raise CredentialRejected("Invalid API key")
+        return f"caller:{key}"
+
+    return authenticate
+
+
+def _accept_any(key: str) -> str:
+    return f"caller:{key}"
 
 
 class TestNoopAuthHandler:
@@ -38,35 +55,9 @@ class TestNoopAuthHandler:
         assert result == ""
 
 
-class TestTokenAuthHandler:
-    def test_authenticate_success(self):
-        handler = TokenAuthHandler("secret")
-        incoming = MagicMock()
-        incoming.read.return_value = b"secret"
-        outgoing = MagicMock()
-        handler.authenticate(outgoing, incoming)
-        outgoing.write.assert_called_once_with(b"secret")
-
-    def test_authenticate_failure(self):
-        handler = TokenAuthHandler("secret")
-        incoming = MagicMock()
-        incoming.read.return_value = b"wrong"
-        with pytest.raises(flight.FlightUnauthenticatedError):
-            handler.authenticate(MagicMock(), incoming)
-
-    def test_is_valid_success(self):
-        handler = TokenAuthHandler("secret")
-        assert handler.is_valid(b"secret") == "authenticated"
-
-    def test_is_valid_failure(self):
-        handler = TokenAuthHandler("secret")
-        with pytest.raises(flight.FlightUnauthenticatedError):
-            handler.is_valid(b"wrong")
-
-
 class TestSharedKeyAuthHandler:
     def test_authenticate_success(self):
-        handler = SharedKeyAuthHandler(lambda key: key == "good-key")
+        handler = SharedKeyAuthHandler(_accept("good-key"))
         incoming = MagicMock()
         incoming.read.return_value = b"good-key"
         outgoing = MagicMock()
@@ -74,46 +65,20 @@ class TestSharedKeyAuthHandler:
         outgoing.write.assert_called_once_with(b"good-key")
 
     def test_authenticate_failure(self):
-        handler = SharedKeyAuthHandler(lambda key: key == "good-key")
+        handler = SharedKeyAuthHandler(_accept("good-key"))
         incoming = MagicMock()
         incoming.read.return_value = b"bad-key"
         with pytest.raises(flight.FlightUnauthenticatedError):
             handler.authenticate(MagicMock(), incoming)
 
     def test_is_valid_success(self):
-        handler = SharedKeyAuthHandler(lambda key: key == "good-key")
+        handler = SharedKeyAuthHandler(_accept("good-key"))
         assert handler.is_valid(b"good-key") == "authenticated"
 
     def test_is_valid_failure(self):
-        handler = SharedKeyAuthHandler(lambda key: key == "good-key")
+        handler = SharedKeyAuthHandler(_accept("good-key"))
         with pytest.raises(flight.FlightUnauthenticatedError):
             handler.is_valid(b"bad-key")
-
-
-class TestCreateAuthHandler:
-    def test_default_noop(self, monkeypatch):
-        monkeypatch.delenv("FLIGHT_AUTH_MODE", raising=False)
-        handler = create_auth_handler()
-        assert isinstance(handler, NoopAuthHandler)
-
-    def test_validate_fn_yields_shared_handler(self, monkeypatch):
-        # When a shared validator is supplied it wins over the legacy env path.
-        monkeypatch.setenv("FLIGHT_AUTH_MODE", "token")
-        monkeypatch.setenv("FLIGHT_API_TOKEN", "legacy")
-        handler = create_auth_handler(validate_fn=lambda key: True)
-        assert isinstance(handler, SharedKeyAuthHandler)
-
-    def test_token_mode_legacy_still_works(self, monkeypatch):
-        monkeypatch.setenv("FLIGHT_AUTH_MODE", "token")
-        monkeypatch.setenv("FLIGHT_API_TOKEN", "my-token")
-        handler = create_auth_handler()
-        assert isinstance(handler, TokenAuthHandler)
-
-    def test_token_mode_no_token_raises(self, monkeypatch):
-        monkeypatch.setenv("FLIGHT_AUTH_MODE", "token")
-        monkeypatch.delenv("FLIGHT_API_TOKEN", raising=False)
-        with pytest.raises(ValueError, match="FLIGHT_API_TOKEN"):
-            create_auth_handler()
 
 
 class TestCredentialFromHeaders:
@@ -175,7 +140,7 @@ class TestCredentialFromHeaders:
 
 class TestAuthMiddlewareFactory:
     def test_a_valid_key_passes_and_is_echoed_back(self):
-        factory = AuthMiddlewareFactory(lambda key: key == "good-key")
+        factory = AuthMiddlewareFactory(_accept("good-key"))
         middleware = factory.start_call(MagicMock(), {"x-api-key": "good-key"})
         # ``AuthenticateBasicToken`` expects the token to use from here on in
         # the response headers; without this the client reports that it never
@@ -183,12 +148,12 @@ class TestAuthMiddlewareFactory:
         assert middleware.sending_headers() == {"authorization": "Bearer good-key"}
 
     def test_a_wrong_key_is_refused(self):
-        factory = AuthMiddlewareFactory(lambda key: key == "good-key")
+        factory = AuthMiddlewareFactory(_accept("good-key"))
         with pytest.raises(flight.FlightUnauthenticatedError):
             factory.start_call(MagicMock(), {"x-api-key": "bad-key"})
 
     def test_a_missing_key_is_refused(self):
-        factory = AuthMiddlewareFactory(lambda key: key == "good-key")
+        factory = AuthMiddlewareFactory(_accept("good-key"))
         with pytest.raises(flight.FlightUnauthenticatedError):
             factory.start_call(MagicMock(), {})
 
@@ -196,12 +161,12 @@ class TestAuthMiddlewareFactory:
 class TestTheHalvesAreStrictOnTheirOwn:
     """Each half makes one concession, and only the pair makes it safe.
 
-    ``build_api_key_auth`` is the only thing that turns these on. Built alone -
+    ``build_shared_auth`` is the only thing that turns these on. Built alone -
     which is what every other mode does - both must still refuse.
     """
 
     def test_a_handler_alone_refuses_a_call_that_never_handshook(self):
-        handler = SharedKeyAuthHandler(lambda key: key == "good-key")
+        handler = SharedKeyAuthHandler(_accept("good-key"))
         with pytest.raises(flight.FlightUnauthenticatedError):
             handler.is_valid(b"")
 
@@ -209,12 +174,12 @@ class TestTheHalvesAreStrictOnTheirOwn:
         # Without middleware there is no header to have authenticated this.
         incoming = MagicMock()
         incoming.read.return_value = b""
-        handler = SharedKeyAuthHandler(lambda key: True)
+        handler = SharedKeyAuthHandler(_accept_any)
         with pytest.raises(flight.FlightUnauthenticatedError):
             handler.authenticate(MagicMock(), incoming)
 
     def test_middleware_alone_refuses_a_credential_less_handshake(self):
-        factory = AuthMiddlewareFactory(lambda key: True)
+        factory = AuthMiddlewareFactory(_accept_any)
         info = MagicMock()
         info.method = flight.FlightMethod.HANDSHAKE
         with pytest.raises(flight.FlightUnauthenticatedError):
@@ -225,7 +190,7 @@ class TestTheApiKeyPair:
     """What ``app.py`` installs. The halves are only correct together."""
 
     def test_the_handler_defers_and_the_middleware_admits_the_handshake(self):
-        handler, middleware = build_api_key_auth(lambda key: key == "good-key")
+        handler, middleware = build_shared_auth(_accept("good-key"))
         # No token: the middleware has already ruled on this call.
         assert handler.is_valid(b"") == ""
         info = MagicMock()
@@ -236,14 +201,14 @@ class TestTheApiKeyPair:
         """A handshake *carrying* a credential is AuthenticateBasicToken, and
         is checked like any other call - the exemption covers only the legacy
         protocol, where the key is still on the wire."""
-        _, middleware = build_api_key_auth(lambda key: key == "good-key")
+        _, middleware = build_shared_auth(_accept("good-key"))
         info = MagicMock()
         info.method = flight.FlightMethod.HANDSHAKE
         with pytest.raises(flight.FlightUnauthenticatedError):
             middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {"x-api-key": "bad-key"})
 
     def test_a_legacy_token_still_has_to_be_valid(self):
-        handler, _ = build_api_key_auth(lambda key: key == "good-key")
+        handler, _ = build_shared_auth(_accept("good-key"))
         with pytest.raises(flight.FlightUnauthenticatedError):
             handler.is_valid(b"bad-key")
 
@@ -273,7 +238,7 @@ class TestOfferingNoKeyIsNotTheSameAsOfferingNothing:
         ],
     )
     def test_it_is_refused_even_on_the_handshake(self, label: str, headers: dict) -> None:
-        _, middleware = build_api_key_auth(lambda key: True)
+        _, middleware = build_shared_auth(_accept_any)
         info = MagicMock()
         info.method = flight.FlightMethod.HANDSHAKE
         with pytest.raises(flight.FlightUnauthenticatedError, match="No API key"):
@@ -281,7 +246,7 @@ class TestOfferingNoKeyIsNotTheSameAsOfferingNothing:
 
     def test_a_handshake_offering_nothing_still_passes(self) -> None:
         """The exemption itself must survive: this is the legacy client."""
-        _, middleware = build_api_key_auth(lambda key: True)
+        _, middleware = build_shared_auth(_accept_any)
         info = MagicMock()
         info.method = flight.FlightMethod.HANDSHAKE
         assert middleware[AUTH_MIDDLEWARE_KEY].start_call(info, {"user-agent": "legacy"}) is None
@@ -300,7 +265,7 @@ class TestNoKeyInLogsOrErrors:
 
     def test_refusals_do_not_repeat_the_key(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.DEBUG)
-        handler, middleware = build_api_key_auth(lambda key: key == self.GOOD)
+        handler, middleware = build_shared_auth(_accept(self.GOOD))
         factory = middleware[AUTH_MIDDLEWARE_KEY]
         errors: list[str] = []
         for headers in (
@@ -319,3 +284,35 @@ class TestNoKeyInLogsOrErrors:
         for text in (*errors, caplog.text):
             assert self.GOOD not in text
             assert self.NEAR_MISS not in text
+
+
+class TestTheCallerIsKept:
+    """What authenticate returns is the caller the server runs the call as."""
+
+    def test_middleware_keeps_the_caller(self):
+        factory = AuthMiddlewareFactory(_accept("good-key"))
+        middleware = factory.start_call(MagicMock(), {"x-api-key": "good-key"})
+        context = MagicMock()
+        context.get_middleware.return_value = middleware
+        assert caller_of(context) == "caller:good-key"
+
+    def test_no_auth_means_no_caller(self):
+        context = MagicMock()
+        context.get_middleware.return_value = None
+        assert caller_of(context) is None
+
+    def test_the_refusal_message_reaches_the_client(self):
+        def expired(key: str) -> str:
+            raise CredentialRejected("Token has expired")
+
+        with pytest.raises(flight.FlightUnauthenticatedError, match="Token has expired"):
+            AuthMiddlewareFactory(expired).start_call(MagicMock(), {"x-api-key": "k"})
+
+    def test_a_missing_scope_is_permission_denied(self):
+        def no_read(key: str) -> str:
+            raise ScopeMissing("Insufficient scope: requires obsl:read")
+
+        with pytest.raises(flight.FlightUnauthorizedError, match="requires obsl:read"):
+            AuthMiddlewareFactory(no_read).start_call(MagicMock(), {"x-api-key": "k"})
+        with pytest.raises(flight.FlightUnauthorizedError):
+            SharedKeyAuthHandler(no_read).is_valid(b"k")

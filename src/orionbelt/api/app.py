@@ -61,7 +61,14 @@ from orionbelt.api.routers import (
 )
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
-from orionbelt.auth import MODE_OIDC, OidcConfig, parse_scope_claims, parse_scope_map
+from orionbelt.auth import (
+    MODE_OIDC,
+    AuthConfigError,
+    OidcConfig,
+    parse_scope_claims,
+    parse_scope_map,
+    resolve_mode,
+)
 from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor, metrics
 from orionbelt.service.compilation_cache import CompilationCache
@@ -187,7 +194,7 @@ def oidc_config(settings: Settings) -> OidcConfig | None:
     Raises ``AuthConfigError`` (refuse to start) when they are incomplete or
     malformed.
     """
-    if settings.auth_mode.strip().lower() != MODE_OIDC:
+    if resolve_mode(settings.auth_mode) != MODE_OIDC:
         return None
     return OidcConfig(
         issuer=settings.oidc_issuer.strip(),
@@ -200,6 +207,28 @@ def oidc_config(settings: Settings) -> OidcConfig | None:
         scope_map=parse_scope_map(settings.oidc_scope_map),
         clock_skew_seconds=settings.oidc_clock_skew_seconds,
     )
+
+
+def refuse_removed_auth_settings(settings: Settings) -> None:
+    """Refuse to start when a removed setting is still set to turn auth on.
+
+    ``AUTH_ENABLED``, ``FLIGHT_AUTH_MODE=token`` and ``FLIGHT_API_TOKEN`` are
+    gone. Ignoring one would start the server without the auth it asked for,
+    so its presence stops the start with what to set instead.
+    """
+    removed = []
+    if settings.auth_enabled:
+        removed.append("AUTH_ENABLED (set AUTH_MODE=api_key)")
+    if settings.flight_auth_mode.strip().lower() not in ("", "none"):
+        removed.append("FLIGHT_AUTH_MODE (set AUTH_MODE=api_key)")
+    if settings.flight_api_token:
+        removed.append("FLIGHT_API_TOKEN (add the token to API_KEYS)")
+    if removed:
+        raise AuthConfigError(
+            "These settings were removed and would no longer turn authentication on: "
+            + "; ".join(removed)
+            + ". Remove them. See docs/guide/authentication.md."
+        )
 
 
 def _start_duckdb_workers() -> None:
@@ -295,7 +324,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         flight_info = {
             "enabled": True,
             "port": settings.flight_port,
-            "auth_mode": settings.flight_auth_mode,
+            "auth_mode": resolve_mode(settings.auth_mode),
             "db_vendor": settings.db_vendor,
         }
 
@@ -450,7 +479,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         auth_mode=settings.auth_mode,
         api_keys=settings.api_keys,
         api_key_header=settings.api_key_header,
-        auth_enabled=settings.auth_enabled,
         oidc=oidc_config(settings),
     )
 
@@ -485,24 +513,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             # Decide the Flight auth handler here, from Settings, and always
             # pass it explicitly so the handler matches what we report and so
             # ob_flight never re-reads the environment (which could diverge from
-            # Settings / .env). Three cases:
-            #   1. api_key / oidc mode  -> validate against the shared key store
-            #   2. legacy token mode    -> static FLIGHT_API_TOKEN (deprecated)
-            #   3. otherwise            -> no auth (NoopAuthHandler) + warning
-            from orionbelt.auth import (
-                MODE_NONE,
-                get_mode,
-                require_service_keys,
-                validate_api_key,
-            )
+            # Settings / .env). Auth on (api_key / oidc) -> OBSL's shared auth:
+            # an API key, or under oidc also the IdP's token, and each call runs
+            # as its caller. Otherwise no auth (NoopAuthHandler) + warning.
+            from orionbelt.auth import MODE_NONE, get_mode
 
             flight_auth_middleware: dict[str, Any] = {}
             if get_mode() != MODE_NONE:
-                # Flight takes API keys only, also under AUTH_MODE=oidc: it does
-                # not yet bind a token's user, so session ownership could not
-                # hold there.
-                require_service_keys("FLIGHT_ENABLED")
-                from ob_flight.auth import build_api_key_auth
+                from ob_flight.auth import build_shared_auth
 
                 # Built as a pair, and installed as a pair. The handler alone
                 # cannot authenticate a current client - it implements Flight's
@@ -510,28 +528,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 # which carries the credential in a header - and the middleware
                 # alone would refuse the legacy handshake. Each covers what the
                 # other cannot.
-                flight_auth_handler, flight_auth_middleware = build_api_key_auth(validate_api_key)
-            elif settings.flight_auth_mode == "token":
-                # Legacy static-token auth (deprecated). Fail CLOSED if the
-                # operator asked for token auth but did not supply a token -
-                # never silently downgrade to no-auth.
-                if not settings.flight_api_token:
-                    raise ValueError(
-                        "FLIGHT_AUTH_MODE=token requires FLIGHT_API_TOKEN to be set. "
-                        "Set the token, or migrate to AUTH_MODE=api_key + API_KEYS."
-                    )
-                from ob_flight.auth import TokenAuthHandler
-
-                flight_auth_handler = TokenAuthHandler(settings.flight_api_token)
-                logger.warning(
-                    "FLIGHT_AUTH_MODE=token / FLIGHT_API_TOKEN is deprecated. Migrate to "
-                    "AUTH_MODE=api_key + API_KEYS (one key store across REST, Flight, pgwire)."
-                )
+                flight_auth_handler, flight_auth_middleware = build_shared_auth()
             else:
-                # No shared auth and no token mode -> the Flight listener binds
-                # 0.0.0.0 and accepts every client. This also covers
-                # FLIGHT_API_TOKEN set WITHOUT FLIGHT_AUTH_MODE=token, which the
-                # token handler does not honour (still no auth).
+                # No shared auth -> the Flight listener binds 0.0.0.0 and
+                # accepts every client.
                 from ob_flight.auth import NoopAuthHandler
 
                 flight_auth_handler = NoopAuthHandler()
@@ -579,7 +579,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 flight_info={
                     "enabled": True,
                     "port": settings.flight_port,
-                    "auth_mode": settings.flight_auth_mode,
+                    "auth_mode": resolve_mode(settings.auth_mode),
                     "db_vendor": settings.db_vendor,
                 },
                 query_execute_enabled=True,
@@ -672,6 +672,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     if settings is None:
         settings = Settings()
+    refuse_removed_auth_settings(settings)
 
     app = FastAPI(
         title="OrionBelt Semantic Layer",
@@ -819,7 +820,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         import gradio as gr
 
-        from orionbelt.auth import MODE_NONE, resolve_mode
+        from orionbelt.auth import MODE_NONE
         from orionbelt.ui.app import create_blocks, set_api_credentials
 
         # The embedded UI is a server-side proxy that holds an API key and can
@@ -832,7 +833,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # they accept /ui as a key-holding surface and will network-protect it.
         # Under AUTH_MODE=oidc the key must be one of API_KEYS (a service key);
         # signing in to the UI with the IdP comes later.
-        ui_auth_mode = resolve_mode(settings.auth_mode, settings.auth_enabled)
+        ui_auth_mode = resolve_mode(settings.auth_mode)
         if ui_auth_mode != MODE_NONE:
             ui_key = os.environ.get("OBSL_API_KEY") or None
             if ui_key:
@@ -868,7 +869,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ui_settings["flight"] = {
                 "enabled": True,
                 "port": settings.flight_port,
-                "auth_mode": settings.flight_auth_mode,
+                "auth_mode": resolve_mode(settings.auth_mode),
                 "db_vendor": settings.db_vendor,
             }
         demo = create_blocks(default_api_url=api_url, embedded_settings=ui_settings)

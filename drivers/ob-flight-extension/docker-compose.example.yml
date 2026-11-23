@@ -18,8 +18,8 @@ services:
       # --- Arrow Flight SQL (NEW) ---
       FLIGHT_ENABLED: "true"
       FLIGHT_PORT: "8815"
-      FLIGHT_AUTH_MODE: "none"          # use "token" for production
-      # FLIGHT_API_TOKEN: "changeme"    # required when AUTH_MODE=token
+      # AUTH_MODE: "api_key"            # production: require a key on every surface
+      # API_KEYS: "obsl_pat_..."
       FLIGHT_DEFAULT_MODEL: ""          # fallback if DBeaver sends no path
       FLIGHT_PRELOAD_MODELS: ""         # comma-sep paths, loaded at startup
 

@@ -93,10 +93,17 @@ def _serving(db_dir: Any, handler: Any, middleware: Any) -> Iterator[str]:
 def authenticated_uri(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """A Flight server that requires the API key, as api_key mode configures."""
     pytest.importorskip("adbc_driver_flightsql")
-    from ob_flight.auth import build_api_key_auth
+    from ob_flight.auth import CredentialRejected, build_shared_auth
+
+    from orionbelt.auth.principal import API_KEY_PRINCIPAL, Principal
+
+    def accept(key: str) -> Principal:
+        if key != API_KEY:
+            raise CredentialRejected("Invalid API key")
+        return API_KEY_PRINCIPAL
 
     # The pair app.py installs, built the one way it can be built.
-    handler, middleware = build_api_key_auth(lambda key: key == API_KEY)
+    handler, middleware = build_shared_auth(accept)
     with _serving(tmp_path_factory.mktemp("adbc-auth"), handler, middleware) as uri:
         yield uri
 
