@@ -17,7 +17,9 @@ from orionbelt.auth.config import (
     get_api_keys,
     get_header_name,
     get_mode,
+    get_oidc_client,
     get_oidc_metadata,
+    get_token_endpoint,
     init_auth,
     reset_auth,
     resolve_mode,
@@ -44,7 +46,7 @@ from orionbelt.auth.errors import (
     InsufficientScopeError,
     TokenInvalidError,
 )
-from orionbelt.auth.oidc import OidcConfig, parse_scope_claims, parse_scope_map
+from orionbelt.auth.oidc import OidcClient, OidcConfig, parse_scope_claims, parse_scope_map
 from orionbelt.auth.principal import (
     FULL_SCOPES,
     SCOPE_ADMIN,
@@ -71,6 +73,7 @@ __all__ = [
     "AuthInvalidError",
     "AuthRequiredError",
     "InsufficientScopeError",
+    "OidcClient",
     "OidcConfig",
     "Principal",
     "TokenInvalidError",
@@ -82,7 +85,9 @@ __all__ = [
     "get_api_keys",
     "get_header_name",
     "get_mode",
+    "get_oidc_client",
     "get_oidc_metadata",
+    "get_token_endpoint",
     "init_auth",
     "may_use",
     "parse_scope_claims",

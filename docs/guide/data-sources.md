@@ -271,8 +271,10 @@ to the database.
 | Dialect | How the user's token is exchanged | Set up at the vendor |
 |---------|-----------------------------------|----------------------|
 | Databricks | At the workspace's own token service (OAuth token federation). | An account federation policy that accepts your identity provider's issuer and OrionBelt's audience (`OIDC_AUDIENCE`), and names the claim holding the Databricks user name. A service-principal policy also needs `DB_<NAME>_OAUTH_CLIENT_ID`. |
+| Snowflake | Entra ID issues it, through its on-behalf-of flow, asked by OrionBelt's own client there. See [Snowflake through Entra ID](#snowflake-through-entra-id). | An External OAuth security integration that trusts Entra ID; in Entra, an app registration for Snowflake and the permission for OrionBelt's to ask for it. |
 
-Snowflake and BigQuery follow. Other dialects refuse `DB_<NAME>_AUTH=user`.
+BigQuery follows; Snowflake through Okta too. Other dialects refuse
+`DB_<NAME>_AUTH=user`.
 
 What changes for such a source:
 
@@ -291,13 +293,81 @@ What changes for such a source:
   authentication, is refused with 401 `SIGN_IN_REQUIRED`, before any cache
   lookup. When the database's token service refuses the user, the answer is
   403 `DATA_SOURCE_SIGN_IN_REFUSED` with its reason; when it cannot be
-  reached, 503 `DATA_SOURCE_SIGN_IN_UNAVAILABLE`. Flight SQL and pgwire
-  answer with their own equivalents.
+  reached, 503 `DATA_SOURCE_SIGN_IN_UNAVAILABLE`. When the identity provider
+  wants the user at its sign-in page first (multi-factor authentication,
+  conditional access, consent), 401 `DATA_SOURCE_SIGN_IN_INTERACTION_REQUIRED`.
+  Flight SQL and pgwire answer with their own equivalents.
 - OrionBelt refuses to start when a source logs in as the user but
-  `AUTH_MODE` is not `oidc`.
+  `AUTH_MODE` is not `oidc`, and when a Snowflake source does and OrionBelt
+  has no client at the identity provider or does not know its token endpoint.
 
 The exchanged token is kept in memory per data source and user, and exchanged
 again a minute before it expires; it is never written to disk or logged.
+
+### Snowflake through Entra ID
+
+Snowflake takes a token that your identity provider issues for it (External
+OAuth), so OrionBelt asks Entra ID for one, on the user's behalf, as a client
+of its own:
+
+```bash
+# OrionBelt's app registration: the one OIDC_AUDIENCE names, with a secret.
+OIDC_CLIENT_ID=<OrionBelt's application (client) ID>
+OIDC_CLIENT_SECRET_FILE=/run/secrets/obsl-client-secret
+
+OBSL_DATABASES=warehouse
+DB_WAREHOUSE_TYPE=snowflake
+DB_WAREHOUSE_AUTH=user
+DB_WAREHOUSE_OAUTH_EXCHANGE=entra_obo
+DB_WAREHOUSE_OAUTH_SCOPE=api://<Snowflake app ID>/session:role-any
+DB_WAREHOUSE_SNOWFLAKE_ACCOUNT=xy12345.eu-west-1
+DB_WAREHOUSE_SNOWFLAKE_WAREHOUSE=BI_WH
+DB_WAREHOUSE_SNOWFLAKE_DATABASE=SALES
+```
+
+The on-behalf-of flow only accepts a user's token issued for the client that
+asks, so the token users call OrionBelt with must be issued for OrionBelt's
+app registration: `OIDC_AUDIENCE` names it, and `OIDC_CLIENT_ID` is its
+client ID. OrionBelt asks Entra at `OIDC_TOKEN_ENDPOINT`, or at the token
+endpoint the issuer's discovery document names.
+
+**In Entra ID:** an app registration for Snowflake that exposes the scopes
+users may get (Snowflake's guide names them `session:scope:<role>`, plus
+`session:role-any`), and, on OrionBelt's app registration, a client secret and
+the delegated permission to those scopes.
+
+**In Snowflake:** a security integration that trusts Entra's tokens and maps
+a claim to the Snowflake user. Take the issuer and keys URL for your tenant
+from [Snowflake's guide for Entra ID](https://docs.snowflake.com/en/user-guide/oauth-azure):
+
+```sql
+CREATE SECURITY INTEGRATION entra_orionbelt
+  TYPE = EXTERNAL_OAUTH
+  ENABLED = TRUE
+  EXTERNAL_OAUTH_TYPE = AZURE
+  EXTERNAL_OAUTH_ISSUER = 'https://sts.windows.net/<tenant ID>/'
+  EXTERNAL_OAUTH_JWS_KEYS_URL = 'https://login.microsoftonline.com/<tenant ID>/discovery/v2.0/keys'
+  EXTERNAL_OAUTH_AUDIENCE_LIST = ('api://<Snowflake app ID>')
+  EXTERNAL_OAUTH_TOKEN_USER_MAPPING_CLAIM = 'upn'
+  EXTERNAL_OAUTH_SNOWFLAKE_USER_MAPPING_ATTRIBUTE = 'login_name'
+  EXTERNAL_OAUTH_ANY_ROLE_MODE = 'ENABLE';
+```
+
+**The role** comes from the scope. A role scope fixes it. With
+`session:role-any` (which needs `EXTERNAL_OAUTH_ANY_ROLE_MODE = 'ENABLE'`),
+`DB_<NAME>_SNOWFLAKE_ROLE` picks the role, or else the user's default role
+applies. The scope is part of the source's identity: two sources that differ
+only in their scope share no token and no cached result.
+
+A `SNOWFLAKE_USER` or `SNOWFLAKE_PASSWORD` set for the source is not sent: the
+token says who connects.
+
+**When Entra wants the user to sign in again**, for multi-factor
+authentication or a conditional access policy, the answer is 401
+`DATA_SOURCE_SIGN_IN_INTERACTION_REQUIRED`. Over REST its `WWW-Authenticate`
+header carries Entra's claims challenge (`error="insufficient_claims"`,
+`claims` base64-encoded), which a client presents when it signs the user in
+again.
 
 ## How OBSL names itself to your database
 

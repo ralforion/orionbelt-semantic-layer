@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -66,6 +67,12 @@ class Settings(BaseSettings):
     # document (needed when OIDC_JWKS_URI / OIDC_JWKS_FILE skip discovery).
     oidc_authorization_endpoint: str = ""
     oidc_token_endpoint: str = ""
+    # OBSL's own confidential client at the IdP: asks it for a warehouse token
+    # on a signed-in user's behalf where the IdP issues that token (Snowflake
+    # with DB_<NAME>_AUTH=user). The secret, or a file holding it.
+    oidc_client_id: str = ""
+    oidc_client_secret: SecretStr = SecretStr("")
+    oidc_client_secret_file: str = ""
     # Removed settings, read only so the server can refuse to start when one
     # is still set to turn auth on: ignoring it would start without auth.
     # See refuse_removed_auth_settings() in api/app.py.

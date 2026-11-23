@@ -21,7 +21,7 @@ from orionbelt.auth.errors import (
 )
 from orionbelt.auth.jwt_verify import JwtVerifier, looks_like_jwt
 from orionbelt.auth.keys import KeyStore, find_low_strength_keys, find_weak_keys, parse_keys
-from orionbelt.auth.oidc import OidcConfig
+from orionbelt.auth.oidc import OidcClient, OidcConfig
 from orionbelt.auth.principal import ANONYMOUS, API_KEY_PRINCIPAL, Principal
 
 logger = logging.getLogger("orionbelt.auth")
@@ -38,6 +38,7 @@ _mode: str = MODE_NONE
 _key_store: KeyStore = KeyStore(frozenset())
 _header_name: str = DEFAULT_HEADER_NAME
 _verifier: JwtVerifier | None = None
+_oidc: OidcConfig | None = None
 
 
 def resolve_mode(auth_mode: str) -> str:
@@ -58,7 +59,7 @@ def init_auth(
     ``oidc`` is required for ``AUTH_MODE=oidc``; ``verifier`` replaces the
     default :class:`JwtVerifier` built from it (tests inject a fetch).
     """
-    global _mode, _key_store, _header_name, _verifier  # noqa: PLW0603
+    global _mode, _key_store, _header_name, _verifier, _oidc  # noqa: PLW0603
 
     mode = resolve_mode(auth_mode)
     if mode not in _VALID_MODES:
@@ -103,6 +104,7 @@ def init_auth(
     _mode = mode
     _header_name = header
     _verifier = new_verifier
+    _oidc = oidc if mode == MODE_OIDC else None
 
 
 def _check_key_strength(keys: frozenset[str]) -> None:
@@ -125,11 +127,12 @@ def _check_key_strength(keys: frozenset[str]) -> None:
 
 def reset_auth() -> None:
     """Reset auth state to defaults (for tests / shutdown)."""
-    global _mode, _key_store, _header_name, _verifier  # noqa: PLW0603
+    global _mode, _key_store, _header_name, _verifier, _oidc  # noqa: PLW0603
     _mode = MODE_NONE
     _key_store = KeyStore(frozenset())
     _header_name = DEFAULT_HEADER_NAME
     _verifier = None
+    _oidc = None
 
 
 def get_mode() -> str:
@@ -145,6 +148,19 @@ def get_header_name() -> str:
 def get_oidc_metadata() -> dict[str, Any] | None:
     """The issuer's discovery document under ``oidc``, when it was read; else None."""
     return _verifier.metadata if _verifier is not None else None
+
+
+def get_oidc_client() -> OidcClient | None:
+    """OBSL's own client at the identity provider, under ``oidc`` when configured."""
+    return _oidc.client if _oidc is not None else None
+
+
+def get_token_endpoint() -> str | None:
+    """The identity provider's token endpoint: ``OIDC_TOKEN_ENDPOINT``, else discovered."""
+    if _oidc is not None and _oidc.token_endpoint:
+        return _oidc.token_endpoint
+    value = (get_oidc_metadata() or {}).get("token_endpoint")
+    return value if isinstance(value, str) and value else None
 
 
 def get_api_keys() -> frozenset[str]:

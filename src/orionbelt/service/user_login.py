@@ -8,7 +8,9 @@ OBSL cannot know - so connections are not shared between users, and cached
 results are kept per user.
 
 Supported here: Databricks (OAuth token federation: an RFC 8693 token
-exchange at the workspace's own ``/oidc/v1/token``). See
+exchange at the workspace's own ``/oidc/v1/token``) and Snowflake (External
+OAuth: Entra ID issues the Snowflake token through its on-behalf-of flow,
+asked by OBSL's own client there). See
 design/PLAN_sso_database_passthrough.md and docs/guide/data-sources.md.
 
 The caller's token is read from the request context
@@ -29,7 +31,12 @@ from typing import Any
 
 import httpx
 
-from orionbelt.auth import current_credential, current_principal
+from orionbelt.auth import (
+    current_credential,
+    current_principal,
+    get_oidc_client,
+    get_token_endpoint,
+)
 
 logger = logging.getLogger("orionbelt.user_login")
 
@@ -46,6 +53,12 @@ DEFAULT_MAX_CACHE_TTL_SECONDS = 300.0
 
 _TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"
 _JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"
+_JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+#: ``DB_<NAME>_OAUTH_EXCHANGE`` for Entra ID's on-behalf-of flow.
+ENTRA_OBO = "entra_obo"
+#: Identity provider errors that the user resolves by signing in again: MFA
+#: or conditional access (Entra adds a claims challenge), or consent.
+_INTERACTION_ERRORS = frozenset({"interaction_required", "consent_required"})
 
 
 class DataSourceSignInError(Exception):
@@ -71,6 +84,22 @@ class SignInRefusedError(DataSourceSignInError):
 
     code = "DATA_SOURCE_SIGN_IN_REFUSED"
     status = 403
+
+
+class SignInInteractionRequiredError(DataSourceSignInError):
+    """The identity provider wants the user at its sign-in page first.
+
+    Multi-factor authentication, a conditional access policy or a missing
+    consent. ``claims`` is the challenge Entra adds, which the client presents
+    when it signs the user in again (a JSON string), or None.
+    """
+
+    code = "DATA_SOURCE_SIGN_IN_INTERACTION_REQUIRED"
+    status = 401
+
+    def __init__(self, message: str, claims: str | None = None) -> None:
+        super().__init__(message)
+        self.claims = claims
 
 
 class SignInUnavailableError(DataSourceSignInError):
@@ -170,6 +199,15 @@ def connect_overrides(source: Any) -> dict[str, Any]:
     """The ``connect()`` arguments that log ``source`` in as the caller."""
     if source.dialect == "databricks":
         return {"access_token": database_token(source)}
+    if source.dialect == "snowflake":
+        # The token says who connects; a service user or password configured
+        # for the source does not go along.
+        return {
+            "authenticator": "oauth",
+            "token": database_token(source),
+            "user": None,
+            "password": None,
+        }
     raise SignInRefusedError(  # configured_datasources refuses this; defence in depth
         f"Data source '{source.name}' ({source.dialect}) cannot log in as the user."
     )
@@ -178,6 +216,8 @@ def connect_overrides(source: Any) -> dict[str, Any]:
 def _exchange(source: Any, subject_token: str) -> tuple[str, float]:
     if source.dialect == "databricks":
         return _exchange_databricks(source, subject_token)
+    if source.dialect == "snowflake" and source.oauth_exchange() == ENTRA_OBO:
+        return _exchange_entra_obo(source, subject_token)
     raise SignInRefusedError(f"Data source '{source.name}' cannot log in as the user.")
 
 
@@ -206,6 +246,32 @@ def _exchange_databricks(source: Any, subject_token: str) -> tuple[str, float]:
     return _post_token_request(source, f"https://{host}/oidc/v1/token", form)
 
 
+def _exchange_entra_obo(source: Any, subject_token: str) -> tuple[str, float]:
+    """Entra ID's on-behalf-of flow: the user's token for one issued for the warehouse.
+
+    OBSL asks as its own confidential client, the one the user's token was
+    issued for (``OIDC_AUDIENCE``), for ``DB_<NAME>_OAUTH_SCOPE``: for
+    Snowflake the warehouse's app ID URI and the role scope, such as
+    ``api://<Snowflake app ID>/session:role-any``.
+    """
+    client = get_oidc_client()
+    endpoint = get_token_endpoint()
+    if client is None or endpoint is None:  # startup refuses this; defence in depth
+        raise SignInUnavailableError(
+            f"Data source '{source.name}' logs in as the user through the identity "
+            "provider, and OBSL has no client there (OIDC_CLIENT_ID) or no token endpoint."
+        )
+    form = {
+        "grant_type": _JWT_BEARER,
+        "client_id": client.client_id,
+        "client_secret": client.client_secret,
+        "assertion": subject_token,
+        "scope": source.oauth_scope() or "",
+        "requested_token_use": "on_behalf_of",
+    }
+    return _post_token_request(source, endpoint, form)
+
+
 def _post_token_request(source: Any, url: str, form: Mapping[str, str]) -> tuple[str, float]:
     """POST a token request; return (access token, seconds valid). Never logs a token."""
     try:
@@ -226,6 +292,12 @@ def _post_token_request(source: Any, url: str, form: Mapping[str, str]) -> tuple
         if response.status_code >= 500:
             raise SignInUnavailableError(
                 f"The sign-in service of data source '{source.name}' failed ({detail})."
+            )
+        if isinstance(body, dict) and body.get("error") in _INTERACTION_ERRORS:
+            claims = body.get("claims")
+            raise SignInInteractionRequiredError(
+                f"Data source '{source.name}' needs the user to sign in again first ({detail}).",
+                claims=claims if isinstance(claims, str) and claims else None,
             )
         raise SignInRefusedError(
             f"Data source '{source.name}' refused to log in this user ({detail})."

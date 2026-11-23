@@ -178,7 +178,13 @@ SERVICE_LOGIN = "service"
 USER_LOGIN = "user"
 #: Dialects that can log in as the user, by exchanging the caller's identity
 #: provider token for one issued for the warehouse.
-USER_LOGIN_DIALECTS: frozenset[str] = frozenset({"databricks"})
+USER_LOGIN_DIALECTS: frozenset[str] = frozenset({"databricks", "snowflake"})
+#: Entra ID's on-behalf-of flow (``DB_<NAME>_OAUTH_EXCHANGE=entra_obo``).
+ENTRA_OBO = "entra_obo"
+#: Dialects whose user token the identity provider issues, not the warehouse,
+#: with the ways OBSL can ask it for one. Each needs OBSL's own client at the
+#: identity provider (``OIDC_CLIENT_ID``) and ``DB_<NAME>_OAUTH_SCOPE``.
+IDP_ISSUED_EXCHANGES: dict[str, frozenset[str]] = {"snowflake": frozenset({ENTRA_OBO})}
 
 # A DuckDB database string beginning with this prefix is MotherDuck, not a
 # local file: remote, authenticated, and not subject to the file-lock
@@ -312,9 +318,27 @@ class DataSource:
 
     def oauth_client_id(self) -> str | None:
         """``DB_<NAME>_OAUTH_CLIENT_ID``: the client a token exchange names, if it needs one."""
+        return self._named_setting("OAUTH_CLIENT_ID")
+
+    def oauth_exchange(self) -> str | None:
+        """``DB_<NAME>_OAUTH_EXCHANGE``: how the identity provider is asked for the user's token."""
+        value = self._named_setting("OAUTH_EXCHANGE")
+        return value.lower() if value else None
+
+    def oauth_scope(self) -> str | None:
+        """``DB_<NAME>_OAUTH_SCOPE``: what the identity provider issues the user's token for."""
+        return self._named_setting("OAUTH_SCOPE")
+
+    @property
+    def idp_issues_token(self) -> bool:
+        """Whether its user token comes from the identity provider, through OBSL's own client."""
+        return self.login == USER_LOGIN and self.dialect in IDP_ISSUED_EXCHANGES
+
+    def _named_setting(self, setting: str) -> str | None:
+        """``DB_<NAME>_<setting>``, stripped; None when unset or for an implicit source."""
         if not self.prefix:
             return None
-        return self.environ.get(f"{self.prefix}OAUTH_CLIENT_ID", "").strip() or None
+        return self.environ.get(f"{self.prefix}{setting}", "").strip() or None
 
     def cache_max_ttl_seconds(self, default: float) -> float:
         """``DB_<NAME>_CACHE_MAX_TTL_SECONDS``, else ``DB_CACHE_MAX_TTL_SECONDS``, else ``default``.
@@ -414,12 +438,14 @@ class DataSource:
             # target. Only added for a user login, so every existing
             # fingerprint, and the cache keys built on it, stay as they were.
             material["AUTH"] = USER_LOGIN
-            client_id = self.oauth_client_id()
-            if client_id:
-                # The client names the federation policy the user's token is
-                # exchanged under, and with it who the user is at the
-                # warehouse: another client shares no token and no cache scope.
-                material["OAUTH_CLIENT_ID"] = client_id
+            # Who the user is at the warehouse, and with which role, follows
+            # from these: the client names the federation policy a token is
+            # exchanged under, the scope the role it carries. Another value
+            # shares no token and no cache scope.
+            for setting in ("OAUTH_CLIENT_ID", "OAUTH_EXCHANGE", "OAUTH_SCOPE"):
+                value = self._named_setting(setting)
+                if value:
+                    material[setting] = value
         for variable in _FINGERPRINT_SETTINGS.get(self.dialect, ()):
             value = self.getenv(variable)
             if value is not None:
@@ -482,6 +508,29 @@ def _apply_motherduck_token(creds: dict[str, Any]) -> None:
         )
     sep = "&" if "?" in database else "?"
     creds["database"] = f"{database}{sep}motherduck_token={quote(str(token), safe='')}"
+
+
+def _check_idp_issued(name: str, dialect: str, prefix: str, env: Mapping[str, str]) -> None:
+    """A source whose user token the identity provider issues names how, and for what.
+
+    Raises:
+        DataSourceConfigError: ``OAUTH_EXCHANGE`` is not one this dialect
+            supports, or ``OAUTH_SCOPE`` is unset.
+    """
+    supported = IDP_ISSUED_EXCHANGES[dialect]
+    exchange = env.get(f"{prefix}OAUTH_EXCHANGE", "").strip().lower()
+    if exchange not in supported:
+        raise DataSourceConfigError(
+            f"Data source '{name}' ({dialect}) logs in as the user with a token the identity "
+            f"provider issues: set {prefix}OAUTH_EXCHANGE to {', '.join(sorted(supported))} "
+            f"(found {exchange or 'nothing'!r})"
+        )
+    if not env.get(f"{prefix}OAUTH_SCOPE", "").strip():
+        raise DataSourceConfigError(
+            f"Data source '{name}' ({dialect}) logs in as the user: set {prefix}OAUTH_SCOPE to "
+            "the scope the identity provider issues its token for "
+            "(e.g. api://<Snowflake app ID>/session:role-any)"
+        )
 
 
 def configured_datasources(environ: Mapping[str, str] | None = None) -> list[DataSource]:
@@ -550,6 +599,8 @@ def configured_datasources(environ: Mapping[str, str] | None = None) -> list[Dat
                 f"Data source '{name}' ({dialect}) cannot log in as the user yet "
                 f"({prefix}AUTH=user); supported: {', '.join(sorted(USER_LOGIN_DIALECTS))}"
             )
+        if login == USER_LOGIN and dialect in IDP_ISSUED_EXCHANGES:
+            _check_idp_issued(name, dialect, prefix, env)
         sources.append(
             DataSource(
                 name=name,

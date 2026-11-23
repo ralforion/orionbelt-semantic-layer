@@ -9,6 +9,7 @@ real ones.
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -28,7 +29,18 @@ from ob_flight.datasources import (  # noqa: E402
     configured_datasources,
 )
 
-from orionbelt.auth import SCOPE_READ, Principal, bind_principal, reset_principal  # noqa: E402
+from orionbelt.auth import (  # noqa: E402
+    SCOPE_READ,
+    OidcClient,
+    OidcConfig,
+    Principal,
+    bind_principal,
+    get_oidc_client,
+    init_auth,
+    reset_auth,
+    reset_principal,
+)
+from orionbelt.auth.jwt_verify import JwtVerifier  # noqa: E402
 from orionbelt.auth.principal import API_KEY_PRINCIPAL  # noqa: E402
 from orionbelt.cache import datasource_key_for  # noqa: E402
 from orionbelt.cache.file import FileCache  # noqa: E402
@@ -38,10 +50,12 @@ from orionbelt.service import user_login  # noqa: E402
 from orionbelt.service.db_executor import execute_sql  # noqa: E402
 from orionbelt.service.query_execution import cap_ttl  # noqa: E402
 from orionbelt.service.user_login import (  # noqa: E402
+    SignInInteractionRequiredError,
     SignInRefusedError,
     SignInRequiredError,
     SignInUnavailableError,
 )
+from tests.oidc_tokens import AUDIENCE, ISSUER, CountingFetch, FakeIssuer  # noqa: E402
 
 HOST = "dbc-1234.cloud.databricks.com"
 ENV = {
@@ -73,7 +87,7 @@ def crm() -> DataSource:
 
 
 class TokenService:
-    """Stands in for Databricks' /oidc/v1/token: answers per subject token."""
+    """Stands in for a token endpoint (Databricks', Entra's): answers per user token."""
 
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, str]]] = []
@@ -81,12 +95,17 @@ class TokenService:
         self.status = 200
         self.down = False
         self.expires_in = 3600
+        self.error: dict[str, str] | None = None  # answered with HTTP 400 when set
 
     def post(self, url: str, data: dict[str, str], timeout: float) -> Any:
         self.requests.append((url, data))
         if self.down:
             raise httpx.ConnectError("unreachable")
-        subject = data["subject_token"]
+        if self.error is not None:
+            body = dict(self.error)
+            return SimpleNamespace(status_code=400, json=lambda: body)
+        # RFC 8693 names the user's token subject_token; Entra's OBO, assertion.
+        subject = data.get("subject_token") or data["assertion"]
         if subject in self.refuse:
             return SimpleNamespace(
                 status_code=400,
@@ -109,8 +128,8 @@ def tokens(monkeypatch: pytest.MonkeyPatch) -> Iterator[TokenService]:
     user_login.reset_tokens()
 
 
-class FakeDatabricks:
-    """Stands in for ob_databricks: records each connection's arguments."""
+class FakeDriver:
+    """Stands in for an ob_* driver: records each connection's arguments."""
 
     def __init__(self) -> None:
         self.connections: list[dict[str, Any]] = []
@@ -147,8 +166,8 @@ class FakeDatabricks:
 
 
 @pytest.fixture
-def databricks(monkeypatch: pytest.MonkeyPatch) -> FakeDatabricks:
-    fake = FakeDatabricks()
+def databricks(monkeypatch: pytest.MonkeyPatch) -> FakeDriver:
+    fake = FakeDriver()
     monkeypatch.setitem(sys.modules, "fake_ob_databricks", SimpleNamespace(connect=fake.connect))
     monkeypatch.setitem(db_router.VENDOR_MAP, "databricks", "fake_ob_databricks")
     return fake
@@ -159,7 +178,7 @@ class TestConfiguration:
         assert crm.login == "user"
 
     def test_a_dialect_that_cannot_is_refused(self) -> None:
-        env = {**ENV, "DB_CRM_TYPE": "snowflake"}
+        env = {**ENV, "DB_CRM_TYPE": "postgres"}
         with pytest.raises(DataSourceConfigError, match="cannot log in as the user yet"):
             configured_datasources(env)
 
@@ -268,7 +287,7 @@ class TestTheExchange:
 
 class TestConnections:
     def test_each_user_runs_on_their_own_token(
-        self, crm: DataSource, tokens: TokenService, databricks: FakeDatabricks
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
     ) -> None:
         for sub in ("alice", "bob"):
             with signed_in(sub):
@@ -279,7 +298,7 @@ class TestConnections:
         ]
 
     def test_a_connection_is_never_pooled_for_the_next_caller(
-        self, crm: DataSource, tokens: TokenService, databricks: FakeDatabricks
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
     ) -> None:
         with signed_in("alice"):
             execute_sql("SELECT region", dialect="databricks", source=crm)
@@ -290,7 +309,7 @@ class TestConnections:
         assert db_router._get_pool(crm)._pool.qsize() == 0
 
     def test_an_api_key_caller_is_refused_unwrapped(
-        self, crm: DataSource, tokens: TokenService, databricks: FakeDatabricks
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
     ) -> None:
         # Passed through the executor as a sign-in error (401), not wrapped
         # into "Database execution failed" (502).
@@ -385,3 +404,149 @@ class TestCacheTtl:
         assert cap_ttl(self._outcome(3600), 0, min_ttl_seconds=5) == TtlResult(
             ttl=None, no_cache_reason=NoCacheReason.BELOW_MIN_TTL
         )
+
+
+# --- Snowflake: Entra ID issues the token, on behalf of the user ---------------
+
+SNOWFLAKE_ENV = {
+    "OBSL_DATABASES": "lake",
+    "DB_LAKE_TYPE": "snowflake",
+    "DB_LAKE_AUTH": "user",
+    "DB_LAKE_OAUTH_EXCHANGE": "entra_obo",
+    "DB_LAKE_OAUTH_SCOPE": "api://snowflake-app/session:role-any",
+    "DB_LAKE_SNOWFLAKE_ACCOUNT": "xy12345",
+    "DB_LAKE_SNOWFLAKE_WAREHOUSE": "BI_WH",
+    "DB_LAKE_SNOWFLAKE_ROLE": "ANALYST",
+    # A service login configured too: it must not go along with the user's token.
+    "DB_LAKE_SNOWFLAKE_USER": "svc_obsl",
+    "DB_LAKE_SNOWFLAKE_PASSWORD": "the-service-password",
+}
+CLIENT_SECRET = "the-obsl-client-secret"
+TOKEN_ENDPOINT = "https://login.example.test/tenant-id/oauth2/v2.0/token"
+CLAIMS = '{"access_token":{"polids":{"essential":true,"values":["policy-1"]}}}'
+
+
+@contextmanager
+def entra(token_endpoint: str = TOKEN_ENDPOINT) -> Iterator[None]:
+    """``AUTH_MODE=oidc`` with OBSL's own client at the identity provider."""
+    config = OidcConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        token_endpoint=token_endpoint,
+        client=OidcClient(client_id="obsl-app", client_secret=CLIENT_SECRET),
+    )
+    init_auth(
+        auth_mode="oidc",
+        oidc=config,
+        verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+    )
+    try:
+        yield
+    finally:
+        reset_auth()
+
+
+@pytest.fixture
+def lake() -> DataSource:
+    (source,) = configured_datasources(SNOWFLAKE_ENV)
+    return source
+
+
+@pytest.fixture
+def snowflake(monkeypatch: pytest.MonkeyPatch) -> FakeDriver:
+    fake = FakeDriver()
+    monkeypatch.setitem(sys.modules, "fake_ob_snowflake", SimpleNamespace(connect=fake.connect))
+    monkeypatch.setitem(db_router.VENDOR_MAP, "snowflake", "fake_ob_snowflake")
+    return fake
+
+
+class TestSnowflake:
+    @pytest.mark.parametrize(
+        ("change", "match"),
+        [
+            ({"DB_LAKE_OAUTH_EXCHANGE": ""}, "DB_LAKE_OAUTH_EXCHANGE to entra_obo"),
+            ({"DB_LAKE_OAUTH_EXCHANGE": "token_exchange"}, "found 'token_exchange'"),
+            ({"DB_LAKE_OAUTH_SCOPE": ""}, "set DB_LAKE_OAUTH_SCOPE"),
+        ],
+    )
+    def test_it_names_how_and_for_what(self, change: dict[str, str], match: str) -> None:
+        with pytest.raises(DataSourceConfigError, match=match):
+            configured_datasources({**SNOWFLAKE_ENV, **change})
+
+    def test_the_scope_is_part_of_its_identity(self, lake: DataSource) -> None:
+        """The scope carries the Snowflake role, and with it which rows come back."""
+        (analyst,) = configured_datasources(
+            {**SNOWFLAKE_ENV, "DB_LAKE_OAUTH_SCOPE": "api://snowflake-app/session:scope:analyst"}
+        )
+        assert lake.idp_issues_token
+        assert lake.fingerprint() != analyst.fingerprint()
+
+    def test_the_on_behalf_of_request(self, lake: DataSource, tokens: TokenService) -> None:
+        with entra(), signed_in("alice"):
+            assert user_login.database_token(lake) == "dbx:idp-token-of-alice"
+        url, form = tokens.requests[0]
+        assert url == TOKEN_ENDPOINT
+        assert form == {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "client_id": "obsl-app",
+            "client_secret": CLIENT_SECRET,
+            "assertion": "idp-token-of-alice",
+            "scope": "api://snowflake-app/session:role-any",
+            "requested_token_use": "on_behalf_of",
+        }
+
+    def test_the_token_endpoint_is_discovered_unless_set(
+        self, lake: DataSource, tokens: TokenService
+    ) -> None:
+        with entra(token_endpoint=""), signed_in("alice"):
+            user_login.database_token(lake)
+        assert tokens.requests[0][0] == FakeIssuer().discovery()["token_endpoint"]
+
+    def test_conditional_access_asks_the_user_to_sign_in_again(
+        self, lake: DataSource, tokens: TokenService
+    ) -> None:
+        tokens.error = {
+            "error": "interaction_required",
+            "error_description": "AADSTS50079: multi-factor authentication required",
+            "claims": CLAIMS,
+        }
+        with entra(), signed_in("alice"), pytest.raises(SignInInteractionRequiredError) as raised:
+            user_login.database_token(lake)
+        assert raised.value.status == 401
+        assert raised.value.claims == CLAIMS
+        assert "AADSTS50079" in raised.value.message
+
+    def test_a_refusal_is_a_refusal(self, lake: DataSource, tokens: TokenService) -> None:
+        tokens.error = {"error": "invalid_grant", "error_description": "AADSTS50013"}
+        with entra(), signed_in("alice"), pytest.raises(SignInRefusedError, match="AADSTS50013"):
+            user_login.database_token(lake)
+
+    def test_the_connection_is_the_users_alone(
+        self, lake: DataSource, tokens: TokenService, snowflake: FakeDriver
+    ) -> None:
+        with entra(), signed_in("alice"):
+            assert execute_sql("SELECT region", dialect="snowflake", source=lake).rows
+        (kwargs,) = snowflake.connections
+        assert (kwargs["authenticator"], kwargs["token"]) == ("oauth", "dbx:idp-token-of-alice")
+        assert kwargs["user"] is None
+        assert kwargs["password"] is None
+        assert (kwargs["account"], kwargs["warehouse"], kwargs["role"]) == (
+            "xy12345",
+            "BI_WH",
+            "ANALYST",
+        )
+
+    def test_no_secret_reaches_a_log_line_or_a_message(
+        self, lake: DataSource, tokens: TokenService, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        tokens.error = {"error": "invalid_grant", "error_description": "AADSTS50013"}
+        with entra(), signed_in("alice", "alices-own-token"):
+            with pytest.raises(SignInRefusedError) as refused:
+                user_login.database_token(lake)
+            tokens.error = None
+            issued = user_login.database_token(lake)
+            shown = [str(refused.value), repr(get_oidc_client())]
+        shown += [record.getMessage() for record in caplog.records]
+        for secret in (CLIENT_SECRET, "alices-own-token", issued):
+            assert not [line for line in shown if secret in line], secret
