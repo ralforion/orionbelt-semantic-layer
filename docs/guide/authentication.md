@@ -154,6 +154,9 @@ export API_KEYS="$SERVICE_KEY"   # optional: service keys next to the tokens
 | `OIDC_SCOPE_CLAIMS` | `scope,scp,roles` | Claims that carry scopes or roles, merged. A dot reaches into an object: `realm_access.roles`. |
 | `OIDC_SCOPE_MAP` | — | IdP names that grant OrionBelt scopes, e.g. `analysts=obsl:read,admins=obsl:admin`. Repeat a name to grant several. |
 | `OIDC_CLOCK_SKEW_SECONDS` | `60` | Leeway on the token's expiry and not-before times. |
+| `OIDC_SWAGGER_CLIENT_ID` | — | A public client at the IdP for signing in on `/docs`. See [Swagger UI](#swagger-ui-docs). |
+| `OIDC_SWAGGER_SCOPES` | `openid` | Scopes `/docs` asks for at sign-in, space-separated. |
+| `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT` | from discovery | Where users sign in and codes are exchanged. Only needed with `OIDC_JWKS_URI` or `OIDC_JWKS_FILE`, which skip the discovery document. |
 
 ### What a token must pass
 
@@ -225,6 +228,35 @@ Signing in to the UI with the IdP is not available yet.
 
 An API key may not contain a `.` under `oidc` (a key shaped like a JWT would be
 read as one).
+
+### Swagger UI (`/docs`)
+
+With authentication on, the **Authorize** button on `/docs` offers what the API
+accepts: an API key in `api_key` mode; under `oidc` a pasted access token, an
+API key when `API_KEYS` is set, and, with `OIDC_SWAGGER_CLIENT_ID`, signing in
+with the IdP. Swagger then sends the token on every call it makes, and scopes
+apply as for any other caller.
+
+For the sign-in, register a **public client** at the IdP:
+
+- Authorization code flow with PKCE (`S256`). No client secret: it would be in
+  the browser.
+- Redirect URI `<API URL>/docs/oauth2-redirect`, for example
+  `https://obsl.example.com/docs/oauth2-redirect`.
+- Allowed web origin `<API URL>`: the browser exchanges the code for a token at
+  the IdP's token endpoint itself (on Keycloak, *Web origins*).
+- The same audience as the API's tokens (`OIDC_AUDIENCE`). OrionBelt sends it
+  as the `audience` parameter, which Auth0 needs and other IdPs ignore.
+
+```bash
+export OIDC_SWAGGER_CLIENT_ID=obsl-swagger
+export OIDC_SWAGGER_SCOPES="openid"   # Entra ID: "openid api://<API app ID>/<scope>"
+```
+
+The authorization and token endpoints are read from the discovery document.
+The page's Content-Security-Policy lets `/docs` reach the issuer's origin (and
+that of `OIDC_TOKEN_ENDPOINT`, when set). Without `OIDC_SWAGGER_CLIENT_ID`,
+`/docs` takes a pasted token or key.
 
 ### Identity provider notes
 

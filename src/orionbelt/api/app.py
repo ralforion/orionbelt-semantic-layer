@@ -38,6 +38,11 @@ from orionbelt.api.middleware import (
     SecurityHeadersMiddleware,
     SessionRateLimitMiddleware,
 )
+from orionbelt.api.openapi_security import (
+    docs_connect_sources,
+    install_openapi_security,
+    swagger_init_oauth,
+)
 from orionbelt.api.routers import (
     cache_stats,
     composables,
@@ -684,8 +689,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url="/docs" if settings.expose_api_docs else None,
         redoc_url="/redoc" if settings.expose_api_docs else None,
         openapi_url="/openapi.json" if settings.expose_openapi_schema else None,
+        swagger_ui_init_oauth=swagger_init_oauth(settings),
     )
     app.state.settings = settings
+    install_openapi_security(app, settings)
 
     # Pydantic ``extra='forbid'`` on QueryObject / OBML models surfaces as a
     # generic 422 "Extra inputs are not permitted" by default. Translate those
@@ -736,7 +743,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Middleware (order matters: last added = first to execute)
     app.add_middleware(RequestTimingMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware, docs_connect_src=docs_connect_sources(settings))
     app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(
         SessionRateLimitMiddleware,
