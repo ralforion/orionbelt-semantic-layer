@@ -81,6 +81,7 @@ from orionbelt.service.model_store import (
     ModelStore,
     ModelValidationError,
 )
+from orionbelt.service.query_execution import cap_ttl
 from orionbelt.service.result_schema import (
     declared_arrow_types,
     reconcile_to_declared,
@@ -91,6 +92,7 @@ from orionbelt.service.session_manager import (
     SessionManager,
     SessionNotFoundError,
 )
+from orionbelt.service.user_login import max_cache_ttl
 
 logger = logging.getLogger("orionbelt.api.oneshot")
 
@@ -355,6 +357,9 @@ async def _run_query(
                 cache_config=cache_config,
                 physical_tables=physical_tables,
             )
+            max_ttl = max_cache_ttl(source) if source is not None else None
+            if max_ttl is not None:
+                ttl_outcome = cap_ttl(ttl_outcome, max_ttl, cache_config.min_ttl_seconds)
             # A "no cache" TTL must block reads as well as writes — only serve
             # from cache when the current freshness says the query is cacheable.
             if ttl_outcome.ttl is not None:

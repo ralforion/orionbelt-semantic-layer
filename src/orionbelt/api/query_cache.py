@@ -47,6 +47,7 @@ from orionbelt.service.db_executor import (
     session_timezone,
 )
 from orionbelt.service.query_execution import resolve_cache_plan, resolve_effective_ttl
+from orionbelt.service.user_login import max_cache_ttl
 
 if TYPE_CHECKING:
     # ob_flight is an optional extra: imported for the annotation only.
@@ -501,6 +502,7 @@ async def execute_query_with_cache(
             cache=cache,
             cache_config=cache_config,
             datasource=ds,
+            max_ttl=max_cache_ttl(source) if source is not None else None,
         )
         ds = plan.datasource
         cache_key = plan.cache_key

@@ -240,6 +240,11 @@ class _AuthMiddleware(flight.ServerMiddleware):  # type: ignore[misc]
         self._token = token
         self.caller = caller
 
+    @property
+    def credential(self) -> str | None:
+        """The credential this call authenticated with (an API key or a token)."""
+        return self._token
+
     def sending_headers(self) -> dict[str, str]:
         if not self._token:
             return {}
@@ -301,6 +306,19 @@ def caller_of(context: Any) -> Any:
     """
     middleware = context.get_middleware(AUTH_MIDDLEWARE_KEY)
     return middleware.caller if isinstance(middleware, _AuthMiddleware) else None
+
+
+def user_credential_of(context: Any) -> str | None:
+    """The token a signed-in user called with, for a data source that logs in as them.
+
+    None for an API key (it is not a user's token) and without auth.
+    """
+    middleware = context.get_middleware(AUTH_MIDDLEWARE_KEY)
+    if not isinstance(middleware, _AuthMiddleware):
+        return None
+    if getattr(middleware.caller, "kind", None) != "user":
+        return None
+    return middleware.credential
 
 
 def _authenticate_with_orionbelt(credential: str) -> Any:

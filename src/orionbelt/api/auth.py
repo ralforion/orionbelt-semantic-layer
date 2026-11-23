@@ -102,7 +102,10 @@ async def require_auth(request: Request) -> AsyncIterator[Principal]:
             headers=headers,
         )
     request.state.principal = principal
-    token = auth_core.bind_principal(principal)
+    # A signed-in user's token is kept for the request, for a data source that
+    # logs in as the user; an API key is not.
+    credential = _extract_credential(request) if principal.kind == "user" else None
+    token = auth_core.bind_principal(principal, credential)
     try:
         if principal.sub is None:
             yield principal

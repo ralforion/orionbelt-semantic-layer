@@ -464,7 +464,7 @@ class PgWireServer:
             # session manager shows it only its own sessions, as on REST. The
             # connection was authenticated once: it stays open after a token
             # expires, as a Postgres connection does.
-            bind_principal(auth.principal)
+            bind_principal(auth.principal, auth.credential)
 
         # Handshake complete: AuthOk + a small set of ParameterStatus
         # frames + BackendKeyData + ReadyForQuery.

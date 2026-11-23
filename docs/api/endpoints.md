@@ -1771,7 +1771,7 @@ Every `query/execute` JSON response gains a cache observability block:
 | `cached` | Whether this result came from the cache. |
 | `cached_at` | ISO 8601 timestamp the cached result was first computed (null when fresh). |
 | `ttl_seconds` | Effective TTL applied to this entry. |
-| `ttl_source` | `freshness_derived`, `caller_capped`, `default_unknown`, `no_cache:<reason>`. |
+| `ttl_source` | `freshness_derived`, `caller_capped`, `user_login_capped`, `default_unknown`, `no_cache:<reason>`. |
 | `ttl_limiting_table` | Physical table whose contract drove the effective TTL. |
 | `physical_tables` | Deduplicated `database.schema.code` strings the query touched. |
 

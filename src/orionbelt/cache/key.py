@@ -45,6 +45,10 @@ KEY_VERSION = 5
 # Separator for composite datasource keys; an ASCII unit separator that cannot
 # appear in a dialect name or a sanitized principal id.
 _DS_SEP = "\x1f"
+# Separates a data source's key from its user part, for a source that logs in
+# as the caller. Its own separator, so "this data source and all its users"
+# is a prefix match that no other source's key can satisfy.
+USER_SEP = "\x1e"
 
 
 def build_datasource_key(dialect: str, principal: str | None = None) -> str:
@@ -68,8 +72,18 @@ def datasource_key_for(source: Any) -> str:
     source adds its fingerprint: two names for one target with the same
     credentials share entries, and a source with other credentials never
     reads them. Typed ``Any`` because ob_flight is an optional extra.
+
+    A source that logs in as the caller adds the caller (a hash, never the raw
+    subject): the warehouse applies each user's grants and row-level
+    security, which OBSL cannot see, so users never share an entry. Building
+    the key refuses a caller who is not a signed-in user, before any lookup.
     """
-    return build_datasource_key(source.dialect, source.fingerprint() if source.named else None)
+    from orionbelt.service.user_login import caller_scope, logs_in_as_user
+
+    key = build_datasource_key(source.dialect, source.fingerprint() if source.named else None)
+    if logs_in_as_user(source):
+        key = f"{key}{USER_SEP}{caller_scope()}"
+    return key
 
 
 _WHITESPACE_RE = re.compile(r"\s+")

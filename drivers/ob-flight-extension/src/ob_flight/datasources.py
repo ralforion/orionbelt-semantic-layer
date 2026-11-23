@@ -172,6 +172,14 @@ _ENV_ALIASES: dict[str, tuple[str, ...]] = {
 # Dialect spellings OrionBelt Analytics uses for ``DB_<NAME>_TYPE``.
 _TYPE_ALIASES: dict[str, str] = {"postgresql": "postgres"}
 
+#: How a named source logs in: one service account for everyone (the
+#: default), or as the signed-in user (``DB_<NAME>_AUTH=user``).
+SERVICE_LOGIN = "service"
+USER_LOGIN = "user"
+#: Dialects that can log in as the user, by exchanging the caller's identity
+#: provider token for one issued for the warehouse.
+USER_LOGIN_DIALECTS: frozenset[str] = frozenset({"databricks"})
+
 # A DuckDB database string beginning with this prefix is MotherDuck, not a
 # local file: remote, authenticated, and not subject to the file-lock
 # reasoning behind the read-only default.
@@ -290,6 +298,31 @@ class DataSource:
         """Whether it was declared by name rather than configured by dialect."""
         return bool(self.prefix)
 
+    @property
+    def login(self) -> str:
+        """``user`` when the source logs in as the caller (``DB_<NAME>_AUTH=user``).
+
+        Otherwise ``service``: one account for everyone, as an implicit
+        source always does. Validated by :func:`configured_datasources`.
+        """
+        if not self.prefix:
+            return SERVICE_LOGIN
+        value = self.environ.get(f"{self.prefix}AUTH", SERVICE_LOGIN).strip().lower()
+        return value or SERVICE_LOGIN
+
+    def oauth_client_id(self) -> str | None:
+        """``DB_<NAME>_OAUTH_CLIENT_ID``: the client a token exchange names, if it needs one."""
+        if not self.prefix:
+            return None
+        return self.environ.get(f"{self.prefix}OAUTH_CLIENT_ID", "").strip() or None
+
+    def cache_max_ttl_seconds(self, default: float) -> float:
+        """``DB_<NAME>_CACHE_MAX_TTL_SECONDS``, else ``DB_CACHE_MAX_TTL_SECONDS``, else ``default``.
+
+        Caps how long a source that logs in as the user keeps results cached.
+        """
+        return float(self._pool_setting("CACHE_MAX_TTL_SECONDS", str(default)))
+
     def snapshot(self) -> DataSource:
         """The source with its settings as they are now, unaffected by later changes.
 
@@ -376,6 +409,11 @@ class DataSource:
         of what went into it.
         """
         material: dict[str, Any] = dict(self._raw_credentials())
+        if self.login == USER_LOGIN:
+            # Never the same pool or cache scope as a service login to the same
+            # target. Only added for a user login, so every existing
+            # fingerprint, and the cache keys built on it, stay as they were.
+            material["AUTH"] = USER_LOGIN
         for variable in _FINGERPRINT_SETTINGS.get(self.dialect, ()):
             value = self.getenv(variable)
             if value is not None:
@@ -493,6 +531,18 @@ def configured_datasources(environ: Mapping[str, str] | None = None) -> list[Dat
             raise DataSourceConfigError(
                 f"Data source '{name}' has unsupported type '{declared}' "
                 f"({prefix}TYPE); use one of {', '.join(DIALECTS)}"
+            )
+        login = env.get(f"{prefix}AUTH", SERVICE_LOGIN).strip().lower() or SERVICE_LOGIN
+        if login not in (SERVICE_LOGIN, USER_LOGIN):
+            raise DataSourceConfigError(
+                f"Data source '{name}' has {prefix}AUTH={login!r}; use "
+                f"'{SERVICE_LOGIN}' (one account for everyone) or '{USER_LOGIN}' "
+                "(as the signed-in user)"
+            )
+        if login == USER_LOGIN and dialect not in USER_LOGIN_DIALECTS:
+            raise DataSourceConfigError(
+                f"Data source '{name}' ({dialect}) cannot log in as the user yet "
+                f"({prefix}AUTH=user); supported: {', '.join(sorted(USER_LOGIN_DIALECTS))}"
             )
         sources.append(
             DataSource(

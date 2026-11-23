@@ -22,6 +22,8 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from orionbelt.service.user_login import DataSourceSignInError
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -1054,8 +1056,9 @@ def _execute_sql(
             finally:
                 with contextlib.suppress(Exception):
                     cursor.close()
-    except (ExecutionUnavailableError, ExecutionError):
-        # Raised by ``sink``, which says what went wrong itself.
+    except (ExecutionUnavailableError, ExecutionError, DataSourceSignInError):
+        # Raised by ``sink``, which says what went wrong itself; or a source
+        # that logs in as the user could not (401/403, not a warehouse failure).
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None
@@ -1399,7 +1402,7 @@ def explain_sql(sql: str, *, dialect: str, source: DataSource | None = None) -> 
                 with contextlib.suppress(Exception):
                     cursor.close()
         return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
-    except ExecutionUnavailableError:
+    except (ExecutionUnavailableError, DataSourceSignInError):
         raise
     except KeyError as exc:
         raise ExecutionUnavailableError(str(exc)) from None

@@ -713,6 +713,7 @@ def build_cache_meta(
     # share one entry per compiled query. Non-deterministic SQL (RAND/NOW/
     # CURRENT_DATE/TABLESAMPLE/...) is rejected inside resolve_cache_plan.
     from orionbelt.service.query_execution import resolve_cache_plan
+    from orionbelt.service.user_login import max_cache_ttl
 
     datasource: str | None = None
     if source is not None:
@@ -730,6 +731,7 @@ def build_cache_meta(
         cache=server._cache,
         cache_config=server._cache_config,
         datasource=datasource,
+        max_ttl=max_cache_ttl(source) if source is not None else None,
     )
     ttl_result = plan.ttl_outcome.ttl
     if plan.cache_key is None or ttl_result is None:

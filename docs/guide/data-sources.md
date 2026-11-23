@@ -247,6 +247,57 @@ against it; at most `POOL_SIZE` of them are kept, and never more than the
 bound. Waiting queries are served in order of arrival, so a steady stream of
 new ones cannot starve one that came first.
 
+## Logging in as the signed-in user
+
+By default a data source logs in with one account for everyone: the
+credentials in its variables. With `DB_<NAME>_AUTH=user` it logs in as the
+**user who called OrionBelt** instead, so the database applies that user's own
+grants, row-level security and masking, and its audit log names them.
+
+```bash
+OBSL_DATABASES=lakehouse
+DB_LAKEHOUSE_TYPE=databricks
+DB_LAKEHOUSE_AUTH=user
+DB_LAKEHOUSE_DATABRICKS_SERVER_HOSTNAME=dbc-1234.cloud.databricks.com
+DB_LAKEHOUSE_DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/abc123
+```
+
+The caller signs in with your identity provider and sends its access token
+(`AUTH_MODE=oidc`, see [OpenID Connect](authentication.md#openid-connect)). For
+each query OrionBelt exchanges that token for one issued **for the database**,
+for the same user, and connects with it. It never sends the caller's own token
+to the database.
+
+| Dialect | How the user's token is exchanged | Set up at the vendor |
+|---------|-----------------------------------|----------------------|
+| Databricks | At the workspace's own token service (OAuth token federation). | An account federation policy that accepts your identity provider's issuer and OrionBelt's audience (`OIDC_AUDIENCE`), and names the claim holding the Databricks user name. A service-principal policy also needs `DB_<NAME>_OAUTH_CLIENT_ID`. |
+
+Snowflake and BigQuery follow. Other dialects refuse `DB_<NAME>_AUTH=user`.
+
+What changes for such a source:
+
+- **No shared connections.** Each query opens a connection for its caller and
+  closes it after; `MAX_CONNECTIONS` still bounds them.
+- **Results are cached per user.** OrionBelt cannot see a user's grants, so
+  one user's cached rows are never served to another. The same query asked by
+  ten users is ten cache entries.
+- **Cached at most five minutes** (`DB_<NAME>_CACHE_MAX_TTL_SECONDS`, default
+  300; 0 turns caching off for the source). OrionBelt is not told when a
+  user's grants change, so a revoked user may still get **their own** cached
+  rows until then, never anyone else's. Responses show `ttl_source:
+  user_login_capped` when the cap applied.
+- **Every caller must be a signed-in user.** An API key, or no
+  authentication, is refused with 401 `SIGN_IN_REQUIRED`, before any cache
+  lookup. When the database's token service refuses the user, the answer is
+  403 `DATA_SOURCE_SIGN_IN_REFUSED` with its reason; when it cannot be
+  reached, 503 `DATA_SOURCE_SIGN_IN_UNAVAILABLE`. Flight SQL and pgwire
+  answer with their own equivalents.
+- OrionBelt refuses to start when a source logs in as the user but
+  `AUTH_MODE` is not `oidc`.
+
+The exchanged token is kept in memory per data source and user, and exchanged
+again a minute before it expires; it is never written to disk or logged.
+
 ## How OBSL names itself to your database
 
 Each connection OBSL opens to a data source carries the name
