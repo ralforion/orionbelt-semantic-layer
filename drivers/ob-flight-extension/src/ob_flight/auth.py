@@ -295,9 +295,12 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
 
 
 def caller_of(context: Any) -> Any:
-    """The caller this call authenticated as, or None (no auth on this server)."""
+    """The caller this call authenticated as, or None (no auth on this server).
+
+    Only OBSL's own auth middleware is trusted to say who the caller is.
+    """
     middleware = context.get_middleware(AUTH_MIDDLEWARE_KEY)
-    return getattr(middleware, "caller", None)
+    return middleware.caller if isinstance(middleware, _AuthMiddleware) else None
 
 
 def _authenticate_with_orionbelt(credential: str) -> Any:

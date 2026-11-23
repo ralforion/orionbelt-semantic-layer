@@ -13,6 +13,7 @@ import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -154,3 +155,124 @@ def test_the_caller_is_not_left_bound_on_the_server_threads(server: Server) -> N
         with pytest.raises(Exception, match=_not_loaded(server.alice_session)):
             _query(server.uri, server.idp.token("bob"), model=server.alice_session)
         assert _query(server.uri, server.idp.token("alice"), model=server.alice_session) > 0
+
+
+# --- Tickets and prepared statements belong to the caller that made them ---
+#
+# A raw pyarrow client, so Bob can present exactly the ticket or handle Alice
+# was given: ids are random, but they travel (logs, a shared notebook).
+
+
+def _client(server: Server) -> Any:
+    from pyarrow import flight
+
+    return flight.FlightClient(server.uri)
+
+
+def _as(token: str, model: str) -> Any:
+    from pyarrow import flight
+
+    return flight.FlightCallOptions(
+        headers=[(b"authorization", f"Bearer {token}".encode()), (b"x-obsl-model", model.encode())]
+    )
+
+
+def _any(type_url: str, value: bytes) -> bytes:
+    from ob_flight.flight_sql import _encode_length_delimited
+
+    return _encode_length_delimited(1, type_url.encode()) + _encode_length_delimited(2, value)
+
+
+def _statement(sql: str) -> Any:
+    from ob_flight.flight_sql import CMD_STATEMENT_QUERY, _encode_length_delimited
+    from pyarrow import flight
+
+    return flight.FlightDescriptor.for_command(
+        _any(CMD_STATEMENT_QUERY, _encode_length_delimited(1, sql.encode()))
+    )
+
+
+def _prepare(server: Server, token: str, sql: str) -> bytes:
+    """Create a prepared statement as ``token``'s user; return its handle."""
+    from ob_flight.flight_sql import (
+        _encode_length_delimited,
+        parse_any,
+        parse_prepared_statement_handle,
+    )
+    from pyarrow import flight
+
+    body = _any(
+        "type.googleapis.com/arrow.flight.protocol.sql.ActionCreatePreparedStatementRequest",
+        _encode_length_delimited(1, sql.encode()),
+    )
+    action = flight.Action("CreatePreparedStatement", body)
+    result = next(iter(_client(server).do_action(action, _as(token, server.alice_session))))
+    parsed = parse_any(result.body.to_pybytes())
+    assert parsed is not None
+    handle = parse_prepared_statement_handle(parsed[1])
+    assert handle is not None
+    return handle
+
+
+def _prepared(handle: bytes) -> Any:
+    from ob_flight.flight_sql import CMD_PREPARED_STATEMENT_QUERY, _encode_length_delimited
+    from pyarrow import flight
+
+    return flight.FlightDescriptor.for_command(
+        _any(CMD_PREPARED_STATEMENT_QUERY, _encode_length_delimited(1, handle))
+    )
+
+
+def _sql(server: Server, where: str = "") -> str:
+    return f'SELECT "Customer Country" FROM "{server.alice_session}"{where}'
+
+
+class TestTicketsBelongToTheirCaller:
+    def test_another_user_cannot_redeem_a_ticket(self, server: Server) -> None:
+        from pyarrow import flight
+
+        alice = _as(server.idp.token("alice"), server.alice_session)
+        bob = _as(server.idp.token("bob"), server.alice_session)
+        client = _client(server)
+        ticket = client.get_flight_info(_statement(_sql(server)), alice).endpoints[0].ticket
+
+        with pytest.raises(flight.FlightServerError, match="Unknown ticket"):
+            client.do_get(ticket, bob).read_all()
+        # Bob's attempt did not use it up: it is still Alice's to redeem.
+        assert client.do_get(ticket, alice).read_all().num_rows > 0
+
+
+class TestPreparedStatementsBelongToTheirCaller:
+    def test_another_user_cannot_run_one(self, server: Server) -> None:
+        from pyarrow import flight
+
+        handle = _prepare(server, server.idp.token("alice"), _sql(server))
+        bob = _as(server.idp.token("bob"), server.alice_session)
+        with pytest.raises(flight.FlightServerError, match="Unknown prepared statement"):
+            _client(server).get_flight_info(_prepared(handle), bob)
+
+    def test_another_user_cannot_close_one(self, server: Server) -> None:
+        from pyarrow import flight
+
+        alice = _as(server.idp.token("alice"), server.alice_session)
+        bob = _as(server.idp.token("bob"), server.alice_session)
+        client = _client(server)
+        handle = _prepare(server, server.idp.token("alice"), _sql(server))
+        list(client.do_action(flight.Action("ClosePreparedStatement", handle), bob))
+        # Still open for Alice.
+        ticket = client.get_flight_info(_prepared(handle), alice).endpoints[0].ticket
+        assert client.do_get(ticket, alice).read_all().num_rows > 0
+
+    def test_another_user_cannot_bind_one(self, server: Server) -> None:
+        import pyarrow as pa
+        from pyarrow import flight
+
+        handle = _prepare(
+            server, server.idp.token("alice"), _sql(server, ' WHERE "Customer Country" = ?')
+        )
+        bob = _as(server.idp.token("bob"), server.alice_session)
+        values = pa.table({"p": ["US"]})
+        writer, _ = _client(server).do_put(_prepared(handle), values.schema, bob)
+        with pytest.raises(flight.FlightServerError, match="Unknown prepared statement"):
+            writer.write_table(values)
+            writer.close()

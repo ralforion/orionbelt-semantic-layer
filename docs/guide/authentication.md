@@ -209,6 +209,8 @@ The response body names the reason too: `{"detail": {"code": "AUTH_INVALID", "me
 Arrow Flight SQL and the Postgres wire protocol take the same access token as
 the password (or a service key from `API_KEYS`), need `obsl:read`, and run as
 the token's user: one user's session is not reachable by another there either.
+A Flight ticket or prepared statement works only for the caller it was issued
+to; anyone else presenting it gets "unknown", as for one that does not exist.
 
 | Surface | Token | API key | When the token expires |
 |---------|-------|---------|------------------------|
