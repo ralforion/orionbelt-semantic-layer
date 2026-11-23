@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # Optional IdP name -> OBSL scope pairs, e.g. "analysts=obsl:read,admins=obsl:admin".
     oidc_scope_map: str = ""
     oidc_clock_skew_seconds: int = 60  # leeway on exp / nbf / iat
+    # Swagger UI sign-in (/docs "Authorize"): a public client at the IdP that
+    # allows the authorization-code flow with PKCE and the redirect URI
+    # <API URL>/docs/oauth2-redirect. Unset: /docs takes a pasted token or key.
+    oidc_swagger_client_id: str = ""
+    oidc_swagger_scopes: str = "openid"  # space-separated, asked for at sign-in
+    # Where users sign in and codes are exchanged. Unset: from the discovery
+    # document (needed when OIDC_JWKS_URI / OIDC_JWKS_FILE skip discovery).
+    oidc_authorization_endpoint: str = ""
+    oidc_token_endpoint: str = ""
     # Removed settings, read only so the server can refuse to start when one
     # is still set to turn auth on: ignoring it would start without auth.
     # See refuse_removed_auth_settings() in api/app.py.
