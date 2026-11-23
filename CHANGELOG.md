@@ -6,6 +6,8 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ### Added
 
+- **`AUTH_MODE=oidc`: the REST API accepts the access tokens of your OpenID Connect provider.** Set `OIDC_ISSUER` and `OIDC_AUDIENCE`; OrionBelt reads the provider's signing keys from its discovery document (or `OIDC_JWKS_URI`, or `OIDC_JWKS_FILE` for air-gapped installs) at startup, refuses to start when it cannot, and fetches them again when the provider rotates them. A token must be signed with RS256, PS256, ES256 or EdDSA, come from the issuer, name the audience, not be expired and have a `sub`. Its scopes come from the `scope`, `scp` and `roles` claims (`OIDC_SCOPE_CLAIMS`, dot paths such as Keycloak's `realm_access.roles` included), and `OIDC_SCOPE_MAP` maps IdP role names to `obsl:read`, `obsl:write` and `obsl:admin`. Each user sees only their own sessions. A bad token answers 401 with `WWW-Authenticate: Bearer error="invalid_token"` and the reason, a missing scope 403 with `error="insufficient_scope"`. Keys in `API_KEYS` stay valid next to the tokens, as service keys: Arrow Flight SQL, the Postgres wire protocol, the UI and MCP use one, since they do not take the provider's tokens yet. See [OpenID Connect](docs/guide/authentication.md#openid-connect), with notes for Keycloak, Microsoft Entra ID and Auth0.
+
 - **OBSL names itself to the databases it reads, as `orionbelt-semantic-layer/<version>`.** The name shows next to OBSL's queries in each database's own history: as the User-Agent on BigQuery, ClickHouse, Databricks and DuckDB (MotherDuck, and DuckDB's HTTP reads), as `application_name` on Postgres, and as the `program_name` connection attribute on MySQL. Snowflake and Dremio get none: Snowflake's `application` is for its registered partners. The six drivers take a new `client_name` argument for this; unset, a driver sends its vendor library's default, as before. The Data Sources guide lists where each database shows it. On MySQL a `client_name` with a comma goes through PyMySQL, since the ADBC driver would split it into two attributes; `backend="adbc"` refuses it.
 
 ### Changed
@@ -18,6 +20,7 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ### Fixed
 
+- **With `AUTH_MODE=oidc`, Arrow Flight SQL and the Postgres wire protocol require an API key.** Both checked for `api_key` alone, so any other mode, `oidc` included, would have left them open to every client. `oidc` refused to start until now, so no deployment was exposed.
 - **A pick from the UI's Dimensions, Measures / Metrics or Columns picker adds to the key the query already has.** The picker found that key by its text, exactly `  measures:` with list items four spaces in. A key at another indentation got a second `measures:` block, and after a click-to-filter or a sort in Query Results, which write list items at the key's own indentation, the next pick wrote a query that no longer parsed. The picker now edits the query as parsed YAML: it keeps the editor's indentation, comments and inline lists, and does not add an item the query already selects. A query that does not parse is left as it is, with a warning naming the line to fix.
 
 ## [3.1.1] - 2026-11-19

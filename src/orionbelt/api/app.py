@@ -61,6 +61,7 @@ from orionbelt.api.routers import (
 )
 from orionbelt.api.routers import settings as settings_router
 from orionbelt.api.schemas import HealthResponse
+from orionbelt.auth import MODE_OIDC, OidcConfig, parse_scope_claims, parse_scope_map
 from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor, metrics
 from orionbelt.service.compilation_cache import CompilationCache
@@ -178,6 +179,27 @@ def _warn_if_legacy_model_file_set() -> None:
             "Replace with MODEL_FILES=<same-path> (single-entry MODEL_FILES is "
             "the direct equivalent). See the v2.7.0 entry in CHANGELOG-archive.md."
         )
+
+
+def oidc_config(settings: Settings) -> OidcConfig | None:
+    """The OIDC settings when ``AUTH_MODE=oidc``, else None.
+
+    Raises ``AuthConfigError`` (refuse to start) when they are incomplete or
+    malformed.
+    """
+    if settings.auth_mode.strip().lower() != MODE_OIDC:
+        return None
+    return OidcConfig(
+        issuer=settings.oidc_issuer.strip(),
+        audience=settings.oidc_audience.strip(),
+        jwks_uri=settings.oidc_jwks_uri.strip(),
+        jwks_file=settings.oidc_jwks_file.strip(),
+        jwks_cache_ttl=settings.oidc_jwks_cache_ttl,
+        jwks_min_refetch_seconds=settings.oidc_jwks_min_refetch_seconds,
+        scope_claims=parse_scope_claims(settings.oidc_scope_claims),
+        scope_map=parse_scope_map(settings.oidc_scope_map),
+        clock_skew_seconds=settings.oidc_clock_skew_seconds,
+    )
 
 
 def _start_duckdb_workers() -> None:
@@ -429,6 +451,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         api_keys=settings.api_keys,
         api_key_header=settings.api_key_header,
         auth_enabled=settings.auth_enabled,
+        oidc=oidc_config(settings),
     )
 
     # Start Arrow Flight SQL server only when FLIGHT_ENABLED=true. It is an
@@ -463,13 +486,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             # pass it explicitly so the handler matches what we report and so
             # ob_flight never re-reads the environment (which could diverge from
             # Settings / .env). Three cases:
-            #   1. shared api_key mode  -> validate against the shared key store
+            #   1. api_key / oidc mode  -> validate against the shared key store
             #   2. legacy token mode    -> static FLIGHT_API_TOKEN (deprecated)
             #   3. otherwise            -> no auth (NoopAuthHandler) + warning
-            from orionbelt.auth import MODE_API_KEY, get_mode
+            from orionbelt.auth import (
+                MODE_NONE,
+                get_mode,
+                require_service_keys,
+                validate_api_key,
+            )
 
             flight_auth_middleware: dict[str, Any] = {}
-            if get_mode() == MODE_API_KEY:
+            if get_mode() != MODE_NONE:
+                # Flight takes API keys only, also under AUTH_MODE=oidc: it does
+                # not yet bind a token's user, so session ownership could not
+                # hold there.
+                require_service_keys("FLIGHT_ENABLED")
                 from ob_flight.auth import build_api_key_auth
 
                 # Built as a pair, and installed as a pair. The handler alone
@@ -478,7 +510,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 # which carries the credential in a header - and the middleware
                 # alone would refuse the legacy handshake. Each covers what the
                 # other cannot.
-                flight_auth_handler, flight_auth_middleware = build_api_key_auth()
+                flight_auth_handler, flight_auth_middleware = build_api_key_auth(validate_api_key)
             elif settings.flight_auth_mode == "token":
                 # Legacy static-token auth (deprecated). Fail CLOSED if the
                 # operator asked for token auth but did not supply a token -
@@ -787,7 +819,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         import gradio as gr
 
-        from orionbelt.auth import MODE_API_KEY, resolve_mode
+        from orionbelt.auth import MODE_NONE, resolve_mode
         from orionbelt.ui.app import create_blocks, set_api_credentials
 
         # The embedded UI is a server-side proxy that holds an API key and can
@@ -798,7 +830,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # key holder. We therefore do NOT auto-pull a key from API_KEYS. The
         # operator must opt in explicitly by setting OBSL_API_KEY, which signals
         # they accept /ui as a key-holding surface and will network-protect it.
-        if resolve_mode(settings.auth_mode, settings.auth_enabled) == MODE_API_KEY:
+        # Under AUTH_MODE=oidc the key must be one of API_KEYS (a service key);
+        # signing in to the UI with the IdP comes later.
+        ui_auth_mode = resolve_mode(settings.auth_mode, settings.auth_enabled)
+        if ui_auth_mode != MODE_NONE:
             ui_key = os.environ.get("OBSL_API_KEY") or None
             if ui_key:
                 set_api_credentials(ui_key, settings.api_key_header)
@@ -809,9 +844,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             else:
                 logger.warning(
-                    "AUTH_MODE=api_key but OBSL_API_KEY is not set: the embedded UI "
+                    "AUTH_MODE=%s but OBSL_API_KEY is not set: the embedded UI "
                     "cannot call /v1 and will surface auth errors. Set OBSL_API_KEY to "
-                    "enable it (and protect /ui), or run the UI as a separate service."
+                    "one of API_KEYS to enable it (and protect /ui), or run the UI as a "
+                    "separate service.",
+                    ui_auth_mode,
                 )
 
         api_url = f"http://localhost:{settings.effective_port}"

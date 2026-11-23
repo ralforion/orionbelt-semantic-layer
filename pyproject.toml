@@ -54,6 +54,9 @@ dependencies = [
     "structlog>=25.1,<27.0",
     "opentelemetry-api>=1.39,<2.0",
     "httpx>=0.28,<1.0",
+    # AUTH_MODE=oidc: verifies access tokens against the IdP's published keys
+    # (RS256 / PS256 / ES256 / EdDSA). [crypto] pulls in cryptography.
+    "pyjwt[crypto]>=2.10,<3.0",
     # [c]: the compiled parser (sqlglotc), about 1.55x faster compilation with
     # identical output. sqlglot pins it to its own version. Wheels cover
     # CPython 3.10+ on Linux (glibc) x86_64/aarch64, macOS and Windows; other

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 from fastapi import Request
 
-from orionbelt.auth import init_auth, reset_auth
+from orionbelt.auth import OidcConfig, init_auth, reset_auth
 from orionbelt.cache.noop import NoopCache
 from orionbelt.cache.protocol import Cache
 from orionbelt.service.session_manager import SessionManager
@@ -137,6 +137,7 @@ def init_session_manager(
     api_keys: str = "",
     api_key_header: str = "X-API-Key",
     auth_enabled: bool = False,
+    oidc: OidcConfig | None = None,
 ) -> AppRuntime:
     """Build the process runtime and initialise the auth subsystem.
 
@@ -174,6 +175,7 @@ def init_session_manager(
         api_keys=api_keys,
         header_name=api_key_header,
         auth_enabled=auth_enabled,
+        oidc=oidc,
     )
     return _runtime
 

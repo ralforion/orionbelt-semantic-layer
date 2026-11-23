@@ -69,7 +69,11 @@ async def start_pgwire(
     # Before the listener binds: a misconfiguration stops startup rather than
     # quietly answering ``N`` to every SSLRequest, which would leave clients
     # connecting in the clear against a configuration that reads as encrypted.
+    from orionbelt.auth import require_service_keys
     from orionbelt.service.tls import TLSConfigError, load_listener_tls
+
+    # pgwire takes API keys only, also under AUTH_MODE=oidc.
+    require_service_keys("PGWIRE_ENABLED")
 
     try:
         tls = load_listener_tls(

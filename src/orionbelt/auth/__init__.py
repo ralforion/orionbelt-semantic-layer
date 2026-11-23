@@ -18,8 +18,10 @@ from orionbelt.auth.config import (
     get_header_name,
     get_mode,
     init_auth,
+    require_service_keys,
     reset_auth,
     resolve_mode,
+    validate_api_key,
     validate_credential,
 )
 from orionbelt.auth.context import (
@@ -38,7 +40,9 @@ from orionbelt.auth.errors import (
     AuthInvalidError,
     AuthRequiredError,
     InsufficientScopeError,
+    TokenInvalidError,
 )
+from orionbelt.auth.oidc import OidcConfig, parse_scope_claims, parse_scope_map
 from orionbelt.auth.principal import (
     FULL_SCOPES,
     SCOPE_ADMIN,
@@ -65,7 +69,9 @@ __all__ = [
     "AuthInvalidError",
     "AuthRequiredError",
     "InsufficientScopeError",
+    "OidcConfig",
     "Principal",
+    "TokenInvalidError",
     "authenticate",
     "bind_principal",
     "current_principal",
@@ -74,8 +80,12 @@ __all__ = [
     "get_mode",
     "init_auth",
     "may_use",
+    "parse_scope_claims",
+    "parse_scope_map",
+    "require_service_keys",
     "reset_auth",
     "reset_principal",
     "resolve_mode",
+    "validate_api_key",
     "validate_credential",
 ]

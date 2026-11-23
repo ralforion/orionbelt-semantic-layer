@@ -32,14 +32,31 @@ class Settings(BaseSettings):
     port: int | None = None  # Cloud Run injects PORT; takes precedence over api_server_port
 
     # Authentication. Single AUTH_MODE selector drives every direct surface
-    # (REST now; Flight + pgwire in Phase 2). Off by default to preserve the
-    # public-demo / local-dev behaviour. See design/PLAN_authentication.md §1.
-    #   "none"    — no auth (default)
-    #   "api_key" — validate API_KEYS against the shared key store
-    #   "oidc"    — Phase 4 (not implemented; rejected loudly at startup)
+    # (REST, Flight, pgwire). Off by default to preserve the public-demo /
+    # local-dev behaviour. See docs/guide/authentication.md.
+    #   "none"    - no auth (default)
+    #   "api_key" - validate API_KEYS against the shared key store
+    #   "oidc"    - REST verifies the IdP's access tokens (JWT); API_KEYS, when
+    #               set, stay valid as service keys on every surface. Flight and
+    #               pgwire accept API keys only.
     auth_mode: str = "none"
-    api_keys: str = ""  # comma-separated; required when auth_mode=api_key (>=16 chars each)
+    api_keys: str = ""  # comma-separated; required when auth_mode=api_key (>=32 chars each)
     api_key_header: str = "X-API-Key"  # REST header name; Bearer is always accepted as fallback
+    # OIDC (auth_mode=oidc). The issuer must match the tokens' ``iss`` exactly;
+    # its keys come from {issuer}/.well-known/openid-configuration unless
+    # OIDC_JWKS_URI or OIDC_JWKS_FILE (air-gapped: no fetch at all) is set.
+    oidc_issuer: str = ""
+    oidc_audience: str = ""  # must be in the tokens' ``aud``
+    oidc_jwks_uri: str = ""
+    oidc_jwks_file: str = ""
+    oidc_jwks_cache_ttl: int = 86400  # seconds before the keys are fetched again
+    oidc_jwks_min_refetch_seconds: int = 60  # an unknown key id refetches at most this often
+    # Claims that carry the caller's scopes or roles, merged; dot paths reach
+    # into objects (Keycloak: realm_access.roles).
+    oidc_scope_claims: str = "scope,scp,roles"
+    # Optional IdP name -> OBSL scope pairs, e.g. "analysts=obsl:read,admins=obsl:admin".
+    oidc_scope_map: str = ""
+    oidc_clock_skew_seconds: int = 60  # leeway on exp / nbf / iat
     # Legacy alias for auth_mode=api_key. Deprecated; honoured one release with
     # a startup warning. Only takes effect when AUTH_MODE is left at "none".
     auth_enabled: bool = False
