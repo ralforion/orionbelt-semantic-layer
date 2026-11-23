@@ -14,7 +14,9 @@ raised anything.
 The one thing a user must do is ``SET pg_use_text_protocol = true``. Without
 it the extension reads data with ``COPY ... TO STDOUT (FORMAT binary)``, which
 the semantic surface has no reason to implement - see
-``test_binary_copy_is_the_setting_that_matters``.
+``test_binary_copy_is_the_setting_that_matters``. On DuckDB 2.0.1 and later
+they also ``SET pg_enable_remote_pushdown = false``, so DuckDB aggregates the
+rows itself - see ``TestRemotePushdown``.
 """
 
 from __future__ import annotations
@@ -127,12 +129,23 @@ def pgwire_listener(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
             os.environ["DUCKDB_DATABASE"] = prev
 
 
-def _attach(port: int, *, text_protocol: bool = True) -> Any:
+def _has_remote_pushdown(conn: Any) -> bool:
+    """Whether this DuckDB's ``postgres`` extension can send whole queries (2.0.1+)."""
+    return bool(
+        conn.execute(
+            "SELECT count(*) FROM duckdb_settings() WHERE name = 'pg_enable_remote_pushdown'"
+        ).fetchone()[0]
+    )
+
+
+def _attach(port: int, *, text_protocol: bool = True, remote_pushdown: bool = False) -> Any:
     conn = duckdb.connect()
     conn.execute("INSTALL postgres")
     conn.execute("LOAD postgres")
     if text_protocol:
         conn.execute("SET pg_use_text_protocol = true")
+    if not remote_pushdown and _has_remote_pushdown(conn):
+        conn.execute("SET pg_enable_remote_pushdown = false")
     conn.execute(
         f"ATTACH 'host=127.0.0.1 port={port} dbname=sales user=obsl' "
         f"AS obsl (TYPE postgres, READ_ONLY)"
@@ -245,6 +258,38 @@ def test_binary_copy_is_the_setting_that_matters(pg_extension: Any, pgwire_liste
             conn.execute('SELECT "Customer Country" FROM obsl.sales.model').fetchall()
     finally:
         conn.close()
+
+
+class TestRemotePushdown:
+    """DuckDB 2.0.1 and later send a whole query to the server when they can.
+
+    Aggregates included: ``SELECT count(*) FROM obsl.sales.model`` arrives as
+    ``SELECT count(*) AS "count_star()" FROM "sales"."model"``, an OBSQL query
+    asking for a row count, which a semantic model does not have. Turned off,
+    DuckDB reads the rows and counts them itself, as 2.0.0 did (``attached``
+    turns it off; ``test_count_star_agrees_with_select_star`` is that count).
+    Pinned because it is the second line of setup a user has to be told about.
+    """
+
+    @pytest.fixture
+    def pushing(self, pg_extension: Any, pgwire_listener: int) -> Iterator[Any]:
+        conn = _attach(pgwire_listener, remote_pushdown=True)
+        try:
+            if not _has_remote_pushdown(conn):
+                pytest.skip("this DuckDB does not push whole queries down (before 2.0.1)")
+            yield conn
+        finally:
+            conn.close()
+
+    def test_a_count_pushed_down_is_refused(self, pushing: Any) -> None:
+        with pytest.raises(Exception, match="UNSUPPORTED_SQL_FEATURE"):
+            pushing.execute("SELECT count(*) FROM obsl.sales.model").fetchall()
+
+    def test_reading_the_model_is_the_same_either_way(self, pushing: Any, attached: Any) -> None:
+        query = 'SELECT "Customer Country", "Total Revenue" FROM obsl.sales.model ORDER BY 1'
+        rows = pushing.execute(query).fetchall()
+        assert rows == attached.execute(query).fetchall()
+        assert rows == [("UK", 75.0), ("US", 150.0)]
 
 
 @pytest.fixture(scope="module")

@@ -390,7 +390,8 @@ so the model becomes an ordinary table in a local DuckDB session:
 INSTALL postgres;
 LOAD postgres;
 
-SET pg_use_text_protocol = true;   -- required; the default reads with binary COPY
+SET pg_use_text_protocol = true;       -- required; the default reads with binary COPY
+SET pg_enable_remote_pushdown = false;  -- DuckDB 2.0.1+: DuckDB computes count(*) itself
 
 ATTACH 'host=127.0.0.1 port=5432 dbname=commerce user=obsl'
     AS obsl (TYPE postgres, READ_ONLY);
@@ -431,6 +432,7 @@ These constraints are documented in
 | Binary-format Bind parameters decode for the common scalar OIDs only (bool, bytea, int2/4/8, float4/8, text, varchar, name, bpchar) | Anything else would be mangled bytes, so it raises instead | Force text format if the driver supports it; the error names the OID |
 | Authentication is off by default (`trust`) | `AUTH_MODE` governs every surface and ships as `none` | Set `AUTH_MODE=api_key` and `API_KEYS=<key>`; clients then send the key as the **password**, over SCRAM-SHA-256. `PGWIRE_AUTH_MODE=password` drops to cleartext for clients without SCRAM, so pair it with TLS |
 | DuckDB `ATTACH` needs `SET pg_use_text_protocol = true` | The default reads with `COPY ... TO STDOUT (FORMAT binary)`, which the semantic surface does not implement | Set it once per session, before the first read - see [7. DuckDB](#7-duckdb) |
+| DuckDB 2.0.1+ sends `count(*)` and other aggregates to the server | Remote pushdown, on by default; OBSQL refuses a row count and aggregates of dimensions | `SET pg_enable_remote_pushdown = false` before `ATTACH` - see [Using DuckDB as a client](duckdb.md#pg_enable_remote_pushdown-on-duckdb-201-and-later) |
 | Write operations (`INSERT` / `UPDATE` / `DELETE` / DDL) | Read-only semantic layer | Use the REST API for model management; data writes go to the warehouse, not OBSL |
 
 ## Reporting a tool that fails
