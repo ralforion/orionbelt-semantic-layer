@@ -97,7 +97,6 @@ class TestRefusedTokens:
         ("kwargs", "message"),
         [
             ({"expires_in": -120}, "Token has expired"),
-            ({"nbf": int(time.time()) + 600}, "Token is not valid yet"),
             ({"iss": "https://other.test"}, "Token issuer does not match OIDC_ISSUER"),
             ({"aud": "some-other-client"}, "Token audience does not include OIDC_AUDIENCE"),
         ],
@@ -107,6 +106,12 @@ class TestRefusedTokens:
     ) -> None:
         with pytest.raises(TokenInvalidError, match=message):
             verifier.verify(idp.token(**kwargs))  # type: ignore[arg-type]
+
+    def test_not_valid_yet(self, idp: FakeIssuer, verifier: JwtVerifier) -> None:
+        # nbf is taken when the test runs, not at collection: a parametrize value
+        # would age while the suite runs and fall inside the 60s leeway.
+        with pytest.raises(TokenInvalidError, match="Token is not valid yet"):
+            verifier.verify(idp.token(nbf=int(time.time()) + 600))
 
     def test_no_subject(self, idp: FakeIssuer, verifier: JwtVerifier) -> None:
         with pytest.raises(TokenInvalidError, match="Token has no sub claim"):
