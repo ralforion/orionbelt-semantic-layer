@@ -67,7 +67,7 @@ Every `query/execute` JSON response gains:
 | `cached` | Whether this result came from the cache. |
 | `cached_at` | ISO 8601 timestamp the cached result was first computed. |
 | `ttl_seconds` | Effective TTL applied to this entry. |
-| `ttl_source` | `freshness_derived`, `caller_capped`, `user_login_capped` (a source that [logs in as the user](data-sources.md#logging-in-as-the-signed-in-user)), `default_unknown`, `no_cache`, or `no_cache:<reason>`. |
+| `ttl_source` | `freshness_derived`, `caller_capped`, `user_login_capped` (a source that [logs in as the user](warehouse-sso/index.md)), `default_unknown`, `no_cache`, or `no_cache:<reason>`. |
 | `ttl_limiting_table` | The physical table whose contract drove the TTL. |
 | `physical_tables` | Deduplicated `database.schema.code` strings the query touched. |
 

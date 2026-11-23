@@ -156,6 +156,11 @@ nav:
       - ADBC / Arrow Flight SQL: guide/adbc.md
       - DuckDB as a Client: guide/duckdb.md
       - Authentication: guide/authentication.md
+      - Warehouse Single Sign-On:
+          - Overview: guide/warehouse-sso/index.md
+          - Databricks: guide/warehouse-sso/databricks.md
+          - Snowflake: guide/warehouse-sso/snowflake.md
+          - Try It with a Local Keycloak: guide/warehouse-sso/keycloak.md
       - OSI Interoperability: guide/osi.md
   - API:
       - Overview: api/overview.md
