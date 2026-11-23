@@ -168,7 +168,7 @@ flight = [
 # (DB_<NAME>_DUCKDB_BACKEND=hardcharger); OBSL imports it for those alone.
 # Tested against 2.5.1.
 hardcharger = [
-    "adbc-driver-hardcharger>=2.5.1,<2.6",
+    "adbc-driver-hardcharger>=2.5.1,<2.8",
     "pyarrow>=16.0,<27.0",
 ]
 # Minimal subset of `flight` for deployments that only need DuckDB
@@ -329,7 +329,7 @@ dev = [
     "ob-snowflake>=3.0.0",
     "osi-orionbelt>=0.2",
     "adbc-driver-flightsql>=1.0",
-    "adbc-driver-hardcharger>=2.5.1,<2.6",
+    "adbc-driver-hardcharger>=2.5.1,<2.8",
 ]
 
 [tool.uv]
