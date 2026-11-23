@@ -12,12 +12,10 @@ The tables hold zero rows; they exist purely so the catalog views
 describe them. Semantic queries against the same model never reach
 this connection — they're routed to the real warehouse by the router.
 
-Caveat: DuckDB's ``pg_attribute.atttypid`` returns DuckDB's internal
-type ids, not real Postgres OIDs. ``\\d <table>`` in psql will show
-mislabeled types; clients that consult ``information_schema.columns``
-instead (DBeaver, Tableau, Power BI) get the correct DuckDB SQL types.
-Step 5 of design/PLAN_postgres_wire.md addresses this for BI-tool
-fidelity.
+DuckDB's own ``pg_attribute.atttypid`` is not a Postgres OID on every
+DuckDB version, so ``pg_attribute`` is answered by a shadow view that
+derives each column's type from ``duckdb_columns()`` instead (see
+``_OID_TRANSLATION_CASE``).
 """
 
 from __future__ import annotations
@@ -190,8 +188,15 @@ _STUB_MACROS: tuple[str, ...] = (
 # schema and rewrite ``pg_attribute`` / ``pg_type`` references in
 # incoming SQL to use them.
 #
+# The ids are ``duckdb_columns().data_type_id``, DuckDB's own type numbering.
+# ``pg_attribute.atttypid`` is not read: DuckDB 2.0.0 and earlier put that
+# same internal id there, 2.0.1 a Postgres OID (or the id + 16384 for a type
+# Postgres lacks). The two numberings overlap - 16 is TIME in one and BOOLEAN
+# in the other, 21 DECIMAL and SMALLINT, 23 DOUBLE and INTEGER - so a
+# translation of ``atttypid`` is right on one DuckDB version only.
+#
 # Mapping below derived empirically from ``CREATE TABLE t (a VARCHAR,
-# b BIGINT, c DOUBLE, …)`` + ``SELECT atttypid FROM pg_attribute``:
+# b BIGINT, c DOUBLE, …)`` + ``SELECT data_type_id FROM duckdb_columns()``:
 # DuckDB id → Postgres OID
 #   10 → 16   (BOOL)
 #   12 → 21   (INT2)
@@ -214,19 +219,19 @@ _STUB_MACROS: tuple[str, ...] = (
 #: advertised that way until a sweep over every ``DataType`` found them - see
 #: ``TestEveryDataTypeMaps``, which is what keeps the ``ELSE`` honest now.
 _OID_TRANSLATION_CASE = """
-        CASE atttypid
+        CASE c.data_type_id
             WHEN 10 THEN 16    WHEN 12 THEN 21    WHEN 13 THEN 23
             WHEN 14 THEN 20    WHEN 15 THEN 1082  WHEN 16 THEN 1083
             WHEN 19 THEN 1114  WHEN 21 THEN 1700  WHEN 22 THEN 700
             WHEN 23 THEN 701   WHEN 26 THEN 17    WHEN 27 THEN 1186
             WHEN 32 THEN 1184  WHEN 34 THEN 1266
-            ELSE atttypid::INTEGER
+            ELSE c.data_type_id::INTEGER
         END
 """
 
-#: DuckDB's internal type id for DECIMAL, which ``_OID_TRANSLATION_CASE``
-#: maps to Postgres NUMERIC (1700). Named because the typmod rewrite below
-#: has to test the *untranslated* id.
+#: DuckDB's own type id for DECIMAL, which ``_OID_TRANSLATION_CASE`` maps to
+#: Postgres NUMERIC (1700). Named because the typmod rewrite below tests the
+#: *untranslated* id.
 _DUCKDB_DECIMAL_TYPE_ID = 21
 
 #: ``atttypmod`` for a DECIMAL, translated from DuckDB's encoding to
@@ -241,14 +246,16 @@ _DUCKDB_DECIMAL_TYPE_ID = 21
 #: DECIMAL(0,78) and then failed to fit any real value into it, reporting a
 #: conversion error against a string that was perfectly valid.
 #:
-#: Every other DuckDB type reports -1 here, which is Postgres's "no modifier"
-#: too, so only the decimal case needs translating.
+#: The Postgres number is built from the column's declared precision and
+#: scale, not decoded from DuckDB's, so it stays right whichever encoding a
+#: DuckDB version uses. Every other DuckDB type reports -1 here, which is
+#: Postgres's "no modifier" too, so only the decimal case needs translating.
 _TYPMOD_TRANSLATION_CASE = f"""
         CASE
-            WHEN atttypid = {_DUCKDB_DECIMAL_TYPE_ID} AND atttypmod > 0
-            THEN ((((atttypmod / 1000)::INTEGER) << 16)
-                  | ((atttypmod % 1000)::INTEGER)) + 4
-            ELSE atttypmod
+            WHEN c.data_type_id = {_DUCKDB_DECIMAL_TYPE_ID} AND c.numeric_precision IS NOT NULL
+            THEN (((c.numeric_precision::INTEGER) << 16)
+                  | (c.numeric_scale::INTEGER)) + 4
+            ELSE a.atttypmod
         END
 """
 
@@ -357,9 +364,11 @@ _SHADOW_VIEWS: tuple[str, ...] = (
         )) AS t(oid, extname, extowner, extnamespace, extrelocatable,
                 extversion, extconfig, extcondition)
         WHERE false""",
-    # Shadow pg_attribute that translates atttypid to real Postgres OIDs.
-    # All other columns pass through unchanged so the rest of the JDBC
-    # getColumns query keeps working.
+    # Shadow pg_attribute that reports atttypid / atttypmod as Postgres
+    # does, from each column's row in ``duckdb_columns()`` (DuckDB's own
+    # ``pg_attribute`` is a projection of it, one row per column). All other
+    # columns pass through unchanged so the rest of the JDBC getColumns
+    # query keeps working.
     #
     # ``TEMP VIEW`` is intentional: DuckDB puts temp objects in a special
     # catalog where ``pg_class.relnamespace`` is NULL. Tableau's
@@ -394,7 +403,9 @@ _SHADOW_VIEWS: tuple[str, ...] = (
             attcollation,
             ''::VARCHAR AS attidentity,
             ''::VARCHAR AS attgenerated
-        FROM pg_catalog.pg_attribute""",
+        FROM pg_catalog.pg_attribute AS a
+        JOIN duckdb_columns() AS c
+            ON c.table_oid = a.attrelid AND c.column_index = a.attnum""",
     # Shadow pg_type with real Postgres OIDs + the columns pgjdbc reads
     # from DatabaseMetaData.getColumns / getTypeInfo. TEMP for the same
     # invisibility-to-Tableau reasons as ``_obsl_pg_attribute`` above.
@@ -1566,8 +1577,8 @@ def _decimal_duckdb_type(data_type: str | None) -> str | None:
     Lets the catalog type DECIMAL measures/metrics as NUMERIC(p, s) so BI tools
     (Dremio's dataset metadata, Tableau's pg_attribute probe) report them as
     NUMERIC instead of DOUBLE — matching the value the compiled SQL CASTs to and
-    the query result's RowDescription (issue #116). DuckDB DECIMAL maps to
-    atttypid 21 -> Postgres OID 1700 via the shadow translation above.
+    the query result's RowDescription (issue #116). DuckDB's DECIMAL (type id
+    21) is reported as Postgres OID 1700 by the shadow ``pg_attribute`` above.
     """
 
     if not data_type:

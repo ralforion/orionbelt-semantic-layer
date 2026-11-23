@@ -240,6 +240,7 @@ front of it and query the model, over either surface:
 -- Postgres wire: the model becomes a table
 INSTALL postgres; LOAD postgres;
 SET pg_use_text_protocol = true;
+SET pg_enable_remote_pushdown = false;  -- DuckDB 2.0.1 and later
 ATTACH 'host=localhost port=5432 dbname=commerce user=obsl'
     AS obsl (TYPE postgres, READ_ONLY);
 

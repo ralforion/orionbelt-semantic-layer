@@ -719,6 +719,18 @@ class TestTypeNamespaceResolves:
         assert {row[5] for row in result.rows} == {"pg_catalog"}
 
 
+def test_the_shadow_pg_attribute_has_one_row_per_column(
+    manager_with_decimal_measure: SessionManager,
+) -> None:
+    """Its types come from joining each row to the column's ``duckdb_columns()``
+    row, which must neither drop a column nor repeat one."""
+    emu = CatalogEmulator()
+    emu.refresh(manager_with_decimal_measure)
+    shadow = emu.execute("SELECT count(*) FROM pg_attribute").rows[0][0]
+    columns = emu.execute("SELECT count(*) FROM duckdb_columns()").rows[0][0]
+    assert shadow == columns > 0
+
+
 class TestDecimalTypeModifier:
     """``atttypmod`` has to be in Postgres's encoding, not DuckDB's.
 

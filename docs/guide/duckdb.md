@@ -39,7 +39,8 @@ then, in any DuckDB shell:
 INSTALL postgres;
 LOAD postgres;
 
-SET pg_use_text_protocol = true;   -- required, see below
+SET pg_use_text_protocol = true;       -- required, see below
+SET pg_enable_remote_pushdown = false;  -- DuckDB 2.0.1 and later, see below
 
 ATTACH 'host=127.0.0.1 port=5432 dbname=commerce user=obsl'
     AS obsl (TYPE postgres, READ_ONLY);
@@ -84,6 +85,29 @@ read.
 Two neighbouring settings need no change: `pg_use_ctid_scan` and
 `pg_experimental_filter_pushdown` both work as-is, because a model has neither
 physical row ids nor a plan the extension can push into.
+
+### `pg_enable_remote_pushdown` on DuckDB 2.0.1 and later
+
+From DuckDB 2.0.1 the extension sends a whole query to the server when it
+can, aggregates included, instead of reading the rows and computing the query
+itself. OrionBelt answers that query as [OBSQL](semantic-ql.md), and OBSQL
+refuses what a semantic model cannot answer:
+
+| You write in DuckDB | With remote pushdown on (the default) |
+|---|---|
+| `SELECT count(*) FROM obsl.commerce.model` | Refused: a model has no fixed rows to count |
+| `SELECT count("Country Name")`, `max("Country Name")` | Refused: a dimension is not aggregated |
+| `SELECT "Country Name", count(*) ... GROUP BY 1` | Refused, for the `count(*)` |
+| `SELECT "Country Name", "Total Sales" ...` | Works |
+
+Turn it off before `ATTACH` (it applies to catalogs attached afterwards), and
+DuckDB reads the rows and computes these itself, as earlier versions did:
+
+```sql
+SET pg_enable_remote_pushdown = false;
+```
+
+Earlier DuckDB versions do not have the setting and need nothing.
 
 ### TLS and authentication
 
@@ -227,6 +251,7 @@ no facts behind it (a customer who has never ordered) is listed by
 | Limitation | Route | Note |
 |---|---|---|
 | `SET pg_use_text_protocol = true` required | `ATTACH` | The default reads with binary `COPY`, which OBSL does not implement |
+| `SET pg_enable_remote_pushdown = false` needed for `count(*)` and other aggregates (DuckDB 2.0.1+) | `ATTACH` | Otherwise DuckDB sends the aggregate to OrionBelt, which refuses a row count. See [above](#pg_enable_remote_pushdown-on-duckdb-201-and-later) |
 | `SELECT *` unsupported inside an OBSQL string | `adbc_scan` | The `ATTACH` route is unaffected: DuckDB expands the star itself |
 | Read-only | both | OBSL is a semantic layer; writes go to the warehouse, not through it |
 
