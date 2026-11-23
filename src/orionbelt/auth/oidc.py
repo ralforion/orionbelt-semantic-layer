@@ -51,8 +51,10 @@ class OidcConfig:
     # IdP value (a scope or role name) -> the OBSL scopes it grants.
     scope_map: Mapping[str, frozenset[str]] = field(default_factory=dict)
     clock_skew_seconds: int = 60
-    # The token endpoint when set (OIDC_TOKEN_ENDPOINT), else the discovery
-    # document's; and OBSL's own client there, when one is configured.
+    # The sign-in and token endpoints when set (OIDC_AUTHORIZATION_ENDPOINT,
+    # OIDC_TOKEN_ENDPOINT), else the discovery document's; and OBSL's own
+    # client there, when one is configured.
+    authorization_endpoint: str = ""
     token_endpoint: str = ""
     client: OidcClient | None = None
 

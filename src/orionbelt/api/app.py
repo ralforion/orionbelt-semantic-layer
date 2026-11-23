@@ -73,6 +73,7 @@ from orionbelt.auth import (
     AuthConfigError,
     OidcClient,
     OidcConfig,
+    get_authorization_endpoint,
     get_mode,
     get_oidc_client,
     get_token_endpoint,
@@ -218,6 +219,7 @@ def oidc_config(settings: Settings) -> OidcConfig | None:
         scope_claims=parse_scope_claims(settings.oidc_scope_claims),
         scope_map=parse_scope_map(settings.oidc_scope_map),
         clock_skew_seconds=settings.oidc_clock_skew_seconds,
+        authorization_endpoint=settings.oidc_authorization_endpoint.strip(),
         token_endpoint=settings.oidc_token_endpoint.strip(),
         client=_oidc_client(settings),
     )
@@ -257,15 +259,23 @@ def _oidc_client(settings: Settings) -> OidcClient | None:
 def _sign_in_challenge(error: DataSourceSignInError) -> str:
     """``WWW-Authenticate`` for a 401 from a data source that logs in as the user.
 
-    Carries the identity provider's claims challenge when it sent one (Entra,
-    for conditional access or MFA): base64-encoded, as Microsoft's clients
-    read it, so the client can sign the user in again and satisfy it.
+    When the identity provider wants the user to sign in again (MFA,
+    conditional access, consent), it says where, in Microsoft's claims
+    challenge format: ``authorization_uri`` (``OIDC_AUTHORIZATION_ENDPOINT``,
+    else the discovered one, so the tenant's own) and, when the identity
+    provider sent one, its claims challenge, base64-encoded as Microsoft's
+    clients read it. The realm is OBSL's, as on every challenge it sends.
     """
-    claims = error.claims if isinstance(error, SignInInteractionRequiredError) else None
-    if not claims:
+    if not isinstance(error, SignInInteractionRequiredError):
         return 'Bearer realm="obsl"'
-    encoded = base64.b64encode(claims.encode("utf-8")).decode("ascii")
-    return f'Bearer realm="obsl", error="insufficient_claims", claims="{encoded}"'
+    params = ['realm="obsl"']
+    sign_in_at = get_authorization_endpoint()
+    if sign_in_at:
+        params.append(f'authorization_uri="{sign_in_at}"')
+    if error.claims:
+        encoded = base64.b64encode(error.claims.encode("utf-8")).decode("ascii")
+        params += ['error="insufficient_claims"', f'claims="{encoded}"']
+    return "Bearer " + ", ".join(params)
 
 
 def refuse_removed_auth_settings(settings: Settings) -> None:

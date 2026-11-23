@@ -58,7 +58,12 @@ _JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 ENTRA_OBO = "entra_obo"
 #: Identity provider errors that the user resolves by signing in again: MFA
 #: or conditional access (Entra adds a claims challenge), or consent.
-_INTERACTION_ERRORS = frozenset({"interaction_required", "consent_required"})
+_INTERACTION_ERRORS = frozenset({"interaction_required", "login_required", "consent_required"})
+#: Entra marks an ``invalid_grant`` the user can resolve by signing in again
+#: with a ``suberror`` (``basic_action``, ``additional_action``,
+#: ``consent_required``, ...), as Microsoft's client libraries read it; these
+#: two it cannot resolve. Without a suberror, ``invalid_grant`` is a refusal.
+_REFUSAL_SUBERRORS = frozenset({"client_mismatch", "protection_policy_required"})
 
 
 class DataSourceSignInError(Exception):
@@ -272,6 +277,19 @@ def _exchange_entra_obo(source: Any, subject_token: str) -> tuple[str, float]:
     return _post_token_request(source, endpoint, form)
 
 
+def _needs_sign_in(body: Mapping[str, Any]) -> bool:
+    """Whether an error answer is one the user resolves by signing in again."""
+    if body.get("error") in _INTERACTION_ERRORS:
+        return True
+    suberror = body.get("suberror")
+    return (
+        body.get("error") == "invalid_grant"
+        and isinstance(suberror, str)
+        and bool(suberror)
+        and suberror not in _REFUSAL_SUBERRORS
+    )
+
+
 def _post_token_request(source: Any, url: str, form: Mapping[str, str]) -> tuple[str, float]:
     """POST a token request; return (access token, seconds valid). Never logs a token."""
     try:
@@ -293,7 +311,7 @@ def _post_token_request(source: Any, url: str, form: Mapping[str, str]) -> tuple
             raise SignInUnavailableError(
                 f"The sign-in service of data source '{source.name}' failed ({detail})."
             )
-        if isinstance(body, dict) and body.get("error") in _INTERACTION_ERRORS:
+        if isinstance(body, dict) and _needs_sign_in(body):
             claims = body.get("claims")
             raise SignInInteractionRequiredError(
                 f"Data source '{source.name}' needs the user to sign in again first ({detail}).",

@@ -516,8 +516,43 @@ class TestSnowflake:
         assert raised.value.claims == CLAIMS
         assert "AADSTS50079" in raised.value.message
 
-    def test_a_refusal_is_a_refusal(self, lake: DataSource, tokens: TokenService) -> None:
-        tokens.error = {"error": "invalid_grant", "error_description": "AADSTS50013"}
+    @pytest.mark.parametrize(
+        ("error", "suberror"),
+        [
+            ("interaction_required", None),
+            ("login_required", None),
+            ("consent_required", None),
+            # Entra marks an invalid_grant the user can resolve with a suberror.
+            ("invalid_grant", "basic_action"),
+            ("invalid_grant", "additional_action"),
+            ("invalid_grant", "consent_required"),
+        ],
+    )
+    def test_what_signing_in_again_resolves_is_not_a_refusal(
+        self, lake: DataSource, tokens: TokenService, error: str, suberror: str | None
+    ) -> None:
+        tokens.error = {"error": error, "error_description": "AADSTS50079", "claims": CLAIMS}
+        if suberror is not None:
+            tokens.error["suberror"] = suberror
+        with entra(), signed_in("alice"), pytest.raises(SignInInteractionRequiredError) as raised:
+            user_login.database_token(lake)
+        assert raised.value.claims == CLAIMS
+
+    @pytest.mark.parametrize(
+        ("error", "suberror"),
+        [
+            ("invalid_grant", None),
+            ("invalid_grant", "client_mismatch"),
+            ("invalid_grant", "protection_policy_required"),
+            ("unauthorized_client", None),
+        ],
+    )
+    def test_a_refusal_is_a_refusal(
+        self, lake: DataSource, tokens: TokenService, error: str, suberror: str | None
+    ) -> None:
+        tokens.error = {"error": error, "error_description": "AADSTS50013"}
+        if suberror is not None:
+            tokens.error["suberror"] = suberror
         with entra(), signed_in("alice"), pytest.raises(SignInRefusedError, match="AADSTS50013"):
             user_login.database_token(lake)
 

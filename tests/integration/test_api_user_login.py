@@ -60,11 +60,23 @@ class TestRest:
         if status == 401:
             assert resp.headers["www-authenticate"] == 'Bearer realm="obsl"'
 
-    async def test_the_identity_providers_claims_challenge_reaches_the_client(self) -> None:
+    @pytest.mark.parametrize(
+        "explicit", ["https://login.example.test/tenant-id/oauth2/v2.0/authorize", ""]
+    )
+    async def test_the_identity_providers_claims_challenge_reaches_the_client(
+        self, explicit: str
+    ) -> None:
         """Entra asks the caller to sign in again with these claims (MFA, conditional
-        access); its guidance is a 401 whose WWW-Authenticate carries them."""
+        access); its guidance is a 401 whose WWW-Authenticate carries them, and where
+        to sign in (``OIDC_AUTHORIZATION_ENDPOINT``, else the discovered one)."""
         claims = '{"access_token":{"polids":{"essential":true,"values":["p1"]}}}'
         app = create_app(settings=Settings())
+        config = OidcConfig(issuer=ISSUER, audience=AUDIENCE, authorization_endpoint=explicit)
+        init_auth(
+            auth_mode="oidc",
+            oidc=config,
+            verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+        )
 
         @app.get("/probe")
         async def probe() -> None:
@@ -73,10 +85,12 @@ class TestRest:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/probe")
         assert resp.status_code == 401
-        challenge = resp.headers["www-authenticate"]
-        prefix = 'Bearer realm="obsl", error="insufficient_claims", claims="'
-        assert challenge.startswith(prefix)
-        assert base64.b64decode(challenge[len(prefix) : -1]).decode() == claims
+        sign_in_at = explicit or FakeIssuer().discovery()["authorization_endpoint"]
+        encoded = base64.b64encode(claims.encode()).decode()
+        assert resp.headers["www-authenticate"] == (
+            f'Bearer realm="obsl", authorization_uri="{sign_in_at}", '
+            f'error="insufficient_claims", claims="{encoded}"'
+        )
 
 
 class TestStartup:

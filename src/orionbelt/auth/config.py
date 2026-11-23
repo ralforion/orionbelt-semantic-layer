@@ -155,11 +155,23 @@ def get_oidc_client() -> OidcClient | None:
     return _oidc.client if _oidc is not None else None
 
 
+def get_authorization_endpoint() -> str | None:
+    """The identity provider's sign-in endpoint: ``OIDC_AUTHORIZATION_ENDPOINT`` or discovered."""
+    return _endpoint(
+        _oidc.authorization_endpoint if _oidc is not None else "", "authorization_endpoint"
+    )
+
+
 def get_token_endpoint() -> str | None:
     """The identity provider's token endpoint: ``OIDC_TOKEN_ENDPOINT``, else discovered."""
-    if _oidc is not None and _oidc.token_endpoint:
-        return _oidc.token_endpoint
-    value = (get_oidc_metadata() or {}).get("token_endpoint")
+    return _endpoint(_oidc.token_endpoint if _oidc is not None else "", "token_endpoint")
+
+
+def _endpoint(explicit: str, discovered: str) -> str | None:
+    """An identity provider endpoint: the setting, else the discovery document's entry."""
+    if explicit:
+        return explicit
+    value = (get_oidc_metadata() or {}).get(discovered)
     return value if isinstance(value, str) and value else None
 
 

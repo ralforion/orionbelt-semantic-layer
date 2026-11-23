@@ -363,11 +363,16 @@ A `SNOWFLAKE_USER` or `SNOWFLAKE_PASSWORD` set for the source is not sent: the
 token says who connects.
 
 **When Entra wants the user to sign in again**, for multi-factor
-authentication or a conditional access policy, the answer is 401
-`DATA_SOURCE_SIGN_IN_INTERACTION_REQUIRED`. Over REST its `WWW-Authenticate`
-header carries Entra's claims challenge (`error="insufficient_claims"`,
-`claims` base64-encoded), which a client presents when it signs the user in
-again.
+authentication, a conditional access policy or consent, the answer is 401
+`DATA_SOURCE_SIGN_IN_INTERACTION_REQUIRED`. That covers Entra's
+`interaction_required`, `login_required` and `consent_required`, and an
+`invalid_grant` whose `suberror` says signing in again resolves it, as
+Microsoft's client libraries read them; any other `invalid_grant` is 403
+`DATA_SOURCE_SIGN_IN_REFUSED`. Over REST the 401's `WWW-Authenticate` header
+says where to sign in (`authorization_uri`: `OIDC_AUTHORIZATION_ENDPOINT`, or
+the one the discovery document names) and carries Entra's claims challenge
+when it sent one (`error="insufficient_claims"`, `claims` base64-encoded),
+which the client presents when it signs the user in again.
 
 ## How OBSL names itself to your database
 
