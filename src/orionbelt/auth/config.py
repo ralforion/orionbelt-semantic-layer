@@ -10,7 +10,6 @@ mode. See design/PLAN_authentication.md §1-§3.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from orionbelt.auth.errors import (
     AuthConfigError,
@@ -140,11 +139,6 @@ def get_mode() -> str:
 def get_header_name() -> str:
     """Return the REST header name credentials are read from."""
     return _header_name
-
-
-def get_oidc_metadata() -> dict[str, Any] | None:
-    """The issuer's discovery document under ``oidc``, when it was read; else None."""
-    return _verifier.metadata if _verifier is not None else None
 
 
 def get_api_keys() -> frozenset[str]:

@@ -149,16 +149,7 @@ def _declared_templates(app: object) -> frozenset[str]:
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add standard security headers to every response.
-
-    ``docs_connect_src`` names the origins Swagger UI may fetch from: the
-    identity provider's, when /docs signs in with it (the browser exchanges
-    the sign-in code for a token there).
-    """
-
-    def __init__(self, app: ASGIApp, docs_connect_src: tuple[str, ...] = ()) -> None:
-        super().__init__(app)
-        self._docs_connect_src = " ".join(("'self'", *docs_connect_src))
+    """Add standard security headers to every response."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
@@ -180,15 +171,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "img-src 'self' data:; "
                 "frame-ancestors 'none'"
             )
-        elif path in ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"):
-            # /docs/oauth2-redirect is the page the IdP sends the sign-in popup
-            # back to; its inline script hands the code to Swagger UI.
+        elif path in ("/docs", "/redoc", "/openapi.json"):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                 "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                 "img-src 'self' https://fastapi.tiangolo.com data:; "
-                f"connect-src {self._docs_connect_src}; "
                 "worker-src 'self' blob:; "
                 "frame-ancestors 'none'"
             )

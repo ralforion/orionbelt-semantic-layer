@@ -88,8 +88,6 @@ class _KeySet:
         self._config = config
         self._fetch = fetch
         self._source: str | None = None  # None: keys come from OIDC_JWKS_FILE
-        # The issuer's discovery document, when the keys were found through it.
-        self.metadata: dict[str, Any] | None = None
         self._keys: dict[str | None, _Key] = {}
         self._fetched_at = 0.0
         self._last_attempt = 0.0
@@ -119,7 +117,6 @@ class _KeySet:
 
     def _discover_jwks_uri(self) -> str:
         metadata = self._fetch(self._config.discovery_url)
-        self.metadata = metadata
         if metadata.get("issuer") != self._config.issuer:
             raise AuthConfigError(
                 f"The discovery document at {self._config.discovery_url} names issuer "
@@ -183,11 +180,6 @@ class JwtVerifier:
     def load(self) -> None:
         """Load the signing keys (startup). Raises AuthConfigError."""
         self._keys.load()
-
-    @property
-    def metadata(self) -> dict[str, Any] | None:
-        """The issuer's discovery document, or None when it was not read."""
-        return self._keys.metadata
 
     def verify(self, token: str) -> Principal:
         """Verify ``token`` and return its user principal. Raises TokenInvalidError."""

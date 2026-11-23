@@ -33,9 +33,6 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `OIDC_SCOPE_CLAIMS`        | `scope,scp,roles` | Claims that carry scopes or roles; dot paths reach into objects |
 | `OIDC_SCOPE_MAP`           | —           | IdP names that grant OrionBelt scopes, e.g. `analysts=obsl:read` |
 | `OIDC_CLOCK_SKEW_SECONDS`  | `60`        | Leeway on token expiry |
-| `OIDC_SWAGGER_CLIENT_ID`   | —           | Public client for signing in on `/docs` ([Swagger UI](../guide/authentication.md#swagger-ui-docs)) |
-| `OIDC_SWAGGER_SCOPES`      | `openid`    | Scopes `/docs` asks for at sign-in |
-| `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT` | from discovery | The IdP's sign-in and token endpoints; only needed without discovery |
 | `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode. Each file is loaded into its own named protected session (addressing name = OBML `name:` field or filename stem). A single path is fine. |
 | `API_BASE_URL`             | —           | API URL for standalone UI                 |
 | `ROOT_PATH`                | —           | ASGI root path for UI behind LB           |

@@ -51,12 +51,7 @@ class FakeIssuer:
         return {"keys": out}
 
     def discovery(self) -> dict[str, Any]:
-        return {
-            "issuer": self.issuer,
-            "jwks_uri": f"{self.issuer}/protocol/openid-connect/certs",
-            "authorization_endpoint": f"{self.issuer}/protocol/openid-connect/auth",
-            "token_endpoint": f"{self.issuer}/protocol/openid-connect/token",
-        }
+        return {"issuer": self.issuer, "jwks_uri": f"{self.issuer}/protocol/openid-connect/certs"}
 
     def token(
         self,
