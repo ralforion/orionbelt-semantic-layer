@@ -96,9 +96,17 @@ class TokenService:
         self.down = False
         self.expires_in = 3600
         self.error: dict[str, str] | None = None  # answered with HTTP 400 when set
+        self.auths: list[tuple[str, str] | None] = []
 
-    def post(self, url: str, data: dict[str, str], timeout: float) -> Any:
+    def post(
+        self,
+        url: str,
+        data: dict[str, str],
+        timeout: float,
+        auth: tuple[str, str] | None = None,
+    ) -> Any:
         self.requests.append((url, data))
+        self.auths.append(auth)
         if self.down:
             raise httpx.ConnectError("unreachable")
         if self.error is not None:
@@ -427,13 +435,15 @@ CLAIMS = '{"access_token":{"polids":{"essential":true,"values":["policy-1"]}}}'
 
 
 @contextmanager
-def entra(token_endpoint: str = TOKEN_ENDPOINT) -> Iterator[None]:
+def entra(
+    token_endpoint: str = TOKEN_ENDPOINT, client_secret: str = CLIENT_SECRET
+) -> Iterator[None]:
     """``AUTH_MODE=oidc`` with OBSL's own client at the identity provider."""
     config = OidcConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         token_endpoint=token_endpoint,
-        client=OidcClient(client_id="obsl-app", client_secret=CLIENT_SECRET),
+        client=OidcClient(client_id="obsl-app", client_secret=client_secret),
     )
     init_auth(
         auth_mode="oidc",
@@ -464,8 +474,8 @@ class TestSnowflake:
     @pytest.mark.parametrize(
         ("change", "match"),
         [
-            ({"DB_LAKE_OAUTH_EXCHANGE": ""}, "DB_LAKE_OAUTH_EXCHANGE to entra_obo"),
-            ({"DB_LAKE_OAUTH_EXCHANGE": "token_exchange"}, "found 'token_exchange'"),
+            ({"DB_LAKE_OAUTH_EXCHANGE": ""}, "OAUTH_EXCHANGE to entra_obo, token_exchange"),
+            ({"DB_LAKE_OAUTH_EXCHANGE": "saml"}, "found 'saml'"),
             ({"DB_LAKE_OAUTH_SCOPE": ""}, "set DB_LAKE_OAUTH_SCOPE"),
         ],
     )
@@ -585,3 +595,57 @@ class TestSnowflake:
         shown += [record.getMessage() for record in caplog.records]
         for secret in (CLIENT_SECRET, "alices-own-token", issued):
             assert not [line for line in shown if secret in line], secret
+
+
+# --- Snowflake: the standard token exchange at the identity provider ------------
+
+TOKEN_EXCHANGE_ENV = {
+    **SNOWFLAKE_ENV,
+    "DB_LAKE_OAUTH_EXCHANGE": "token_exchange",
+    "DB_LAKE_OAUTH_SCOPE": "session:role:ANALYST",
+    "DB_LAKE_OAUTH_AUDIENCE": "snowflake",
+}
+
+
+class TestTokenExchangeAtTheIdentityProvider:
+    """Okta, Keycloak and other RFC 8693 identity providers issue the Snowflake token."""
+
+    def test_the_request(self, tokens: TokenService) -> None:
+        (lake,) = configured_datasources(TOKEN_EXCHANGE_ENV)
+        with entra(), signed_in("alice"):
+            assert user_login.database_token(lake) == "dbx:idp-token-of-alice"
+        url, form = tokens.requests[0]
+        assert url == TOKEN_ENDPOINT
+        assert form == {
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "subject_token": "idp-token-of-alice",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "scope": "session:role:ANALYST",
+            "audience": "snowflake",
+        }
+        # The client authenticates with HTTP Basic, never in the form.
+        assert tokens.auths == [("obsl-app", CLIENT_SECRET)]
+
+    def test_the_basic_credentials_are_form_encoded(self, tokens: TokenService) -> None:
+        """RFC 6749 2.3.1; checked against Keycloak, which refuses the raw secret."""
+        (lake,) = configured_datasources(TOKEN_EXCHANGE_ENV)
+        with entra(client_secret="a+b/c d%e"), signed_in("alice"):
+            user_login.database_token(lake)
+        assert tokens.auths == [("obsl-app", "a%2Bb%2Fc%20d%25e")]
+
+    def test_no_audience_is_asked_for_unless_set(self, tokens: TokenService) -> None:
+        env = {k: v for k, v in TOKEN_EXCHANGE_ENV.items() if k != "DB_LAKE_OAUTH_AUDIENCE"}
+        (lake,) = configured_datasources(env)
+        with entra(), signed_in("alice"):
+            user_login.database_token(lake)
+        assert "audience" not in tokens.requests[0][1]
+
+    def test_the_audience_is_part_of_its_identity(self) -> None:
+        (lake,) = configured_datasources(TOKEN_EXCHANGE_ENV)
+        (other,) = configured_datasources({**TOKEN_EXCHANGE_ENV, "DB_LAKE_OAUTH_AUDIENCE": "other"})
+        assert lake.fingerprint() != other.fingerprint()
+
+    def test_entra_s_request_is_unchanged(self, lake: DataSource, tokens: TokenService) -> None:
+        with entra(), signed_in("alice"):
+            user_login.database_token(lake)
+        assert tokens.auths == [None]  # Entra's on-behalf-of sends the secret in the form

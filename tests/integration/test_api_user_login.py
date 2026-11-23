@@ -266,7 +266,7 @@ class Warehouse:
         self.exchanges: list[str] = []
         self.connections: list[str] = []
 
-    def post(self, url: str, data: dict[str, str], timeout: float) -> Any:
+    def post(self, url: str, data: dict[str, str], timeout: float, auth: Any = None) -> Any:
         self.exchanges.append(data["subject_token"])
         token = f"dbx-{len(self.exchanges)}"
         return SimpleNamespace(

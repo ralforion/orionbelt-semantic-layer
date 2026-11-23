@@ -271,10 +271,9 @@ to the database.
 | Dialect | How the user's token is exchanged | Set up at the vendor |
 |---------|-----------------------------------|----------------------|
 | Databricks | At the workspace's own token service (OAuth token federation). | An account federation policy that accepts your identity provider's issuer and OrionBelt's audience (`OIDC_AUDIENCE`), and names the claim holding the Databricks user name. A service-principal policy also needs `DB_<NAME>_OAUTH_CLIENT_ID`. |
-| Snowflake | Entra ID issues it, through its on-behalf-of flow, asked by OrionBelt's own client there. See [Snowflake through Entra ID](#snowflake-through-entra-id). | An External OAuth security integration that trusts Entra ID; in Entra, an app registration for Snowflake and the permission for OrionBelt's to ask for it. |
+| Snowflake | Your identity provider issues it, asked by OrionBelt's own client there: Entra ID through its on-behalf-of flow ([Snowflake through Entra ID](#snowflake-through-entra-id)), Okta, Keycloak and others through the standard token exchange ([Snowflake through Okta, Keycloak and others](#snowflake-through-okta-keycloak-and-others)). | An External OAuth security integration that trusts the identity provider; there, permission for OrionBelt's client to ask for Snowflake tokens. |
 
-BigQuery follows; Snowflake through Okta too. Other dialects refuse
-`DB_<NAME>_AUTH=user`.
+BigQuery follows. Other dialects refuse `DB_<NAME>_AUTH=user`.
 
 What changes for such a source:
 
@@ -373,6 +372,57 @@ says where to sign in (`authorization_uri`: `OIDC_AUTHORIZATION_ENDPOINT`, or
 the one the discovery document names) and carries Entra's claims challenge
 when it sent one (`error="insufficient_claims"`, `claims` base64-encoded),
 which the client presents when it signs the user in again.
+
+### Snowflake through Okta, Keycloak and others
+
+Identity providers that implement the standard token exchange (RFC 8693),
+such as Okta and Keycloak, issue the Snowflake token the same way, asked by
+OrionBelt as its own client:
+
+```bash
+OIDC_CLIENT_ID=obsl
+OIDC_CLIENT_SECRET_FILE=/run/secrets/obsl-client-secret
+
+OBSL_DATABASES=warehouse
+DB_WAREHOUSE_TYPE=snowflake
+DB_WAREHOUSE_AUTH=user
+DB_WAREHOUSE_OAUTH_EXCHANGE=token_exchange
+DB_WAREHOUSE_OAUTH_SCOPE=session:role:ANALYST
+DB_WAREHOUSE_OAUTH_AUDIENCE=snowflake
+DB_WAREHOUSE_SNOWFLAKE_ACCOUNT=xy12345.eu-west-1
+DB_WAREHOUSE_SNOWFLAKE_WAREHOUSE=BI_WH
+```
+
+OrionBelt sends the user's token as `subject_token` (an access token) with
+`DB_<NAME>_OAUTH_SCOPE` and, when set, `DB_<NAME>_OAUTH_AUDIENCE`, to
+`OIDC_TOKEN_ENDPOINT` or the discovered token endpoint. Its client
+authenticates with HTTP Basic. As with Entra, the token users call OrionBelt
+with must be issued for that client.
+
+| Identity provider | What to set up there | `DB_<NAME>_OAUTH_AUDIENCE` |
+|---|---|---|
+| Okta | An API Services app with the Token Exchange grant, for OrionBelt; on the custom authorization server whose tokens Snowflake trusts, scopes named after the roles (`session:role:ANALYST`) and an access policy that lets OrionBelt's app ask for them. | That authorization server's audience |
+| Keycloak (26.2 and later) | A confidential client for OrionBelt with **Standard token exchange** on, which the users' tokens name in `aud`; per role, an optional client scope on it that adds Snowflake as an audience and the `scp` claim Snowflake reads the role from. | The client ID that stands for Snowflake |
+
+In Snowflake, the security integration trusts the identity provider: Okta's
+type is `OKTA`; any other is `CUSTOM`, which takes the provider's keys URL or
+its public key. For Keycloak, with the realm's RSA public key and the user's
+email mapped to the Snowflake login name:
+
+```sql
+CREATE SECURITY INTEGRATION keycloak_orionbelt
+  TYPE = EXTERNAL_OAUTH
+  ENABLED = TRUE
+  EXTERNAL_OAUTH_TYPE = CUSTOM
+  EXTERNAL_OAUTH_ISSUER = 'https://keycloak.example.com/realms/<realm>'
+  EXTERNAL_OAUTH_RSA_PUBLIC_KEY = '<the realm public key, base64>'
+  EXTERNAL_OAUTH_AUDIENCE_LIST = ('snowflake')
+  EXTERNAL_OAUTH_TOKEN_USER_MAPPING_CLAIM = 'email'
+  EXTERNAL_OAUTH_SNOWFLAKE_USER_MAPPING_ATTRIBUTE = 'LOGIN_NAME';
+```
+
+The scope and the audience are part of the source's identity: two sources
+that differ in either share no token and no cached result.
 
 ## How OBSL names itself to your database
 
