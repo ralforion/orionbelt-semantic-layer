@@ -56,8 +56,8 @@ Keycloak 26.2 or later, in the realm users sign in to:
 | Keycloak object | What it needs |
 |---|---|
 | Client `snowflake` | Exists only to name Snowflake as an audience. |
-| Client for OrionBelt (here `obsl`) | **Client authentication** on (a confidential client); in **Capability config**, **Standard token exchange** on. Its client ID and secret are `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`. |
-| Users' tokens | Must name `obsl` in `aud`, or Keycloak refuses the exchange: on the client users sign in with, an **Audience** mapper with *Included Client Audience* `obsl`. `OIDC_AUDIENCE` is then `obsl`. |
+| Client for OrionBelt (here `obsl`) | **Client authentication** on (a confidential client); in **Capability config**, **Standard token exchange** on. Its client ID and secret are `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`. Keep the default client scopes `basic`, `email` and `profile` on it: they put `sub` and `email` in the exchanged token. |
+| Users' tokens | Must name `obsl` in `aud`, or Keycloak refuses the exchange: on the client users sign in with, an **Audience** mapper with *Included Client Audience* `obsl`. `OIDC_AUDIENCE` is then `obsl`. They also need an [OrionBelt scope](../authentication.md#scopes), such as a client scope `obsl:read`. |
 | Client scope per role, such as `session:role:ANALYST` | Two mappers: **Audience** (*Included Client Audience* `snowflake`) and **Hardcoded claim** (*Token Claim Name* `scp`, *Claim value* `["session:role:ANALYST"]`, *Claim JSON Type* `JSON`). Snowflake reads the role from `scp`; Keycloak's own `scope` claim lists other scopes with it. Add the scope to `obsl` as an **Optional** client scope. |
 
 `DB_<NAME>_OAUTH_SCOPE` names that client scope, and

@@ -25,42 +25,97 @@ docker run -d --name obsl-keycloak -p 127.0.0.1:18080:8080 \
   -e KC_BOOTSTRAP_ADMIN_PASSWORD=<an admin password> \
   quay.io/keycloak/keycloak:26.8.2 start-dev \
   --hostname=https://keycloak.obsl.test \
-  --hostname-admin=http://127.0.0.1:18080 \
   --hostname-backchannel-dynamic=true
 ```
 
 - `--hostname` makes the tokens' issuer `https://keycloak.obsl.test/realms/<realm>`.
   The name never has to resolve: nobody fetches anything from it.
-- `--hostname-admin` keeps the admin console at `http://127.0.0.1:18080/admin`.
-- `--hostname-backchannel-dynamic` lets OrionBelt reach the token endpoint at
-  `http://127.0.0.1:18080`.
+- `--hostname-backchannel-dynamic` lets you and OrionBelt reach Keycloak at
+  `http://127.0.0.1:18080`: its token endpoint and its admin API.
+- The admin console is not used: it signs in through the `--hostname`
+  address, which does not resolve. Step 2 configures Keycloak through its
+  admin API instead.
 - The volume keeps the realm **and its signing key**. Recreating the
   container without it creates a new key, and the warehouses would need the
   new one.
 
 ## 2. Configure the realm
 
-In the admin console, create a realm `obsl`, then:
+Set these, then run the script below. It needs `curl` and `jq`, and prints
+nothing when every call succeeds.
 
-| Object | Settings |
+```bash
+KC=http://127.0.0.1:18080
+ADMIN_PASSWORD='<the admin password from step 1>'
+ROLE=<the Snowflake role to test with>           # e.g. ANALYST
+CLIENT_SECRET=$(openssl rand -hex 24)              # OrionBelt's client secret
+USER_PASSWORD='<a password for the test users>'
+DBX_USER=<your Databricks username>
+```
+
+```bash
+ADMIN=$(curl -s $KC/realms/master/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=admin-cli \
+  -d username=admin --data-urlencode "password=$ADMIN_PASSWORD" | jq -r .access_token)
+kc() { curl -sf -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' "$@"; }
+R=$KC/admin/realms
+
+kc -X POST $R -d '{"realm": "obsl", "enabled": true}'
+
+# obsl:read lets a user query OrionBelt; session:role:<ROLE> carries the Snowflake role.
+kc -X POST $R/obsl/client-scopes -d '{"name": "obsl:read", "protocol": "openid-connect",
+  "attributes": {"include.in.token.scope": "true"}}'
+kc -X POST $R/obsl/client-scopes -d "$(jq -n --arg role "$ROLE" '{
+  name: "session:role:\($role)", protocol: "openid-connect",
+  protocolMappers: [
+    {name: "aud-snowflake", protocol: "openid-connect", protocolMapper: "oidc-audience-mapper",
+     config: {"included.client.audience": "snowflake", "access.token.claim": "true"}},
+    {name: "scp", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-claim-mapper",
+     config: {"claim.name": "scp", "claim.value": "[\"session:role:\($role)\"]",
+              "jsonType.label": "JSON", "access.token.claim": "true"}}]}')"
+
+kc -X POST $R/obsl/clients -d '{"clientId": "snowflake"}'
+kc -X POST $R/obsl/clients -d "$(jq -n --arg secret "$CLIENT_SECRET" --arg role "$ROLE" '{
+  clientId: "obsl", publicClient: false, secret: $secret, standardFlowEnabled: false,
+  attributes: {"standard.token.exchange.enabled": "true"},
+  defaultClientScopes: ["basic", "email", "profile"],
+  optionalClientScopes: ["session:role:\($role)"]}')"
+kc -X POST $R/obsl/clients -d '{"clientId": "obsl-login", "publicClient": true,
+  "standardFlowEnabled": false, "directAccessGrantsEnabled": true,
+  "defaultClientScopes": ["basic", "email", "profile", "obsl:read"],
+  "protocolMappers": [{"name": "aud-obsl", "protocol": "openid-connect",
+    "protocolMapper": "oidc-audience-mapper",
+    "config": {"included.client.audience": "obsl", "access.token.claim": "true"}}]}'
+
+for user in "alice alice@obsl.test" "dbx $DBX_USER"; do
+  set -- $user
+  kc -X POST $R/obsl/users -d "$(jq -n --arg u "$1" --arg e "$2" --arg p "$USER_PASSWORD" '{
+    username: $u, email: $e, emailVerified: true, firstName: $u, lastName: "Test",
+    enabled: true, credentials: [{type: "password", value: $p, temporary: false}]}')"
+done
+```
+
+What it creates in realm `obsl`:
+
+| Object | Why |
 |---|---|
-| Client `snowflake` | Default settings. It only names Snowflake as an audience. |
-| Client `obsl` (OrionBelt) | **Client authentication** on; **Capability config**: **Standard token exchange** on, **Standard flow** off. Copy its secret from **Credentials**. |
-| Client `obsl-login` (for this test) | **Client authentication** off; **Direct access grants** on, so you can get a user's token with a password. In its dedicated client scope, an **Audience** mapper: *Included Client Audience* `obsl`, *Add to access token* on. |
-| Client scope `session:role:<ROLE>` | `<ROLE>` is the Snowflake role to test with. Mappers: **Audience** (*Included Client Audience* `snowflake`, *Add to access token* on) and **Hardcoded claim** (*Token Claim Name* `scp`, *Claim value* `["session:role:<ROLE>"]`, *Claim JSON Type* `JSON`, *Add to access token* on). Then, on client `obsl`, add it as an **Optional** client scope. |
-| User for Snowflake | Email (for example `alice@obsl.test`) marked verified, first and last name, a password that is not temporary. |
-| User for Databricks | The same, with your Databricks username as the email. |
+| Client scope `obsl:read` | The [OrionBelt scope](../authentication.md#scopes) that lets a user query. Without it OrionBelt answers 403 `AUTH_INSUFFICIENT_SCOPE`. |
+| Client scope `session:role:<ROLE>` | Adds Snowflake as an audience and the `scp` claim Snowflake reads the role from. |
+| Client `snowflake` | Only names Snowflake as an audience. |
+| Client `obsl` (OrionBelt) | Confidential, with standard token exchange on. Its default scopes give the exchanged token `sub` and `email`, which Snowflake maps users by; the role scope is optional, asked for by `DB_<NAME>_OAUTH_SCOPE`. |
+| Client `obsl-login` (this test only) | Signs users in with a password. Its tokens name `obsl` in `aud`, which the exchange requires, and carry `obsl:read`. |
+| Users `alice` and `dbx` | `alice@obsl.test` for Snowflake; `dbx` has your Databricks username as its email. |
 
 ## 3. Give the warehouses the key
 
-Keycloak publishes the key in two forms:
+Keycloak publishes the key in two forms: a base64 public key for Snowflake,
+and a key set (JWKS) for Databricks and OrionBelt. Save both:
 
-| Form | Where | Used by |
-|---|---|---|
-| Base64 public key | the `public_key` field of `http://127.0.0.1:18080/realms/obsl` | Snowflake |
-| JWKS | `http://127.0.0.1:18080/realms/obsl/protocol/openid-connect/certs`: keep the key with `"use": "sig"` and `"alg": "RS256"` | Databricks, and OrionBelt (`OIDC_JWKS_FILE`) |
-
-Save the JWKS, reduced to that key, as `jwks.json`.
+```bash
+curl -s $KC/realms/obsl | jq -r .public_key > snowflake_public_key.txt
+curl -s $KC/realms/obsl/protocol/openid-connect/certs \
+  | jq '{keys: [.keys[] | select(.use == "sig" and .alg == "RS256") | {kid, kty, alg, use, n, e}]}' > jwks.json
+```
 
 **Snowflake**, as `ACCOUNTADMIN` for the integration and `SECURITYADMIN` for
 the user:
@@ -94,10 +149,10 @@ claim `email`, and the contents of `jwks.json` as **JWKS JSON**. See
 AUTH_MODE=oidc
 OIDC_ISSUER=https://keycloak.obsl.test/realms/obsl
 OIDC_AUDIENCE=obsl
-OIDC_JWKS_FILE=/path/to/jwks.json
+OIDC_JWKS_FILE=/path/to/jwks.json    # from step 3
 OIDC_TOKEN_ENDPOINT=http://127.0.0.1:18080/realms/obsl/protocol/openid-connect/token
 OIDC_CLIENT_ID=obsl
-OIDC_CLIENT_SECRET=<client obsl's secret>
+OIDC_CLIENT_SECRET=<$CLIENT_SECRET from step 2>
 
 OBSL_DATABASES=sf,dbx
 
@@ -122,16 +177,17 @@ address does not resolve, so OrionBelt cannot read its discovery document.
 ## 5. Query as a user
 
 With a model loaded (`MODEL_FILES`) whose `settings.defaultDataSource` is `sf`
-or `dbx`, get a user's token from Keycloak and call OrionBelt with it:
+or `dbx`, get a user's token from Keycloak and call OrionBelt with it. The
+token carries `obsl:read`, the scope OrionBelt checks:
 
 ```bash
 TOKEN=$(curl -s http://127.0.0.1:18080/realms/obsl/protocol/openid-connect/token \
   -d grant_type=password -d client_id=obsl-login \
-  -d username=alice -d password=<alice's password> | jq -r .access_token)
+  -d username=alice --data-urlencode "password=$USER_PASSWORD" | jq -r .access_token)
 
 curl -s http://localhost:8000/v1/query/execute \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"query": {"select": {"dimensions": ["..."], "measures": ["..."]}}}'
+  -d '{"select": {"dimensions": ["..."], "measures": ["..."]}}'
 ```
 
 In the warehouse's **Query History**, the query runs as that user:
