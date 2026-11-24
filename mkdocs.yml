@@ -160,6 +160,7 @@ nav:
           - Overview: guide/warehouse-sso/index.md
           - Databricks: guide/warehouse-sso/databricks.md
           - Snowflake: guide/warehouse-sso/snowflake.md
+          - BigQuery: guide/warehouse-sso/bigquery.md
           - Try It with a Local Keycloak: guide/warehouse-sso/keycloak.md
       - OSI Interoperability: guide/osi.md
   - API:

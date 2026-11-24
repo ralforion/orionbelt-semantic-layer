@@ -11,7 +11,9 @@ Supported here: Databricks (OAuth token federation: an RFC 8693 token
 exchange at the workspace's own ``/oidc/v1/token``) and Snowflake (External
 OAuth: the identity provider issues the Snowflake token, asked by OBSL's own
 client there, through Entra ID's on-behalf-of flow or the standard token
-exchange of Okta, Keycloak and others). See
+exchange of Okta, Keycloak and others) and BigQuery (workforce identity
+federation: Google's security token service exchanges the user's token for a
+Google access token). See
 design/PLAN_sso_database_passthrough.md and docs/guide/data-sources.md.
 
 The caller's token is read from the request context
@@ -23,6 +25,7 @@ until shortly before they expire.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -57,6 +60,10 @@ DEFAULT_MAX_CACHE_TTL_SECONDS = 300.0
 _TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"
 _JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"
 _ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
+_ID_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id_token"
+#: Google's security token service, and the scope its tokens carry for BigQuery.
+_GOOGLE_STS = "https://sts.googleapis.com/v1/token"
+_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 _JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 #: ``DB_<NAME>_OAUTH_EXCHANGE`` for Entra ID's on-behalf-of flow.
 ENTRA_OBO = "entra_obo"
@@ -235,8 +242,12 @@ def connect_overrides(source: Any) -> dict[str, Any]:
 
 
 def _login_overrides(source: Any, token: str) -> dict[str, Any]:
-    if source.dialect == "databricks":
-        return {"access_token": token}
+    if source.dialect in ("databricks", "bigquery"):
+        # BigQuery: the token in place of a service account key file.
+        overrides: dict[str, Any] = {"access_token": token}
+        if source.dialect == "bigquery":
+            overrides["credentials_file"] = None
+        return overrides
     if source.dialect == "snowflake":
         # The token says who connects; a service user or password configured
         # for the source does not go along.
@@ -249,6 +260,8 @@ def _login_overrides(source: Any, token: str) -> dict[str, Any]:
 def _exchange(source: Any, subject_token: str) -> tuple[str, float]:
     if source.dialect == "databricks":
         return _exchange_databricks(source, subject_token)
+    if source.dialect == "bigquery":
+        return _exchange_google_sts(source, subject_token)
     if source.dialect == "snowflake" and source.oauth_exchange() == ENTRA_OBO:
         return _exchange_entra_obo(source, subject_token)
     if source.dialect == "snowflake" and source.oauth_exchange() == TOKEN_EXCHANGE:
@@ -279,6 +292,27 @@ def _exchange_databricks(source: Any, subject_token: str) -> tuple[str, float]:
         form["client_id"] = client_id
     host = host.removeprefix("https://").rstrip("/")
     return _post_token_request(source, f"https://{host}/oidc/v1/token", form)
+
+
+def _exchange_google_sts(source: Any, subject_token: str) -> tuple[str, float]:
+    """Workforce identity federation: the user's token for a Google access token.
+
+    Google's security token service checks the token against the workforce
+    pool provider (``DB_<NAME>_WORKFORCE_PROVIDER``): its issuer and keys, and
+    that the token's ``aud`` is the provider's client ID. The exchange is
+    billed to ``DB_<NAME>_WORKFORCE_USER_PROJECT``, else the source's project.
+    No client authenticates: no OBSL secret is involved.
+    """
+    form = {
+        "grant_type": _TOKEN_EXCHANGE,
+        "audience": source.workforce_provider() or "",
+        "scope": _CLOUD_PLATFORM_SCOPE,
+        "requested_token_type": _ACCESS_TOKEN_TYPE,
+        "subject_token": subject_token,
+        "subject_token_type": _ID_TOKEN_TYPE,
+        "options": json.dumps({"userProject": source.workforce_user_project() or ""}),
+    }
+    return _post_token_request(source, _GOOGLE_STS, form)
 
 
 def _exchange_entra_obo(source: Any, subject_token: str) -> tuple[str, float]:

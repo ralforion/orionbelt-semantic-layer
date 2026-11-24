@@ -45,6 +45,7 @@ def connect(
     project: str | None = None,
     credentials: Any = None,
     credentials_file: str | None = None,
+    access_token: str | None = None,
     location: str | None = None,
     client_name: str | None = None,
     # OrionBelt parameters
@@ -62,6 +63,10 @@ def connect(
     credentials_file : str, optional
         Path to a service account JSON key file. Alternative to setting
         ``GOOGLE_APPLICATION_CREDENTIALS`` env var.
+    access_token : str, optional
+        A Google access token to call BigQuery with, such as one Google's
+        security token service issued for a federated user. It is not
+        refreshed: connect again with a new one before it expires.
     location : str, optional
         Default dataset location (e.g. ``US``, ``EU``).
     client_name : str, optional
@@ -72,6 +77,10 @@ def connect(
     ob_timeout : int
         HTTP timeout in seconds for OBML compilation.
     """
+    if access_token is not None and credentials is None:
+        from google.oauth2.credentials import Credentials as TokenCredentials
+
+        credentials = TokenCredentials(token=access_token)  # type: ignore[no-untyped-call]
     if credentials_file is not None and credentials is None:
         from google.oauth2 import service_account
 

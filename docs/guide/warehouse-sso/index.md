@@ -1,6 +1,6 @@
 # Warehouse Single Sign-On
 
-With single sign-on to the warehouse, OrionBelt queries Snowflake or Databricks
+With single sign-on to the warehouse, OrionBelt queries Snowflake, Databricks or BigQuery
 **as the user who called it**, not as one shared service account. The
 warehouse then applies that user's own grants, row-level security and masking,
 and its query history names them.
@@ -25,8 +25,8 @@ sequenceDiagram
     O-->>C: result
 ```
 
-The token service is the warehouse itself (Databricks) or your identity
-provider (Snowflake). OrionBelt never sends the user's own token to the
+The token service is the warehouse itself (Databricks), your identity provider
+(Snowflake) or Google's security token service (BigQuery). OrionBelt never sends the user's own token to the
 warehouse: the warehouse only gets a token issued for it.
 
 The exchanged token is kept in memory per data source and user, and exchanged
@@ -39,8 +39,9 @@ again a minute before it expires. It is never written to disk or logged.
 | Databricks | Any OpenID Connect provider: Entra ID, Okta, Keycloak, ... | Databricks, at your workspace | [Databricks](databricks.md) |
 | Snowflake | Entra ID | Entra ID, through its on-behalf-of flow | [Snowflake: Entra ID](snowflake.md#entra-id) |
 | Snowflake | Okta, Keycloak, and others with the standard token exchange (RFC 8693) | The identity provider | [Snowflake: Okta](snowflake.md#okta), [Keycloak](snowflake.md#keycloak) |
+| BigQuery | Any OpenID Connect provider | Google's security token service, for a member of a workforce pool | [BigQuery](bigquery.md) |
 
-BigQuery follows. Other dialects refuse `DB_<NAME>_AUTH=user`.
+Other dialects refuse `DB_<NAME>_AUTH=user`.
 
 ## The three parts to set up
 
@@ -55,7 +56,7 @@ BigQuery follows. Other dialects refuse `DB_<NAME>_AUTH=user`.
    the client that `OIDC_AUDIENCE` names.
 3. **The warehouse trusts your identity provider**, and the data source logs
    in as the user. Step by step: [Databricks](databricks.md),
-   [Snowflake](snowflake.md).
+   [Snowflake](snowflake.md), [BigQuery](bigquery.md).
 
 OrionBelt runs queries on a database only with `QUERY_EXECUTE=true` (or with
 Flight SQL on), as for any data source; the examples in these guides set it.
@@ -88,7 +89,8 @@ Keycloak: [Try it with a local Keycloak](keycloak.md).
   `ttl_source: user_login_capped` when the cap applied.
 - **The settings that decide who the user is at the warehouse are part of the
   source's identity**: `DB_<NAME>_OAUTH_CLIENT_ID`, `_OAUTH_EXCHANGE`,
-  `_OAUTH_SCOPE`, `_OAUTH_AUDIENCE`. Two sources that differ in one of them
+  `_OAUTH_SCOPE`, `_OAUTH_AUDIENCE`, `_WORKFORCE_PROVIDER`,
+  `_WORKFORCE_USER_PROJECT`. Two sources that differ in one of them
   share no token and no cached result.
 - OrionBelt **refuses to start** when a source logs in as the user and
   `AUTH_MODE` is not `oidc`, or when a Snowflake source does and OrionBelt has
