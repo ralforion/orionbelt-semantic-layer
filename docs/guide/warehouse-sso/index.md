@@ -68,8 +68,15 @@ Keycloak: [Try it with a local Keycloak](keycloak.md).
 - **Every caller must be a signed-in user.** An API key, or no authentication,
   is refused with 401 `SIGN_IN_REQUIRED`, before any cache lookup. API keys
   keep working for the other data sources.
-- **No shared connections.** Each query opens a connection for its caller and
-  closes it after. `MAX_CONNECTIONS` still bounds them.
+- **Connections per user.** A connection is opened for its caller, and after
+  the query waits for that user's next one, so a user asking several
+  questions in a row connects once. Another user never gets it. It is closed
+  after five minutes idle (`DB_<NAME>_USER_CONNECTION_IDLE_SECONDS`, default
+  300; 0 closes every connection after its query; checked about once a
+  minute), a minute before its
+  warehouse token expires, or when its query failed. At most one is kept per
+  user and `POOL_SIZE` across users; when full, the least recently used one
+  is closed. `MAX_CONNECTIONS` still bounds the connections in use.
 - **Results are cached per user.** OrionBelt cannot see a user's grants, so one
   user's cached rows are never served to another. The same query asked by ten
   users is ten cache entries.

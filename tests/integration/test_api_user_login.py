@@ -349,6 +349,7 @@ async def end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     await cache.shutdown()
     reset_session_manager()
     user_login.reset_tokens()
+    db_router.close_all_pools()
 
 
 async def _execute(client: AsyncClient, headers: dict[str, str]) -> Any:

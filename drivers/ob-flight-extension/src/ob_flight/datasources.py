@@ -414,6 +414,12 @@ class DataSource:
         """Idle connections to keep: ``DB_<NAME>_POOL_SIZE``, then ``DB_POOL_SIZE``."""
         return int(self._pool_setting("POOL_SIZE", "5"))
 
+    def user_connection_idle_seconds(self) -> float:
+        """How long a user's idle connection waits for their next query, for a source
+        that logs in as the user: ``DB_<NAME>_USER_CONNECTION_IDLE_SECONDS``, then
+        ``DB_USER_CONNECTION_IDLE_SECONDS``, then 300; 0 keeps none."""
+        return float(self._pool_setting("USER_CONNECTION_IDLE_SECONDS", "300"))
+
     def max_connections(self) -> int:
         """Connections in use at once: ``DB_<NAME>_MAX_CONNECTIONS``, then
         ``DB_MAX_CONNECTIONS``, then 10; 0 for no limit."""

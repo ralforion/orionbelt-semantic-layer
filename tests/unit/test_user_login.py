@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -137,20 +139,30 @@ def tokens(monkeypatch: pytest.MonkeyPatch) -> Iterator[TokenService]:
 
 
 class FakeDriver:
-    """Stands in for an ob_* driver: records each connection's arguments."""
+    """Stands in for an ob_* driver: records each connection's arguments.
+
+    ``ran_on`` names, per query, the token of the connection that ran it;
+    ``fail`` is a query that fails.
+    """
 
     def __init__(self) -> None:
         self.connections: list[dict[str, Any]] = []
         self.closed = 0
+        self.ran_on: list[str] = []
+        self.fail = "SELECT fails"
 
     def connect(self, **kwargs: Any) -> Any:
         self.connections.append(kwargs)
         driver = self
+        token = kwargs.get("access_token") or kwargs.get("token") or ""
 
         class Cursor:
             description = [("region", "string", None, None, None, None, None)]
 
             def execute(self, sql: str, *args: Any) -> None:
+                if sql == driver.fail:
+                    raise RuntimeError("the warehouse failed this query")
+                driver.ran_on.append(token)
                 self.rows = [("emea",)]
 
             def fetchall(self) -> list[tuple[str]]:
@@ -171,6 +183,13 @@ class FakeDriver:
                 driver.closed += 1
 
         return Connection()
+
+
+@pytest.fixture(autouse=True)
+def _no_idle_connections() -> Iterator[None]:
+    """Pools outlive a test; an idle connection must not serve the next one."""
+    yield
+    db_router.close_all_pools()
 
 
 @pytest.fixture
@@ -305,16 +324,20 @@ class TestConnections:
             "dbx:idp-token-of-bob",
         ]
 
-    def test_a_connection_is_never_pooled_for_the_next_caller(
+    def test_a_connection_never_serves_another_user(
         self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
     ) -> None:
-        with signed_in("alice"):
-            execute_sql("SELECT region", dialect="databricks", source=crm)
-        with signed_in("bob"):
-            execute_sql("SELECT region", dialect="databricks", source=crm)
-        assert len(databricks.connections) == 2
-        assert databricks.closed == 2
-        assert db_router._get_pool(crm)._pool.qsize() == 0
+        for sub in ("alice", "bob", "alice", "bob"):
+            with signed_in(sub):
+                execute_sql("SELECT region", dialect="databricks", source=crm)
+        assert len(databricks.connections) == 2  # one per user, each reused once
+        assert databricks.ran_on == [
+            "dbx:idp-token-of-alice",
+            "dbx:idp-token-of-bob",
+            "dbx:idp-token-of-alice",
+            "dbx:idp-token-of-bob",
+        ]
+        assert db_router._get_pool(crm)._pool.qsize() == 0  # never the shared pool
 
     def test_an_api_key_caller_is_refused_unwrapped(
         self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
@@ -328,6 +351,148 @@ class TestConnections:
         finally:
             reset_principal(binding)
         assert databricks.connections == []
+
+
+class TestConnectionReuse:
+    """A user's idle connection serves that user's next query, within limits."""
+
+    @staticmethod
+    def _query(source: DataSource, sub: str, sql: str = "SELECT region") -> None:
+        with signed_in(sub):
+            execute_sql(sql, dialect="databricks", source=source)
+
+    @pytest.fixture
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        now = [1000.0]
+        monkeypatch.setattr(user_login.time, "monotonic", lambda: now[0])  # the time module
+        return now
+
+    def test_the_next_query_reuses_the_connection(
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
+    ) -> None:
+        self._query(crm, "alice")
+        self._query(crm, "alice")
+        assert len(databricks.connections) == 1
+        assert databricks.closed == 0
+        assert len(tokens.requests) == 1
+
+    def test_it_is_retired_before_its_token_expires(
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver, clock: list[float]
+    ) -> None:
+        tokens.expires_in = 200  # usable for 140 s: a minute's margin
+        self._query(crm, "alice")
+        clock[0] += 150
+        self._query(crm, "alice")
+        assert len(databricks.connections) == 2
+        assert databricks.closed == 1
+        assert len(tokens.requests) == 2  # and the token was exchanged again
+
+    def test_it_is_closed_after_the_idle_time(
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver, clock: list[float]
+    ) -> None:
+        self._query(crm, "alice")
+        clock[0] += 301  # USER_CONNECTION_IDLE_SECONDS defaults to 300
+        self._query(crm, "alice")
+        assert len(databricks.connections) == 2
+        assert databricks.closed == 1
+
+    def test_reuse_can_be_turned_off(self, tokens: TokenService, databricks: FakeDriver) -> None:
+        (crm,) = configured_datasources({**ENV, "DB_CRM_USER_CONNECTION_IDLE_SECONDS": "0"})
+        self._query(crm, "alice")
+        self._query(crm, "alice")
+        assert len(databricks.connections) == 2
+        assert databricks.closed == 2
+
+    def test_at_most_pool_size_are_kept_across_users(
+        self, tokens: TokenService, databricks: FakeDriver
+    ) -> None:
+        (crm,) = configured_datasources({**ENV, "DB_CRM_POOL_SIZE": "2"})
+        for sub in ("alice", "bob", "carol"):
+            self._query(crm, sub)
+        assert databricks.closed == 1  # alice's, the least recently used
+        self._query(crm, "alice")
+        assert len(databricks.connections) == 4
+
+    def test_a_failed_query_does_not_keep_its_connection(
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
+    ) -> None:
+        with pytest.raises(Exception, match="the warehouse failed"):
+            self._query(crm, "alice", databricks.fail)
+        assert databricks.closed == 1
+        self._query(crm, "alice")
+        assert len(databricks.connections) == 2
+
+    def test_the_sweep_closes_an_expired_connection_without_a_query(
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver, clock: list[float]
+    ) -> None:
+        self._query(crm, "alice")
+        clock[0] += 301
+        db_router.sweep_idle_user_connections()
+        assert databricks.closed == 1
+
+    def test_the_sweep_runs_by_itself_once_a_connection_is_kept(
+        self,
+        crm: DataSource,
+        tokens: TokenService,
+        databricks: FakeDriver,
+        clock: list[float],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(db_router, "_SWEEP_INTERVAL_SECONDS", 0.01)
+        self._query(crm, "alice")
+        assert "obsl-user-connection-sweep" in {t.name for t in threading.enumerate()}
+        clock[0] += 301
+        deadline = time.monotonic_ns() + 2_000_000_000  # the real clock: 2 s
+        while databricks.closed == 0 and time.monotonic_ns() < deadline:
+            time.sleep(0.01)
+        assert databricks.closed == 1
+
+    @staticmethod
+    def _two_names(second: dict[str, str]) -> tuple[DataSource, DataSource]:
+        """Two names for one warehouse with the same credentials: one pool."""
+        env = {"OBSL_DATABASES": "crm,crm2"}
+        for name in ("CRM", "CRM2"):
+            env |= {
+                f"DB_{name}_TYPE": "databricks",
+                f"DB_{name}_AUTH": "user",
+                f"DB_{name}_DATABRICKS_SERVER_HOSTNAME": HOST,
+                f"DB_{name}_DATABRICKS_HTTP_PATH": "/sql/1.0/warehouses/abc",
+            }
+        first, other = configured_datasources({**env, **second})
+        assert first.fingerprint() == other.fingerprint()
+        return first, other
+
+    def test_a_source_that_keeps_none_never_reuses_a_shared_pool_s(
+        self, tokens: TokenService, databricks: FakeDriver
+    ) -> None:
+        crm, crm2 = self._two_names({"DB_CRM2_USER_CONNECTION_IDLE_SECONDS": "0"})
+        self._query(crm, "alice")  # kept, under crm's 300 s
+        self._query(crm2, "alice")  # crm2 keeps none: a connection of its own, closed
+        assert len(databricks.connections) == 2
+        assert databricks.closed == 1
+        self._query(crm, "alice")  # crm's is still there
+        assert len(databricks.connections) == 2
+
+    def test_a_source_s_shorter_idle_time_holds_in_a_shared_pool(
+        self, tokens: TokenService, databricks: FakeDriver, clock: list[float]
+    ) -> None:
+        crm, crm2 = self._two_names({"DB_CRM2_USER_CONNECTION_IDLE_SECONDS": "60"})
+        self._query(crm, "alice")
+        clock[0] += 120  # idle for 120 s: within crm's 300, past crm2's 60
+        self._query(crm2, "alice")
+        assert len(databricks.connections) == 2
+        assert databricks.closed == 1
+        clock[0] += 90  # crm2 kept it for 60 s: past that, even for crm
+        db_router.sweep_idle_user_connections()
+        assert databricks.closed == 2
+
+    def test_shutdown_closes_the_idle_connections(
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
+    ) -> None:
+        self._query(crm, "alice")
+        self._query(crm, "bob")
+        db_router.close_all_pools()
+        assert databricks.closed == 2
 
 
 class TestCacheScope:
