@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -419,6 +421,31 @@ class TestConnectionReuse:
         assert databricks.closed == 1
         self._query(crm, "alice")
         assert len(databricks.connections) == 2
+
+    def test_the_sweep_closes_an_expired_connection_without_a_query(
+        self, crm: DataSource, tokens: TokenService, databricks: FakeDriver, clock: list[float]
+    ) -> None:
+        self._query(crm, "alice")
+        clock[0] += 301
+        db_router.sweep_idle_user_connections()
+        assert databricks.closed == 1
+
+    def test_the_sweep_runs_by_itself_once_a_connection_is_kept(
+        self,
+        crm: DataSource,
+        tokens: TokenService,
+        databricks: FakeDriver,
+        clock: list[float],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(db_router, "_SWEEP_INTERVAL_SECONDS", 0.01)
+        self._query(crm, "alice")
+        assert "obsl-user-connection-sweep" in {t.name for t in threading.enumerate()}
+        clock[0] += 301
+        deadline = time.monotonic_ns() + 2_000_000_000  # the real clock: 2 s
+        while databricks.closed == 0 and time.monotonic_ns() < deadline:
+            time.sleep(0.01)
+        assert databricks.closed == 1
 
     def test_shutdown_closes_the_idle_connections(
         self, crm: DataSource, tokens: TokenService, databricks: FakeDriver

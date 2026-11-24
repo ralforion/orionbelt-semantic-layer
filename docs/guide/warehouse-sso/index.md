@@ -72,7 +72,8 @@ Keycloak: [Try it with a local Keycloak](keycloak.md).
   the query waits for that user's next one, so a user asking several
   questions in a row connects once. Another user never gets it. It is closed
   after five minutes idle (`DB_<NAME>_USER_CONNECTION_IDLE_SECONDS`, default
-  300; 0 closes every connection after its query), a minute before its
+  300; 0 closes every connection after its query; checked about once a
+  minute), a minute before its
   warehouse token expires, or when its query failed. At most one is kept per
   user and `POOL_SIZE` across users; when full, the least recently used one
   is closed. `MAX_CONNECTIONS` still bounds the connections in use.

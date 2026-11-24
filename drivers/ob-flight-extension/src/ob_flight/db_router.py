@@ -222,7 +222,8 @@ class IdleUserConnections:
     ``usable_until`` (a minute before its warehouse token expires), and after
     at most ``idle_seconds`` idle. One is kept per user, at most ``max_size``
     across users; when full, the least recently used goes. Users are known by
-    a hash (``caller_scope``), never by their ``sub``.
+    a hash (``caller_scope``), never by their ``sub``. Expired ones are closed
+    by the next take or put, and by the sweep (``sweep_idle_user_connections``).
     """
 
     def __init__(self, max_size: int, idle_seconds: float) -> None:
@@ -258,8 +259,17 @@ class IdleUserConnections:
                 self._idle[owner] = (conn, usable_until, deadline)
                 while len(self._idle) > self._max_size:
                     closing.append(self._idle.popitem(last=False)[1][0])
+            kept = owner in self._idle
             closing += self._pop_expired(now)
         _close_all(closing)
+        if kept:
+            _start_sweeper()
+
+    def sweep(self) -> None:
+        """Close every idle connection past its deadline."""
+        with self._lock:
+            expired = self._pop_expired(time.monotonic())
+        _close_all(expired)
 
     def close_all(self) -> None:
         """Close every idle connection (shutdown)."""
@@ -277,6 +287,50 @@ def _close_all(connections: list[Any]) -> None:
     for conn in connections:
         with contextlib.suppress(Exception):
             conn.close()
+
+
+#: How often the sweep closes expired idle user connections, in seconds.
+_SWEEP_INTERVAL_SECONDS = 60.0
+_sweeper_stop: threading.Event | None = None
+_sweeper_lock = threading.Lock()
+
+
+def sweep_idle_user_connections() -> None:
+    """Close the idle user connections past their deadline, in every pool.
+
+    Without it, an expired one stayed open on the warehouse until the next
+    query on its source, or shutdown: it was never used again, but held a
+    warehouse session meanwhile.
+    """
+    with _pools_lock:
+        pools = list(_pools.values())
+    for pool in pools:
+        pool.users.sweep()
+
+
+def _start_sweeper() -> None:
+    """Run the sweep about every ``_SWEEP_INTERVAL_SECONDS``, once a user connection is kept."""
+    global _sweeper_stop  # noqa: PLW0603
+    with _sweeper_lock:
+        if _sweeper_stop is not None:
+            return
+        stop = threading.Event()
+        _sweeper_stop = stop
+    interval = _SWEEP_INTERVAL_SECONDS
+
+    def run() -> None:
+        while not stop.wait(interval):
+            sweep_idle_user_connections()
+
+    threading.Thread(target=run, name="obsl-user-connection-sweep", daemon=True).start()
+
+
+def _stop_sweeper() -> None:
+    global _sweeper_stop  # noqa: PLW0603
+    with _sweeper_lock:
+        stop, _sweeper_stop = _sweeper_stop, None
+    if stop is not None:
+        stop.set()
 
 
 class ConnectionPool:
@@ -453,3 +507,4 @@ def close_all_pools() -> None:
                     break
             pool.users.close_all()
         _pools.clear()
+    _stop_sweeper()
