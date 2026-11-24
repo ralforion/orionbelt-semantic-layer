@@ -181,10 +181,15 @@ USER_LOGIN = "user"
 USER_LOGIN_DIALECTS: frozenset[str] = frozenset({"databricks", "snowflake"})
 #: Entra ID's on-behalf-of flow (``DB_<NAME>_OAUTH_EXCHANGE=entra_obo``).
 ENTRA_OBO = "entra_obo"
+#: The standard token exchange, RFC 8693, at the identity provider: Okta,
+#: Keycloak (``DB_<NAME>_OAUTH_EXCHANGE=token_exchange``).
+TOKEN_EXCHANGE = "token_exchange"
 #: Dialects whose user token the identity provider issues, not the warehouse,
 #: with the ways OBSL can ask it for one. Each needs OBSL's own client at the
 #: identity provider (``OIDC_CLIENT_ID``) and ``DB_<NAME>_OAUTH_SCOPE``.
-IDP_ISSUED_EXCHANGES: dict[str, frozenset[str]] = {"snowflake": frozenset({ENTRA_OBO})}
+IDP_ISSUED_EXCHANGES: dict[str, frozenset[str]] = {
+    "snowflake": frozenset({ENTRA_OBO, TOKEN_EXCHANGE})
+}
 
 # A DuckDB database string beginning with this prefix is MotherDuck, not a
 # local file: remote, authenticated, and not subject to the file-lock
@@ -329,6 +334,10 @@ class DataSource:
         """``DB_<NAME>_OAUTH_SCOPE``: what the identity provider issues the user's token for."""
         return self._named_setting("OAUTH_SCOPE")
 
+    def oauth_audience(self) -> str | None:
+        """``DB_<NAME>_OAUTH_AUDIENCE``: the audience a token exchange asks for."""
+        return self._named_setting("OAUTH_AUDIENCE")
+
     @property
     def idp_issues_token(self) -> bool:
         """Whether its user token comes from the identity provider, through OBSL's own client."""
@@ -442,7 +451,7 @@ class DataSource:
             # from these: the client names the federation policy a token is
             # exchanged under, the scope the role it carries. Another value
             # shares no token and no cache scope.
-            for setting in ("OAUTH_CLIENT_ID", "OAUTH_EXCHANGE", "OAUTH_SCOPE"):
+            for setting in ("OAUTH_CLIENT_ID", "OAUTH_EXCHANGE", "OAUTH_SCOPE", "OAUTH_AUDIENCE"):
                 value = self._named_setting(setting)
                 if value:
                     material[setting] = value

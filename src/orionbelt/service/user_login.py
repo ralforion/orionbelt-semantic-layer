@@ -9,8 +9,9 @@ results are kept per user.
 
 Supported here: Databricks (OAuth token federation: an RFC 8693 token
 exchange at the workspace's own ``/oidc/v1/token``) and Snowflake (External
-OAuth: Entra ID issues the Snowflake token through its on-behalf-of flow,
-asked by OBSL's own client there). See
+OAuth: the identity provider issues the Snowflake token, asked by OBSL's own
+client there, through Entra ID's on-behalf-of flow or the standard token
+exchange of Okta, Keycloak and others). See
 design/PLAN_sso_database_passthrough.md and docs/guide/data-sources.md.
 
 The caller's token is read from the request context
@@ -28,10 +29,12 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from orionbelt.auth import (
+    OidcClient,
     current_credential,
     current_principal,
     get_oidc_client,
@@ -53,9 +56,12 @@ DEFAULT_MAX_CACHE_TTL_SECONDS = 300.0
 
 _TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"
 _JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"
+_ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"
 _JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 #: ``DB_<NAME>_OAUTH_EXCHANGE`` for Entra ID's on-behalf-of flow.
 ENTRA_OBO = "entra_obo"
+#: ``DB_<NAME>_OAUTH_EXCHANGE`` for the standard token exchange (RFC 8693).
+TOKEN_EXCHANGE = "token_exchange"
 #: Identity provider errors that the user resolves by signing in again: MFA
 #: or conditional access (Entra adds a claims challenge), or consent.
 _INTERACTION_ERRORS = frozenset({"interaction_required", "login_required", "consent_required"})
@@ -223,6 +229,8 @@ def _exchange(source: Any, subject_token: str) -> tuple[str, float]:
         return _exchange_databricks(source, subject_token)
     if source.dialect == "snowflake" and source.oauth_exchange() == ENTRA_OBO:
         return _exchange_entra_obo(source, subject_token)
+    if source.dialect == "snowflake" and source.oauth_exchange() == TOKEN_EXCHANGE:
+        return _exchange_at_idp(source, subject_token)
     raise SignInRefusedError(f"Data source '{source.name}' cannot log in as the user.")
 
 
@@ -259,13 +267,7 @@ def _exchange_entra_obo(source: Any, subject_token: str) -> tuple[str, float]:
     Snowflake the warehouse's app ID URI and the role scope, such as
     ``api://<Snowflake app ID>/session:role-any``.
     """
-    client = get_oidc_client()
-    endpoint = get_token_endpoint()
-    if client is None or endpoint is None:  # startup refuses this; defence in depth
-        raise SignInUnavailableError(
-            f"Data source '{source.name}' logs in as the user through the identity "
-            "provider, and OBSL has no client there (OIDC_CLIENT_ID) or no token endpoint."
-        )
+    client, endpoint = _client_at_idp(source)
     form = {
         "grant_type": _JWT_BEARER,
         "client_id": client.client_id,
@@ -275,6 +277,42 @@ def _exchange_entra_obo(source: Any, subject_token: str) -> tuple[str, float]:
         "requested_token_use": "on_behalf_of",
     }
     return _post_token_request(source, endpoint, form)
+
+
+def _exchange_at_idp(source: Any, subject_token: str) -> tuple[str, float]:
+    """The standard token exchange (RFC 8693) at the identity provider: Okta, Keycloak.
+
+    OBSL asks as its own confidential client, which the user's token must be
+    issued for (``OIDC_AUDIENCE``), for ``DB_<NAME>_OAUTH_SCOPE`` and, when set,
+    ``DB_<NAME>_OAUTH_AUDIENCE`` (Okta: the target authorization server's
+    audience; Keycloak: the target client). The client authenticates with
+    HTTP Basic, its id and secret form-encoded first (RFC 6749, 2.3.1): the
+    method every authorization server must accept, and what both document.
+    """
+    client, endpoint = _client_at_idp(source)
+    form = {
+        "grant_type": _TOKEN_EXCHANGE,
+        "subject_token": subject_token,
+        "subject_token_type": _ACCESS_TOKEN_TYPE,
+        "scope": source.oauth_scope() or "",
+    }
+    audience = source.oauth_audience()
+    if audience:
+        form["audience"] = audience
+    credentials = (quote(client.client_id, safe=""), quote(client.client_secret, safe=""))
+    return _post_token_request(source, endpoint, form, auth=credentials)
+
+
+def _client_at_idp(source: Any) -> tuple[OidcClient, str]:
+    """OBSL's own client at the identity provider, and its token endpoint."""
+    client = get_oidc_client()
+    endpoint = get_token_endpoint()
+    if client is None or endpoint is None:  # startup refuses this; defence in depth
+        raise SignInUnavailableError(
+            f"Data source '{source.name}' logs in as the user through the identity "
+            "provider, and OBSL has no client there (OIDC_CLIENT_ID) or no token endpoint."
+        )
+    return client, endpoint
 
 
 def _needs_sign_in(body: Mapping[str, Any]) -> bool:
@@ -290,10 +328,16 @@ def _needs_sign_in(body: Mapping[str, Any]) -> bool:
     )
 
 
-def _post_token_request(source: Any, url: str, form: Mapping[str, str]) -> tuple[str, float]:
-    """POST a token request; return (access token, seconds valid). Never logs a token."""
+def _post_token_request(
+    source: Any, url: str, form: Mapping[str, str], auth: tuple[str, str] | None = None
+) -> tuple[str, float]:
+    """POST a token request; return (access token, seconds valid). Never logs a token.
+
+    ``auth`` is the client's HTTP Basic credentials, for a client that
+    authenticates that way.
+    """
     try:
-        response = httpx.post(url, data=dict(form), timeout=_EXCHANGE_TIMEOUT_SECONDS)
+        response = httpx.post(url, data=dict(form), auth=auth, timeout=_EXCHANGE_TIMEOUT_SECONDS)
     except httpx.HTTPError as exc:
         raise SignInUnavailableError(
             f"Could not reach the sign-in service of data source '{source.name}': "
