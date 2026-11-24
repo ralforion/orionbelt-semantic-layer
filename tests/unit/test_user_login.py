@@ -814,3 +814,90 @@ class TestTokenExchangeAtTheIdentityProvider:
         with entra(), signed_in("alice"):
             user_login.database_token(lake)
         assert tokens.auths == [None]  # Entra's on-behalf-of sends the secret in the form
+
+
+# --- BigQuery: workforce identity federation at Google's token service --------
+
+WORKFORCE_PROVIDER = "//iam.googleapis.com/locations/global/workforcePools/obsl/providers/idp"
+BIGQUERY_ENV = {
+    "OBSL_DATABASES": "bq",
+    "DB_BQ_TYPE": "bigquery",
+    "DB_BQ_AUTH": "user",
+    "DB_BQ_BIGQUERY_PROJECT": "analytics-prod",
+    "DB_BQ_WORKFORCE_PROVIDER": WORKFORCE_PROVIDER,
+    # A service account key configured too: it must not serve the user's queries.
+    "DB_BQ_BIGQUERY_CREDENTIALS_FILE": "/secrets/service-account.json",
+}
+
+
+@pytest.fixture
+def bq() -> DataSource:
+    (source,) = configured_datasources(BIGQUERY_ENV)
+    return source
+
+
+@pytest.fixture
+def bigquery(monkeypatch: pytest.MonkeyPatch) -> FakeDriver:
+    fake = FakeDriver()
+    monkeypatch.setitem(sys.modules, "fake_ob_bigquery", SimpleNamespace(connect=fake.connect))
+    monkeypatch.setitem(db_router.VENDOR_MAP, "bigquery", "fake_ob_bigquery")
+    return fake
+
+
+class TestBigQuery:
+    @pytest.mark.parametrize(
+        ("change", "match"),
+        [
+            ({"DB_BQ_WORKFORCE_PROVIDER": ""}, "set DB_BQ_WORKFORCE_PROVIDER"),
+            ({"DB_BQ_WORKFORCE_PROVIDER": "obsl/idp"}, "found 'obsl/idp'"),
+            ({"DB_BQ_BIGQUERY_PROJECT": ""}, "billed for the token exchange"),
+        ],
+    )
+    def test_it_names_its_workforce_provider(self, change: dict[str, str], match: str) -> None:
+        with pytest.raises(DataSourceConfigError, match=match):
+            configured_datasources({**BIGQUERY_ENV, **change})
+
+    def test_the_exchange_is_billed_to_the_source_s_project_unless_set(
+        self, bq: DataSource
+    ) -> None:
+        assert bq.workforce_user_project() == "analytics-prod"
+        (other,) = configured_datasources({**BIGQUERY_ENV, "DB_BQ_WORKFORCE_USER_PROJECT": "quota"})
+        assert other.workforce_user_project() == "quota"
+        assert other.fingerprint() != bq.fingerprint()
+
+    def test_the_provider_is_part_of_its_identity(self, bq: DataSource) -> None:
+        (other,) = configured_datasources(
+            {**BIGQUERY_ENV, "DB_BQ_WORKFORCE_PROVIDER": WORKFORCE_PROVIDER + "-2"}
+        )
+        assert other.fingerprint() != bq.fingerprint()
+
+    def test_the_sts_request(self, bq: DataSource, tokens: TokenService) -> None:
+        with signed_in("alice"):
+            assert user_login.database_token(bq) == "dbx:idp-token-of-alice"
+        url, form = tokens.requests[0]
+        assert url == "https://sts.googleapis.com/v1/token"
+        assert form == {
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "audience": WORKFORCE_PROVIDER,
+            "scope": "https://www.googleapis.com/auth/cloud-platform",
+            "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+            "subject_token": "idp-token-of-alice",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
+            "options": '{"userProject": "analytics-prod"}',
+        }
+        assert tokens.auths == [None]  # no client authenticates: no OBSL secret
+
+    def test_a_refusal_is_a_refusal(self, bq: DataSource, tokens: TokenService) -> None:
+        tokens.refuse.add("idp-token-of-alice")
+        with signed_in("alice"), pytest.raises(SignInRefusedError, match="invalid_grant"):
+            user_login.database_token(bq)
+
+    def test_the_connection_is_the_users_alone(
+        self, bq: DataSource, tokens: TokenService, bigquery: FakeDriver
+    ) -> None:
+        with signed_in("alice"):
+            assert execute_sql("SELECT region", dialect="bigquery", source=bq).rows
+        (kwargs,) = bigquery.connections
+        assert kwargs["access_token"] == "dbx:idp-token-of-alice"
+        assert kwargs["credentials_file"] is None  # the service account key stays unused
+        assert kwargs["project"] == "analytics-prod"

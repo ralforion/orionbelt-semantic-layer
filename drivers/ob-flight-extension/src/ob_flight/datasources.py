@@ -178,7 +178,7 @@ SERVICE_LOGIN = "service"
 USER_LOGIN = "user"
 #: Dialects that can log in as the user, by exchanging the caller's identity
 #: provider token for one issued for the warehouse.
-USER_LOGIN_DIALECTS: frozenset[str] = frozenset({"databricks", "snowflake"})
+USER_LOGIN_DIALECTS: frozenset[str] = frozenset({"bigquery", "databricks", "snowflake"})
 #: Entra ID's on-behalf-of flow (``DB_<NAME>_OAUTH_EXCHANGE=entra_obo``).
 ENTRA_OBO = "entra_obo"
 #: The standard token exchange, RFC 8693, at the identity provider: Okta,
@@ -334,6 +334,14 @@ class DataSource:
         """``DB_<NAME>_OAUTH_SCOPE``: what the identity provider issues the user's token for."""
         return self._named_setting("OAUTH_SCOPE")
 
+    def workforce_provider(self) -> str | None:
+        """``DB_<NAME>_WORKFORCE_PROVIDER``: the BigQuery user's workforce pool provider."""
+        return self._named_setting("WORKFORCE_PROVIDER")
+
+    def workforce_user_project(self) -> str | None:
+        """``DB_<NAME>_WORKFORCE_USER_PROJECT``, else the source's BigQuery project."""
+        return self._named_setting("WORKFORCE_USER_PROJECT") or self.getenv("BIGQUERY_PROJECT")
+
     def oauth_audience(self) -> str | None:
         """``DB_<NAME>_OAUTH_AUDIENCE``: the audience a token exchange asks for."""
         return self._named_setting("OAUTH_AUDIENCE")
@@ -457,7 +465,14 @@ class DataSource:
             # from these: the client names the federation policy a token is
             # exchanged under, the scope the role it carries. Another value
             # shares no token and no cache scope.
-            for setting in ("OAUTH_CLIENT_ID", "OAUTH_EXCHANGE", "OAUTH_SCOPE", "OAUTH_AUDIENCE"):
+            for setting in (
+                "OAUTH_CLIENT_ID",
+                "OAUTH_EXCHANGE",
+                "OAUTH_SCOPE",
+                "OAUTH_AUDIENCE",
+                "WORKFORCE_PROVIDER",
+                "WORKFORCE_USER_PROJECT",
+            ):
                 value = self._named_setting(setting)
                 if value:
                     material[setting] = value
@@ -548,6 +563,37 @@ def _check_idp_issued(name: str, dialect: str, prefix: str, env: Mapping[str, st
         )
 
 
+#: What a workforce pool provider's resource name begins with.
+_WORKFORCE_PROVIDER_PREFIX = "//iam.googleapis.com/locations/global/workforcePools/"
+
+
+def _check_workforce(name: str, prefix: str, env: Mapping[str, str]) -> None:
+    """A BigQuery source that logs in as the user names its workforce pool provider.
+
+    Raises:
+        DataSourceConfigError: ``WORKFORCE_PROVIDER`` is unset or not a
+            provider's resource name, or no project is billed for the exchange.
+    """
+    provider = env.get(f"{prefix}WORKFORCE_PROVIDER", "").strip()
+    if not provider.startswith(_WORKFORCE_PROVIDER_PREFIX) or "/providers/" not in provider:
+        raise DataSourceConfigError(
+            f"Data source '{name}' (bigquery) logs in as the user: set "
+            f"{prefix}WORKFORCE_PROVIDER to the workforce pool provider, "
+            f"{_WORKFORCE_PROVIDER_PREFIX}<pool>/providers/<provider> "
+            f"(found {provider or 'nothing'!r})"
+        )
+    project = (
+        env.get(f"{prefix}WORKFORCE_USER_PROJECT", "").strip()
+        or env.get(f"{prefix}BIGQUERY_PROJECT", "").strip()
+    )
+    if not project:
+        raise DataSourceConfigError(
+            f"Data source '{name}' (bigquery) logs in as the user: set "
+            f"{prefix}WORKFORCE_USER_PROJECT, or {prefix}BIGQUERY_PROJECT, to the project "
+            "billed for the token exchange"
+        )
+
+
 def configured_datasources(environ: Mapping[str, str] | None = None) -> list[DataSource]:
     """Every data source this server is configured for.
 
@@ -616,6 +662,8 @@ def configured_datasources(environ: Mapping[str, str] | None = None) -> list[Dat
             )
         if login == USER_LOGIN and dialect in IDP_ISSUED_EXCHANGES:
             _check_idp_issued(name, dialect, prefix, env)
+        if login == USER_LOGIN and dialect == "bigquery":
+            _check_workforce(name, prefix, env)
         sources.append(
             DataSource(
                 name=name,

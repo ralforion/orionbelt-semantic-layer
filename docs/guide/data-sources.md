@@ -262,7 +262,7 @@ DB_LAKEHOUSE_DATABRICKS_SERVER_HOSTNAME=dbc-1234.cloud.databricks.com
 DB_LAKEHOUSE_DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/abc123
 ```
 
-It works for Databricks and Snowflake, and needs `AUTH_MODE=oidc`: OrionBelt
+It works for Databricks, Snowflake and BigQuery, and needs `AUTH_MODE=oidc`: OrionBelt
 exchanges the caller's token for one issued for the database. Such a source
 shares no connections between users, and caches results per user, for at most
 five minutes. Set it up with
