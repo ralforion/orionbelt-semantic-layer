@@ -149,6 +149,7 @@ The user needs no password: the token is how they sign in through OrionBelt.
 === "Entra ID"
 
     ```bash
+    QUERY_EXECUTE=true
     AUTH_MODE=oidc
     OIDC_ISSUER=https://login.microsoftonline.com/<tenant ID>/v2.0
     OIDC_AUDIENCE=<OrionBelt's application ID>
@@ -168,6 +169,7 @@ The user needs no password: the token is how they sign in through OrionBelt.
 === "Keycloak"
 
     ```bash
+    QUERY_EXECUTE=true
     AUTH_MODE=oidc
     OIDC_ISSUER=https://keycloak.example.com/realms/<realm>
     OIDC_AUDIENCE=obsl

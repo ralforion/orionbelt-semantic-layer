@@ -57,6 +57,9 @@ BigQuery follows. Other dialects refuse `DB_<NAME>_AUTH=user`.
    in as the user. Step by step: [Databricks](databricks.md),
    [Snowflake](snowflake.md).
 
+OrionBelt runs queries on a database only with `QUERY_EXECUTE=true` (or with
+Flight SQL on), as for any data source; the examples in these guides set it.
+
 To try it before you change anything at your identity provider, use a local
 Keycloak: [Try it with a local Keycloak](keycloak.md).
 

@@ -146,6 +146,7 @@ claim `email`, and the contents of `jwks.json` as **JWKS JSON**. See
 ## 4. Configure OrionBelt
 
 ```bash
+QUERY_EXECUTE=true
 AUTH_MODE=oidc
 OIDC_ISSUER=https://keycloak.obsl.test/realms/obsl
 OIDC_AUDIENCE=obsl

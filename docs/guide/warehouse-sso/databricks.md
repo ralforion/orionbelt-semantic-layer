@@ -50,6 +50,7 @@ each user.
 ## 2. Configure the data source
 
 ```bash
+QUERY_EXECUTE=true
 AUTH_MODE=oidc
 OIDC_ISSUER=https://login.microsoftonline.com/<tenant ID>/v2.0
 OIDC_AUDIENCE=<OrionBelt's application ID>
