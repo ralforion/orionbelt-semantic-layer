@@ -567,30 +567,31 @@ def _check_idp_issued(name: str, dialect: str, prefix: str, env: Mapping[str, st
 _WORKFORCE_PROVIDER_PREFIX = "//iam.googleapis.com/locations/global/workforcePools/"
 
 
-def _check_workforce(name: str, prefix: str, env: Mapping[str, str]) -> None:
+def _check_workforce(source: DataSource) -> None:
     """A BigQuery source that logs in as the user names its workforce pool provider.
+
+    Checked through the source itself, so the billed project is found exactly
+    as the exchange and the driver find it: the source's own variable, then
+    the shared one, each under its canonical name before its aliases.
 
     Raises:
         DataSourceConfigError: ``WORKFORCE_PROVIDER`` is unset or not a
             provider's resource name, or no project is billed for the exchange.
     """
-    provider = env.get(f"{prefix}WORKFORCE_PROVIDER", "").strip()
+    prefix = source.prefix
+    provider = source.workforce_provider() or ""
     if not provider.startswith(_WORKFORCE_PROVIDER_PREFIX) or "/providers/" not in provider:
         raise DataSourceConfigError(
-            f"Data source '{name}' (bigquery) logs in as the user: set "
+            f"Data source '{source.name}' (bigquery) logs in as the user: set "
             f"{prefix}WORKFORCE_PROVIDER to the workforce pool provider, "
             f"{_WORKFORCE_PROVIDER_PREFIX}<pool>/providers/<provider> "
             f"(found {provider or 'nothing'!r})"
         )
-    project = (
-        env.get(f"{prefix}WORKFORCE_USER_PROJECT", "").strip()
-        or env.get(f"{prefix}BIGQUERY_PROJECT", "").strip()
-    )
-    if not project:
+    if not (source.workforce_user_project() or "").strip():
         raise DataSourceConfigError(
-            f"Data source '{name}' (bigquery) logs in as the user: set "
-            f"{prefix}WORKFORCE_USER_PROJECT, or {prefix}BIGQUERY_PROJECT, to the project "
-            "billed for the token exchange"
+            f"Data source '{source.name}' (bigquery) logs in as the user: set "
+            f"{prefix}WORKFORCE_USER_PROJECT, or the source's BIGQUERY_PROJECT, to the "
+            "project billed for the token exchange"
         )
 
 
@@ -662,17 +663,16 @@ def configured_datasources(environ: Mapping[str, str] | None = None) -> list[Dat
             )
         if login == USER_LOGIN and dialect in IDP_ISSUED_EXCHANGES:
             _check_idp_issued(name, dialect, prefix, env)
-        if login == USER_LOGIN and dialect == "bigquery":
-            _check_workforce(name, prefix, env)
-        sources.append(
-            DataSource(
-                name=name,
-                dialect=dialect,
-                description=env.get(f"{prefix}DESCRIPTION", "").strip(),
-                prefix=prefix,
-                environ=env,
-            )
+        source = DataSource(
+            name=name,
+            dialect=dialect,
+            description=env.get(f"{prefix}DESCRIPTION", "").strip(),
+            prefix=prefix,
+            environ=env,
         )
+        if login == USER_LOGIN and dialect == "bigquery":
+            _check_workforce(source)
+        sources.append(source)
 
     # A dialect's unprefixed variables are the defaults its named sources
     # share. Once it has a named source they are not a source of their own:

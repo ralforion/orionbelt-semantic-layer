@@ -865,6 +865,22 @@ class TestBigQuery:
         assert other.workforce_user_project() == "quota"
         assert other.fingerprint() != bq.fingerprint()
 
+    @pytest.mark.parametrize(
+        "project",
+        [
+            {"BIGQUERY_PROJECT": "shared-default"},  # the dialect's shared default
+            {"DB_BQ_BIGQUERY_PROJECT_ID": "shared-default"},  # the source's alias
+            {"BIGQUERY_PROJECT_ID": "shared-default"},  # the shared alias
+        ],
+    )
+    def test_the_billed_project_is_found_as_the_driver_finds_it(
+        self, project: dict[str, str]
+    ) -> None:
+        env = {k: v for k, v in BIGQUERY_ENV.items() if k != "DB_BQ_BIGQUERY_PROJECT"}
+        (bq,) = configured_datasources({**env, **project})
+        assert bq.workforce_user_project() == "shared-default"
+        assert bq.credentials()["project"] == "shared-default"
+
     def test_the_provider_is_part_of_its_identity(self, bq: DataSource) -> None:
         (other,) = configured_datasources(
             {**BIGQUERY_ENV, "DB_BQ_WORKFORCE_PROVIDER": WORKFORCE_PROVIDER + "-2"}
