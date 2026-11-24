@@ -174,24 +174,47 @@ def reset_tokens() -> None:
         _locks.clear()
 
 
+@dataclass(frozen=True)
+class UserLogin:
+    """How to connect to a source as the caller, and until when that connection may serve."""
+
+    owner: str  # a hash of the caller (caller_scope), never the raw ``sub``
+    overrides: dict[str, Any]
+    usable_until: float  # monotonic: a minute before the warehouse token expires
+
+
+def login_as_caller(source: Any) -> UserLogin:
+    """The ``connect()`` arguments that log ``source`` in as the caller, and their lifetime."""
+    issued = _database_login(source)
+    return UserLogin(
+        owner=caller_scope(),
+        overrides=_login_overrides(source, issued.token),
+        usable_until=issued.expires_at - _RENEW_MARGIN_SECONDS,
+    )
+
+
 def database_token(source: Any) -> str:
     """A token for ``source``'s warehouse, issued for the caller.
 
     Reused until a minute before it expires, then exchanged again from the
     current request's token. One exchange at a time per (source, user).
     """
+    return _database_login(source).token
+
+
+def _database_login(source: Any) -> _Issued:
     sub, credential = _caller()
     key = (source.fingerprint(), sub)
     with _tokens_lock:
         issued = _tokens.get(key)
         lock = _locks.setdefault(key, threading.Lock())
     if issued is not None and issued.expires_at - _RENEW_MARGIN_SECONDS > time.monotonic():
-        return issued.token
+        return issued
     with lock:
         with _tokens_lock:
             issued = _tokens.get(key)
         if issued is not None and issued.expires_at - _RENEW_MARGIN_SECONDS > time.monotonic():
-            return issued.token
+            return issued
         token, expires_in = _exchange(source, credential)
         issued = _Issued(token, time.monotonic() + expires_in)
         with _tokens_lock:
@@ -203,22 +226,21 @@ def database_token(source: Any) -> str:
                 if stale != key:
                     _locks.pop(stale, None)
             _tokens[key] = issued
-        return issued.token
+        return issued
 
 
 def connect_overrides(source: Any) -> dict[str, Any]:
     """The ``connect()`` arguments that log ``source`` in as the caller."""
+    return _login_overrides(source, database_token(source))
+
+
+def _login_overrides(source: Any, token: str) -> dict[str, Any]:
     if source.dialect == "databricks":
-        return {"access_token": database_token(source)}
+        return {"access_token": token}
     if source.dialect == "snowflake":
         # The token says who connects; a service user or password configured
         # for the source does not go along.
-        return {
-            "authenticator": "oauth",
-            "token": database_token(source),
-            "user": None,
-            "password": None,
-        }
+        return {"authenticator": "oauth", "token": token, "user": None, "password": None}
     raise SignInRefusedError(  # configured_datasources refuses this; defence in depth
         f"Data source '{source.name}' ({source.dialect}) cannot log in as the user."
     )

@@ -12,7 +12,8 @@ import contextlib
 import importlib
 import queue
 import threading
-from collections import deque
+import time
+from collections import OrderedDict, deque
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -126,6 +127,12 @@ def connect(source: DataSource | str, **overrides: Any) -> Any:
         from orionbelt.service.user_login import connect_overrides
 
         overrides = {**connect_overrides(datasource), **overrides}
+    return _open(datasource, module, overrides)
+
+
+def _open(datasource: DataSource, module: Any, overrides: dict[str, Any]) -> Any:
+    """Open a connection with the source's credentials, ``overrides`` applied."""
+    dialect = datasource.dialect
     kwargs = datasource.credentials(**overrides)
     if dialect in _CLIENT_NAMED:
         kwargs.setdefault("client_name", _CLIENT_NAME)
@@ -208,6 +215,70 @@ class ConnectionSlots:
                 self.in_use -= 1
 
 
+class IdleUserConnections:
+    """Idle connections of a source that logs in as the user, for each user's next query.
+
+    A connection serves only the user it was opened for, never past
+    ``usable_until`` (a minute before its warehouse token expires), and after
+    at most ``idle_seconds`` idle. One is kept per user, at most ``max_size``
+    across users; when full, the least recently used goes. Users are known by
+    a hash (``caller_scope``), never by their ``sub``.
+    """
+
+    def __init__(self, max_size: int, idle_seconds: float) -> None:
+        self._max_size = max_size
+        self._idle_seconds = idle_seconds
+        self._idle: OrderedDict[str, tuple[Any, float, float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def take(self, owner: str) -> tuple[Any, float] | None:
+        """The user's idle connection and its ``usable_until``, if one is still usable."""
+        now = time.monotonic()
+        with self._lock:
+            entry = self._idle.pop(owner, None)
+            expired = self._pop_expired(now)
+        if entry is not None and entry[2] <= now:
+            expired.append(entry[0])
+            entry = None
+        _close_all(expired)
+        return (entry[0], entry[1]) if entry is not None else None
+
+    def put(self, owner: str, conn: Any, usable_until: float) -> None:
+        """Keep ``conn`` for the user's next query, or close it."""
+        now = time.monotonic()
+        deadline = min(usable_until, now + self._idle_seconds)
+        closing: list[Any] = []
+        with self._lock:
+            if self._max_size <= 0 or deadline <= now:
+                closing.append(conn)
+            else:
+                previous = self._idle.pop(owner, None)
+                if previous is not None:
+                    closing.append(previous[0])
+                self._idle[owner] = (conn, usable_until, deadline)
+                while len(self._idle) > self._max_size:
+                    closing.append(self._idle.popitem(last=False)[1][0])
+            closing += self._pop_expired(now)
+        _close_all(closing)
+
+    def close_all(self) -> None:
+        """Close every idle connection (shutdown)."""
+        with self._lock:
+            idle = [entry[0] for entry in self._idle.values()]
+            self._idle.clear()
+        _close_all(idle)
+
+    def _pop_expired(self, now: float) -> list[Any]:
+        expired = [owner for owner, entry in self._idle.items() if entry[2] <= now]
+        return [self._idle.pop(owner)[0] for owner in expired]
+
+
+def _close_all(connections: list[Any]) -> None:
+    for conn in connections:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
 class ConnectionPool:
     """Thread-safe connection pool for a single data source.
 
@@ -230,6 +301,8 @@ class ConnectionPool:
             max_size = min(max_size, max_connections)
         self._pool: queue.Queue[Any] = queue.Queue(maxsize=max_size)
         self.slots = ConnectionSlots(self._source, max_connections, acquire_timeout)
+        # A source that logs in as the user keeps its idle connections per user.
+        self.users = IdleUserConnections(max_size, self._source.user_connection_idle_seconds())
 
     def acquire(self, **overrides: Any) -> Any:
         """Get a connection from the pool or create a new one."""
@@ -315,24 +388,56 @@ def get_connection(
     """
     datasource = _source(source)
     pool = _get_pool(datasource)
-    # A source that logs in as the caller never shares a connection: a pooled
-    # one may be signed in as someone else. Opened for the caller, closed after.
+    # A source that logs in as the caller never shares a connection with
+    # another user: its idle connections are kept per user (see
+    # ``IdleUserConnections``), and only for calls without overrides.
     per_user = datasource.login == USER_LOGIN
     pool.slots.acquire(wait=wait)
     try:
-        conn = connect(datasource, **overrides) if per_user else pool.acquire(**overrides)
+        owner: str | None = None
+        usable_until = 0.0
+        if per_user:
+            conn, owner, usable_until = _user_connection(datasource, pool, overrides)
+        else:
+            conn = pool.acquire(**overrides)
         ok = False
         try:
             yield conn
             ok = True
         finally:
-            if ok and not per_user:
+            if ok and owner is not None:
+                pool.users.put(owner, conn, usable_until)
+            elif ok and not per_user:
                 pool.release(conn)
             else:
-                with contextlib.suppress(Exception):
-                    conn.close()
+                _close_all([conn])
     finally:
         pool.slots.release()
+
+
+def _user_connection(
+    datasource: DataSource, pool: ConnectionPool, overrides: dict[str, Any]
+) -> tuple[Any, str | None, float]:
+    """A connection logged in as the caller: their idle one, else a new one.
+
+    Returns the connection, the owner to keep it for (None: close it after,
+    since it was opened with overrides), and until when it may serve.
+
+    Raises:
+        DataSourceSignInError: No signed-in caller, or the warehouse refused them.
+    """
+    from orionbelt.service.user_login import caller_scope, login_as_caller
+
+    if overrides:
+        return connect(datasource, **overrides), None, 0.0
+    owner = caller_scope()
+    reused = pool.users.take(owner)
+    if reused is not None:
+        conn, usable_until = reused
+        return conn, owner, usable_until
+    login = login_as_caller(datasource)
+    module = importlib.import_module(VENDOR_MAP[datasource.dialect])
+    return _open(datasource, module, dict(login.overrides)), login.owner, login.usable_until
 
 
 def close_all_pools() -> None:
@@ -346,4 +451,5 @@ def close_all_pools() -> None:
                         conn.close()
                 except queue.Empty:
                     break
+            pool.users.close_all()
         _pools.clear()
