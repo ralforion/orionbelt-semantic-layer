@@ -19,6 +19,7 @@ from orionbelt.auth import (
     TokenInvalidError,
     authenticate,
     bi_tokens,
+    check_still_valid,
     init_auth,
     reset_auth,
 )
@@ -110,6 +111,41 @@ class TestTheStore:
         clock[0] += 60
         assert store.authenticate(token).token_id == token_id
 
+    def test_counting_failures_keeps_a_bounded_number_of_ids(
+        self, store: TokenStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flood of made-up ids forgets the oldest; it does not grow, nor get slower."""
+        monkeypatch.setattr(bi_tokens, "_MAX_TRACKED_IDS", 3)
+        token, token_id = _create(store)
+        for _ in range(10):
+            with pytest.raises(TokenInvalidError):
+                store.authenticate(f"obsl_tok_{token_id}_{'0' * 40}")
+        with pytest.raises(TokenInvalidError):
+            store.authenticate(token)  # locked
+        made_up = [f"{n:012x}" for n in range(3)]
+        for other in made_up:
+            with pytest.raises(TokenInvalidError):
+                store.authenticate(f"obsl_tok_{other}_{'0' * 40}")
+        assert list(store._failures) == made_up  # the newest three, oldest first
+        assert store.authenticate(token).token_id == token_id
+
+    def test_an_open_connection_can_check_its_token_again(
+        self, store: TokenStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with pytest.raises(TokenInvalidError, match="not valid"):
+            store.check_active("aaaaaaaaaaaa")  # no store file yet
+        _, token_id = _create(store, days=1)
+        store.check_active(token_id)
+        with pytest.raises(TokenInvalidError, match="not valid"):
+            store.check_active("aaaaaaaaaaaa")
+        now = bi_tokens.time.time()
+        monkeypatch.setattr(bi_tokens.time, "time", lambda: now + 86401)
+        with pytest.raises(TokenInvalidError, match="expired"):
+            store.check_active(token_id)
+        store.revoke(token_id, owner_sub=None)
+        with pytest.raises(TokenInvalidError, match="revoked"):
+            store.check_active(token_id)
+
     def test_last_used_is_written_at_most_once_a_minute(
         self, store: TokenStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -172,6 +208,16 @@ def oidc_with_tokens(tmp_path: Path) -> Iterator[TokenStore]:
 
 
 class TestAuthenticate:
+    def test_only_a_bi_token_is_checked_again(self, oidc_with_tokens: TokenStore) -> None:
+        check_still_valid(None)
+        check_still_valid(Principal(kind="user", sub="alice", scopes=READ))  # no BI token
+        _, token_id = _create(oidc_with_tokens)
+        signed_in = Principal(kind="user", sub="alice", scopes=READ, token_id=token_id)
+        check_still_valid(signed_in)
+        oidc_with_tokens.revoke(token_id, owner_sub="alice")
+        with pytest.raises(TokenInvalidError, match="revoked"):
+            check_still_valid(signed_in)
+
     def test_under_oidc_a_bi_token_is_its_owner(self, oidc_with_tokens: TokenStore) -> None:
         token, token_id = _create(oidc_with_tokens)
         assert authenticate(token).token_id == token_id

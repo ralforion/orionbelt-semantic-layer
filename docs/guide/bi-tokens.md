@@ -18,7 +18,7 @@ someone has to be signed in to create one.
 | Can do | The scopes you gave it, a subset of yours; `obsl:read` by default |
 | Lasts | 90 days by default (`TOKEN_DEFAULT_DAYS`), at most `TOKEN_MAX_DAYS` (365); no token lasts forever |
 | Is shown | Once, when you create it. OrionBelt keeps only a hash of it. |
-| Stops | When it expires, or at once when it is revoked |
+| Stops | When it expires, or at once when it is revoked, also on a Postgres connection that is already open (it ends at its next query) |
 
 ## Create one
 
@@ -54,7 +54,7 @@ BI token, cannot create one.
 |---|---|
 | REST | `Authorization: Bearer obsl_tok_…`, or the API key header |
 | Arrow Flight SQL (DBeaver, Tableau, JDBC, ODBC) | Username `token`, password = the token |
-| Postgres protocol (Tableau, Power BI, psql) | Password = the token, any user name, over **TLS** (`sslmode=require`). Without TLS it is refused. |
+| Postgres protocol (Tableau, Power BI, psql) | Password = the token, any user name, over **TLS** (`sslmode=require`). Without TLS it is refused. The token is checked again before each query, so an open connection ends once the token is revoked or expires. |
 
 ## List and revoke
 

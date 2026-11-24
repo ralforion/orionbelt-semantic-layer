@@ -162,6 +162,23 @@ def get_oidc_metadata() -> dict[str, Any] | None:
     return _verifier.metadata if _verifier is not None else None
 
 
+def check_still_valid(principal: Principal | None) -> None:
+    """Raise when ``principal`` signed in with a BI token that is no longer valid.
+
+    For a connection authenticated once and kept open (the Postgres
+    protocol); a caller without a BI token passes. REST and Flight check the
+    credential on every call anyway.
+
+    Raises:
+        TokenInvalidError: The BI token was revoked, expired, or is gone.
+    """
+    if principal is None or principal.token_id is None:
+        return
+    if _tokens is None:
+        raise TokenInvalidError("BI tokens are not enabled (TOKEN_STORE_PATH)")
+    _tokens.check_active(principal.token_id)
+
+
 def get_token_store() -> TokenStore | None:
     """The BI token store, under ``oidc`` when ``TOKEN_STORE_PATH`` is set."""
     return _tokens

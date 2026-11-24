@@ -27,6 +27,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,7 @@ _SCRAM_ITERATIONS = 4096
 #: Failed attempts on one token id within the window, before it is refused.
 _MAX_FAILURES = 10
 _FAILURE_WINDOW_SECONDS = 60.0
+#: Ids whose failures are counted at once; past it the oldest is forgotten.
 _MAX_TRACKED_IDS = 10_000
 #: ``last_used_at`` is written at most this often per token.
 _LAST_USED_EVERY_SECONDS = 60.0
@@ -128,7 +130,8 @@ class TokenStore:
         self.default_days = default_days
         self.max_days = max_days
         self._lock = threading.Lock()
-        self._failures: dict[str, tuple[int, float]] = {}  # id -> (count, window start)
+        # id -> (failures, window start), oldest first: bounded, never scanned.
+        self._failures: OrderedDict[str, tuple[int, float]] = OrderedDict()
         self._last_used_written: dict[str, float] = {}
 
     # --- creating and managing ---------------------------------------------------
@@ -269,6 +272,32 @@ class TokenStore:
             token_id=token_id,
         )
 
+    def check_active(self, token_id: str) -> None:
+        """Raise unless the token ``token_id`` is still valid: not revoked, not expired.
+
+        For a connection that proved the token once and keeps running (the
+        Postgres protocol): checked again before each query, so a revoked or
+        expired token stops it.
+
+        Raises:
+            TokenInvalidError: Unknown, revoked or expired.
+        """
+        with self._connection() as conn:
+            row = (
+                conn.execute(
+                    "SELECT revoked_at, expires_at FROM bi_tokens WHERE id = ?", (token_id,)
+                ).fetchone()
+                if conn is not None
+                else None
+            )
+        if row is None:
+            raise TokenInvalidError(_INVALID)
+        revoked_at, expires_at = row
+        if revoked_at is not None:
+            raise TokenInvalidError("BI token was revoked")
+        if float(expires_at) <= time.time():
+            raise TokenInvalidError("BI token expired")
+
     def _blocked(self, token_id: str) -> bool:
         with self._lock:
             entry = self._failures.get(token_id)
@@ -281,18 +310,20 @@ class TokenStore:
             return count >= _MAX_FAILURES
 
     def _failed(self, token_id: str) -> None:
+        """Count a failure; at most ``_MAX_TRACKED_IDS`` ids, the oldest forgotten first.
+
+        A flood of made-up ids can push out a real one's count, but not make
+        guessing a 160-bit secret any likelier; what the bound keeps in check
+        is memory and the time each failure takes.
+        """
         now = time.monotonic()
         with self._lock:
-            if len(self._failures) >= _MAX_TRACKED_IDS:
-                self._failures = {
-                    key: value
-                    for key, value in self._failures.items()
-                    if now - value[1] < _FAILURE_WINDOW_SECONDS
-                }
-            count, started = self._failures.get(token_id, (0, now))
+            count, started = self._failures.pop(token_id, (0, now))
             if now - started >= _FAILURE_WINDOW_SECONDS:
                 count, started = 0, now
             self._failures[token_id] = (count + 1, started)
+            while len(self._failures) > _MAX_TRACKED_IDS:
+                self._failures.popitem(last=False)
 
     def _touch(self, token_id: str, now: float) -> None:
         """Record the token as used, at most once a minute."""
