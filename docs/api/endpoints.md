@@ -2027,6 +2027,42 @@ otherwise). **404** for an unknown data source or schema, with or without `table
 that matches nothing in a known schema returns no tables. **502** when a catalog query fails,
 **503** when the source cannot be connected to.
 
+## BI tokens
+
+Under `AUTH_MODE=oidc`: long-lived tokens users create for BI tools. See
+[Tokens for BI Tools](../guide/bi-tokens.md). Without `oidc` (or with an empty
+`TOKEN_STORE_PATH`) every endpoint here answers 404.
+
+### `POST /v1/auth/tokens`
+
+Create a token for yourself (`obsl:read`). Only a user signed in with the
+identity provider may: an API key or a BI token gets 403
+`BI_TOKEN_NEEDS_SIGN_IN`.
+
+| Field | Default | Description |
+|---|---|---|
+| `label` | (required) | What the token is for, 1 to 100 characters |
+| `scopes` | `["obsl:read"]` | A subset of your scopes (403 `SCOPE_NOT_HELD` otherwise); stored with what they imply |
+| `days` | `TOKEN_DEFAULT_DAYS` | 1 to `TOKEN_MAX_DAYS` (422 `TOKEN_LIFETIME_TOO_LONG` beyond) |
+
+**201:** `id`, `label`, `owner`, `scopes`, `created_at`, `expires_at`,
+`last_used_at`, and `token`: the only time it is shown.
+
+### `GET /v1/auth/tokens`
+
+Your tokens that are not revoked, newest first, without their secret.
+`?all=true`: everyone's (`obsl:admin`).
+
+### `DELETE /v1/auth/tokens/{id}`
+
+Revoke one of your tokens (an admin: anyone's). **204**; 404 when there is no
+such token of yours.
+
+### `DELETE /v1/auth/tokens?owner=<sub>`
+
+Revoke every token of one user (`obsl:admin`), for example when they leave.
+**200:** `{"revoked": <count>}`.
+
 ## Dialects
 
 ### `GET /v1/dialects`

@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     oidc_client_id: str = ""
     oidc_client_secret: SecretStr = SecretStr("")
     oidc_client_secret_file: str = ""
+    # BI tokens (AUTH_MODE=oidc): long-lived tokens users create for BI tools.
+    # One SQLite file, opened when the first token is created; one OBSL
+    # process (a persistent volume where the filesystem is not).
+    token_store_path: str = "./tokens/bi_tokens.sqlite"
+    token_default_days: int = 90
+    token_max_days: int = 365
     # Removed settings, read only so the server can refuse to start when one
     # is still set to turn auth on: ignoring it would start without auth.
     # See refuse_removed_auth_settings() in api/app.py.

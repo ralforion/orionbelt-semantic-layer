@@ -161,7 +161,8 @@ export API_KEYS="$SERVICE_KEY"   # optional: service keys next to the tokens
 
 A data source can also **log in to the database as the signed-in user**, so the
 database applies that user's own grants and row-level security: see
-[Warehouse Single Sign-On](warehouse-sso/index.md).
+[Warehouse Single Sign-On](warehouse-sso/index.md). BI tools, which cannot sign in, use
+a long-lived token you create for them: see [Tokens for BI Tools](bi-tokens.md).
 
 ### What a token must pass
 

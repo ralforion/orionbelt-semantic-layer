@@ -142,6 +142,11 @@ ROUTE_SCOPES: dict[str, str] = {
     "shortcuts.shortcut_sparql": SCOPE_READ,
     "shortcuts.shortcut_unmapped_objects": SCOPE_READ,
     "shortcuts.shortcut_validate": SCOPE_READ,
+    # tokens (BI tokens; admin actions checked again in the handler)
+    "tokens.create_token": SCOPE_READ,
+    "tokens.list_tokens": SCOPE_READ,
+    "tokens.revoke_owner_tokens": SCOPE_ADMIN,
+    "tokens.revoke_token": SCOPE_READ,
 }
 
 

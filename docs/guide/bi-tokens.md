@@ -1,0 +1,109 @@
+# Tokens for BI Tools
+
+BI tools (Tableau, Power BI, DBeaver, Excel, any ODBC or JDBC driver) store a
+password and send it every time. They cannot sign in with your identity
+provider, and its access tokens expire within the hour. A **BI token** is a
+long-lived password you create for one tool: it acts as you, with the scopes
+you gave it, until it expires or you revoke it.
+
+BI tokens exist under `AUTH_MODE=oidc` only: a token belongs to a person, so
+someone has to be signed in to create one.
+
+## What a token is
+
+| | |
+|---|---|
+| Looks like | `obsl_tok_3f2a9c41b7e0_9d…` (an id, then a secret of 160 random bits) |
+| Acts as | You: your sessions, your name in OrionBelt's logs |
+| Can do | The scopes you gave it, a subset of yours; `obsl:read` by default |
+| Lasts | 90 days by default (`TOKEN_DEFAULT_DAYS`), at most `TOKEN_MAX_DAYS` (365); no token lasts forever |
+| Is shown | Once, when you create it. OrionBelt keeps only a hash of it. |
+| Stops | When it expires, or at once when it is revoked |
+
+## Create one
+
+Call OrionBelt with your own sign-in token (the access token your identity
+provider gave you):
+
+```bash
+curl -s -X POST https://obsl.example.com/v1/auth/tokens \
+  -H "Authorization: Bearer $MY_ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"label": "Tableau, laptop", "scopes": ["obsl:read"], "days": 90}'
+```
+
+```json
+{
+  "id": "3f2a9c41b7e0",
+  "label": "Tableau, laptop",
+  "owner": "jane@example.com",
+  "scopes": ["obsl:read"],
+  "created_at": "2026-11-24T10:00:00Z",
+  "expires_at": "2027-02-22T10:00:00Z",
+  "last_used_at": null,
+  "token": "obsl_tok_3f2a9c41b7e0_9d…"
+}
+```
+
+Copy `token` into the tool now: it is not shown again. A token gets only
+scopes you hold (`obsl:write` includes `obsl:read`). An API key, or another
+BI token, cannot create one.
+
+## Use it in a tool
+
+| Surface | Where the token goes |
+|---|---|
+| REST | `Authorization: Bearer obsl_tok_…`, or the API key header |
+| Arrow Flight SQL (DBeaver, Tableau, JDBC, ODBC) | Username `token`, password = the token |
+| Postgres protocol (Tableau, Power BI, psql) | Password = the token, any user name, over **TLS** (`sslmode=require`). Without TLS it is refused. |
+
+## List and revoke
+
+```bash
+# Your tokens (never their secret)
+curl -s https://obsl.example.com/v1/auth/tokens -H "Authorization: Bearer $MY_ACCESS_TOKEN"
+
+# Revoke one: it stops working at once
+curl -s -X DELETE https://obsl.example.com/v1/auth/tokens/3f2a9c41b7e0 \
+  -H "Authorization: Bearer $MY_ACCESS_TOKEN"
+```
+
+An admin (`obsl:admin`) lists everyone's with `GET /v1/auth/tokens?all=true`,
+revokes anyone's by id, and revokes all of one person's at once, for example
+when they leave: `DELETE /v1/auth/tokens?owner=<their sub>`.
+
+## Good to know
+
+- **Leaving the company.** OrionBelt is not told when someone leaves your
+  identity provider. Their tokens work until they expire or an admin revokes
+  them, so revoke them as part of offboarding.
+- **Scopes are fixed.** A token keeps the scopes it was created with, even if
+  the person's roles shrink later.
+- **Sources that log in as the user** ([Warehouse Single Sign-On](warehouse-sso/index.md))
+  refuse a BI token with 401 `SIGN_IN_REQUIRED`: a BI token is not your
+  identity provider's token, so there is nothing to exchange for a warehouse
+  token. Query those sources with a tool that signs you in.
+- **Guessing.** After 10 failed attempts on one token id within a minute,
+  that id is refused for a minute.
+- **One store, one process.** Tokens live in one SQLite file
+  (`TOKEN_STORE_PATH`), created with the first token. Put it on a persistent
+  volume: on a platform without one (Cloud Run without a mounted volume), the
+  tokens are gone after a restart. Several OrionBelt processes do not share it.
+
+## Settings
+
+| Variable | Default | Description |
+|---|---|---|
+| `TOKEN_STORE_PATH` | `./tokens/bi_tokens.sqlite` | The token store; empty turns BI tokens off |
+| `TOKEN_DEFAULT_DAYS` | `90` | A new token's lifetime when the request names none |
+| `TOKEN_MAX_DAYS` | `365` | The longest lifetime a request may ask for |
+
+## When something is refused
+
+| Answer | What it means |
+|---|---|
+| 401 `invalid_token`, "BI token is not valid" | Unknown or wrong token, or too many failed attempts on its id |
+| 401 `invalid_token`, "BI token expired" / "was revoked" | Create a new one |
+| 403 `BI_TOKEN_NEEDS_SIGN_IN` | Creating a token needs your identity provider's sign-in, not an API key or a BI token |
+| 403 `SCOPE_NOT_HELD` | You asked for a scope you do not hold |
+| 422 `UNKNOWN_SCOPE` / `TOKEN_LIFETIME_TOO_LONG` | Use `obsl:read`, `obsl:write` or `obsl:admin`; ask for at most `TOKEN_MAX_DAYS` days |
+| 404 on `/v1/auth/tokens` | `AUTH_MODE` is not `oidc`, or `TOKEN_STORE_PATH` is empty |

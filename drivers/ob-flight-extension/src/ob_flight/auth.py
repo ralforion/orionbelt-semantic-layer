@@ -311,12 +311,14 @@ def caller_of(context: Any) -> Any:
 def user_credential_of(context: Any) -> str | None:
     """The token a signed-in user called with, for a data source that logs in as them.
 
-    None for an API key (it is not a user's token) and without auth.
+    None for an API key (it is not a user's token), for a BI token (no
+    identity provider token, so nothing to exchange) and without auth.
     """
     middleware = context.get_middleware(AUTH_MIDDLEWARE_KEY)
     if not isinstance(middleware, _AuthMiddleware):
         return None
-    if getattr(middleware.caller, "kind", None) != "user":
+    caller = middleware.caller
+    if getattr(caller, "kind", None) != "user" or getattr(caller, "token_id", None):
         return None
     return middleware.credential
 

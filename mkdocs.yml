@@ -156,6 +156,7 @@ nav:
       - ADBC / Arrow Flight SQL: guide/adbc.md
       - DuckDB as a Client: guide/duckdb.md
       - Authentication: guide/authentication.md
+      - Tokens for BI Tools: guide/bi-tokens.md
       - Warehouse Single Sign-On:
           - Overview: guide/warehouse-sso/index.md
           - Databricks: guide/warehouse-sso/databricks.md

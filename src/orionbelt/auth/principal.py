@@ -26,12 +26,15 @@ class Principal:
 
     ``kind`` is one of ``"anonymous"`` (auth off), ``"api_key"`` (a valid
     static key), or ``"user"`` (an OIDC-verified identity, Phase 4).
+    ``token_id`` is set when the user called with a BI token rather than an
+    identity provider's token (``auth/bi_tokens.py``).
     """
 
     kind: str
     sub: str | None = None
     email: str | None = None
     scopes: frozenset[str] = field(default_factory=frozenset)
+    token_id: str | None = None
 
     def has_scope(self, scope: str) -> bool:
         """Return True when this principal is granted ``scope``."""

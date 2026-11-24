@@ -319,6 +319,7 @@ async def end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         oidc_issuer=ISSUER,
         oidc_audience=AUDIENCE,
         oidc_jwks_file=str(jwks),
+        token_store_path=str(tmp_path / "bi-tokens.sqlite"),
     )
     cache = FileCache(
         cache_dir=str(tmp_path / "cache"),
@@ -395,3 +396,20 @@ async def test_a_service_key_is_refused_before_the_cache(end_to_end: Any) -> Non
     assert refused.status_code == 401
     assert refused.json()["detail"]["code"] == "SIGN_IN_REQUIRED"
     assert warehouse.connections == ["dbx-1"]
+
+
+async def test_a_bi_token_is_refused_by_a_source_that_logs_in_as_the_user(
+    end_to_end: Any,
+) -> None:
+    """A BI token is no identity provider token: there is nothing to exchange."""
+    client, idp, warehouse = end_to_end
+    alice = {"Authorization": f"Bearer {idp.token('alice', scope='obsl:write')}"}
+    created = await client.post(
+        "/v1/auth/tokens", json={"label": "Tableau", "scopes": ["obsl:write"]}, headers=alice
+    )
+    assert created.status_code == 201, created.text
+    refused = await _execute(client, {"Authorization": f"Bearer {created.json()['token']}"})
+    assert refused.status_code == 401
+    assert refused.json()["detail"]["code"] == "SIGN_IN_REQUIRED"
+    assert "BI token" in refused.json()["detail"]["message"]
+    assert warehouse.exchanges == []

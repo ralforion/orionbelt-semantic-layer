@@ -34,6 +34,7 @@ from orionbelt.auth import (
     get_mode,
     validate_api_key,
 )
+from orionbelt.auth.bi_tokens import is_bi_token
 from orionbelt.auth.jwt_verify import looks_like_jwt
 from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire.protocol import StartupMessage
@@ -106,14 +107,13 @@ def authenticate(
         return AuthResult(ok=True)
     if not password:
         return _refused("password authentication required")
-    if get_mode() != MODE_OIDC or not looks_like_jwt(password):
+    if get_mode() != MODE_OIDC or not (looks_like_jwt(password) or is_bi_token(password)):
         if validate_api_key(password):
             return AuthResult(ok=True, principal=API_KEY_PRINCIPAL)
         return _refused("invalid API key")
     if not tls:
         return _refused(
-            "an access token is accepted only over TLS: connect with sslmode=require, "
-            "or use an API key"
+            "a token is accepted only over TLS: connect with sslmode=require, or use an API key"
         )
     try:
         principal = auth_core.authenticate(password)
@@ -121,4 +121,6 @@ def authenticate(
         return _refused(exc.message)
     if not principal.has_scope(SCOPE_READ):
         return _refused(f"insufficient scope: requires {SCOPE_READ}")
-    return AuthResult(ok=True, principal=principal, credential=password)
+    # A BI token is no identity provider token: nothing to exchange with it.
+    credential = password if principal.token_id is None else None
+    return AuthResult(ok=True, principal=principal, credential=credential)
