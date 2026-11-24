@@ -219,35 +219,43 @@ class IdleUserConnections:
     """Idle connections of a source that logs in as the user, for each user's next query.
 
     A connection serves only the user it was opened for, never past
-    ``usable_until`` (a minute before its warehouse token expires), and after
-    at most ``idle_seconds`` idle. One is kept per user, at most ``max_size``
+    ``usable_until`` (a minute before its warehouse token expires). Its idle
+    limit is the source's own (``USER_CONNECTION_IDLE_SECONDS``), applied as
+    it is kept and as it is taken: two names for one warehouse share a pool,
+    and each keeps its own limit. One is kept per user, at most ``max_size``
     across users; when full, the least recently used goes. Users are known by
     a hash (``caller_scope``), never by their ``sub``. Expired ones are closed
     by the next take or put, and by the sweep (``sweep_idle_user_connections``).
     """
 
-    def __init__(self, max_size: int, idle_seconds: float) -> None:
+    def __init__(self, max_size: int) -> None:
         self._max_size = max_size
-        self._idle_seconds = idle_seconds
-        self._idle: OrderedDict[str, tuple[Any, float, float]] = OrderedDict()
+        # owner -> (connection, usable_until, deadline, kept at)
+        self._idle: OrderedDict[str, tuple[Any, float, float, float]] = OrderedDict()
         self._lock = threading.Lock()
 
-    def take(self, owner: str) -> tuple[Any, float] | None:
-        """The user's idle connection and its ``usable_until``, if one is still usable."""
+    def take(self, owner: str, idle_seconds: float) -> tuple[Any, float] | None:
+        """The user's idle connection and its ``usable_until``, if still usable.
+
+        ``idle_seconds`` is the taking source's limit: a connection idle
+        longer than it is closed, and with 0 none is taken.
+        """
+        if idle_seconds <= 0:
+            return None
         now = time.monotonic()
         with self._lock:
             entry = self._idle.pop(owner, None)
             expired = self._pop_expired(now)
-        if entry is not None and entry[2] <= now:
+        if entry is not None and (entry[2] <= now or now - entry[3] >= idle_seconds):
             expired.append(entry[0])
             entry = None
         _close_all(expired)
         return (entry[0], entry[1]) if entry is not None else None
 
-    def put(self, owner: str, conn: Any, usable_until: float) -> None:
-        """Keep ``conn`` for the user's next query, or close it."""
+    def put(self, owner: str, conn: Any, usable_until: float, idle_seconds: float) -> None:
+        """Keep ``conn`` for the user's next query for at most ``idle_seconds``, or close it."""
         now = time.monotonic()
-        deadline = min(usable_until, now + self._idle_seconds)
+        deadline = min(usable_until, now + idle_seconds)
         closing: list[Any] = []
         with self._lock:
             if self._max_size <= 0 or deadline <= now:
@@ -256,7 +264,7 @@ class IdleUserConnections:
                 previous = self._idle.pop(owner, None)
                 if previous is not None:
                     closing.append(previous[0])
-                self._idle[owner] = (conn, usable_until, deadline)
+                self._idle[owner] = (conn, usable_until, deadline, now)
                 while len(self._idle) > self._max_size:
                     closing.append(self._idle.popitem(last=False)[1][0])
             kept = owner in self._idle
@@ -356,7 +364,7 @@ class ConnectionPool:
         self._pool: queue.Queue[Any] = queue.Queue(maxsize=max_size)
         self.slots = ConnectionSlots(self._source, max_connections, acquire_timeout)
         # A source that logs in as the user keeps its idle connections per user.
-        self.users = IdleUserConnections(max_size, self._source.user_connection_idle_seconds())
+        self.users = IdleUserConnections(max_size)
 
     def acquire(self, **overrides: Any) -> Any:
         """Get a connection from the pool or create a new one."""
@@ -450,8 +458,10 @@ def get_connection(
     try:
         owner: str | None = None
         usable_until = 0.0
+        # The calling source's own limit, also when it shares the pool.
+        idle_seconds = datasource.user_connection_idle_seconds() if per_user else 0.0
         if per_user:
-            conn, owner, usable_until = _user_connection(datasource, pool, overrides)
+            conn, owner, usable_until = _user_connection(datasource, pool, overrides, idle_seconds)
         else:
             conn = pool.acquire(**overrides)
         ok = False
@@ -460,7 +470,7 @@ def get_connection(
             ok = True
         finally:
             if ok and owner is not None:
-                pool.users.put(owner, conn, usable_until)
+                pool.users.put(owner, conn, usable_until, idle_seconds)
             elif ok and not per_user:
                 pool.release(conn)
             else:
@@ -470,7 +480,7 @@ def get_connection(
 
 
 def _user_connection(
-    datasource: DataSource, pool: ConnectionPool, overrides: dict[str, Any]
+    datasource: DataSource, pool: ConnectionPool, overrides: dict[str, Any], idle_seconds: float
 ) -> tuple[Any, str | None, float]:
     """A connection logged in as the caller: their idle one, else a new one.
 
@@ -485,7 +495,7 @@ def _user_connection(
     if overrides:
         return connect(datasource, **overrides), None, 0.0
     owner = caller_scope()
-    reused = pool.users.take(owner)
+    reused = pool.users.take(owner, idle_seconds)
     if reused is not None:
         conn, usable_until = reused
         return conn, owner, usable_until

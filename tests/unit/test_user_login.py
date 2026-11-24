@@ -447,6 +447,45 @@ class TestConnectionReuse:
             time.sleep(0.01)
         assert databricks.closed == 1
 
+    @staticmethod
+    def _two_names(second: dict[str, str]) -> tuple[DataSource, DataSource]:
+        """Two names for one warehouse with the same credentials: one pool."""
+        env = {"OBSL_DATABASES": "crm,crm2"}
+        for name in ("CRM", "CRM2"):
+            env |= {
+                f"DB_{name}_TYPE": "databricks",
+                f"DB_{name}_AUTH": "user",
+                f"DB_{name}_DATABRICKS_SERVER_HOSTNAME": HOST,
+                f"DB_{name}_DATABRICKS_HTTP_PATH": "/sql/1.0/warehouses/abc",
+            }
+        first, other = configured_datasources({**env, **second})
+        assert first.fingerprint() == other.fingerprint()
+        return first, other
+
+    def test_a_source_that_keeps_none_never_reuses_a_shared_pool_s(
+        self, tokens: TokenService, databricks: FakeDriver
+    ) -> None:
+        crm, crm2 = self._two_names({"DB_CRM2_USER_CONNECTION_IDLE_SECONDS": "0"})
+        self._query(crm, "alice")  # kept, under crm's 300 s
+        self._query(crm2, "alice")  # crm2 keeps none: a connection of its own, closed
+        assert len(databricks.connections) == 2
+        assert databricks.closed == 1
+        self._query(crm, "alice")  # crm's is still there
+        assert len(databricks.connections) == 2
+
+    def test_a_source_s_shorter_idle_time_holds_in_a_shared_pool(
+        self, tokens: TokenService, databricks: FakeDriver, clock: list[float]
+    ) -> None:
+        crm, crm2 = self._two_names({"DB_CRM2_USER_CONNECTION_IDLE_SECONDS": "60"})
+        self._query(crm, "alice")
+        clock[0] += 120  # idle for 120 s: within crm's 300, past crm2's 60
+        self._query(crm2, "alice")
+        assert len(databricks.connections) == 2
+        assert databricks.closed == 1
+        clock[0] += 90  # crm2 kept it for 60 s: past that, even for crm
+        db_router.sweep_idle_user_connections()
+        assert databricks.closed == 2
+
     def test_shutdown_closes_the_idle_connections(
         self, crm: DataSource, tokens: TokenService, databricks: FakeDriver
     ) -> None:
