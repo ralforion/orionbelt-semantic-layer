@@ -99,6 +99,7 @@ table gets BigQuery's own permission error.
 | 403 `DATA_SOURCE_SIGN_IN_REFUSED`, the reason naming the audience | The token's `aud` is not the provider's client ID. | Set `--client-id` to `OIDC_AUDIENCE`. |
 | 403 `DATA_SOURCE_SIGN_IN_REFUSED`, the reason naming the issuer or keys | Google could not check the token against the issuer. | `--issuer-uri` must equal the token's `iss`. If Google cannot reach the issuer, upload its keys with `--jwk-json-path`. |
 | 403 with `Could not obtain a value for google.subject from the given credential` | The mapped claim is missing from the token. | Map a claim the token has, or add it at the identity provider. |
+| BigQuery: `Caller does not have required permission to use project`, right after the grants | A new grant takes a minute or two to apply. | Wait, and run the query again. |
 | BigQuery refuses the query | The user lacks a role, or the project is outside the organization. | `roles/bigquery.jobUser` and `roles/serviceusage.serviceUsageConsumer` on the project, data access on the dataset; the project inside the organization. |
 | 503 `DATA_SOURCE_SIGN_IN_UNAVAILABLE` | OrionBelt could not reach `sts.googleapis.com`. | The network from OrionBelt to Google. |
 

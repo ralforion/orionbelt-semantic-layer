@@ -1,20 +1,22 @@
 # Try It with a Local Keycloak
 
-You can try single sign-on to Snowflake and Databricks before you change
-anything at your company's identity provider: a Keycloak on your own machine
-plays the identity provider, and both warehouses trust its key directly.
-Nothing has to be reachable from the internet, because Snowflake and
-Databricks are given the key itself instead of a URL to fetch it from.
+You can try single sign-on to Snowflake, Databricks and BigQuery before you
+change anything at your company's identity provider: a Keycloak on your own
+machine plays the identity provider, and the warehouses trust its key
+directly. Nothing has to be reachable from the internet, because each
+warehouse is given the key itself instead of a URL to fetch it from.
 
-You need Docker, admin rights in the warehouses you try (Snowflake
-`ACCOUNTADMIN`, Databricks account admin), and a Databricks user to sign in as.
+You need Docker, and admin rights in the warehouses you try: Snowflake
+`ACCOUNTADMIN`; a Databricks account admin, and a Databricks user to sign in
+as; for BigQuery, `roles/iam.workforcePoolAdmin` in a Google Cloud
+organization and a project inside it.
 
 !!! warning "Remove the trust when you are done"
     While the warehouses trust this Keycloak's key, anyone who holds the key
     can sign in. Through a Databricks account federation policy that means
     **as any Databricks user in the account**. Delete the policy after each
-    test; switch the Snowflake integration off between tests
-    ([clean up](#6-clean-up)).
+    test; switch the Snowflake integration and the BigQuery workforce
+    provider off between tests ([clean up](#6-clean-up)).
 
 ## 1. Start Keycloak
 
@@ -109,7 +111,7 @@ What it creates in realm `obsl`:
 ## 3. Give the warehouses the key
 
 Keycloak publishes the key in two forms: a base64 public key for Snowflake,
-and a key set (JWKS) for Databricks and OrionBelt. Save both:
+and a key set (JWKS) for Databricks, BigQuery and OrionBelt. Save both:
 
 ```bash
 curl -s $KC/realms/obsl | jq -r .public_key > snowflake_public_key.txt
@@ -143,6 +145,33 @@ GRANT ROLE <ROLE> TO USER obsl_sso_test;
 claim `email`, and the contents of `jwks.json` as **JWKS JSON**. See
 [Databricks](databricks.md#1-create-the-federation-policy).
 
+**BigQuery**, a workforce pool in your organization whose provider trusts the
+key, and `alice` allowed to run jobs in a project inside the organization:
+
+```bash
+gcloud iam workforce-pools create obsl-sso-test \
+  --organization=<organization ID> --location=global --session-duration=3600s
+
+gcloud iam workforce-pools providers create-oidc keycloak \
+  --workforce-pool=obsl-sso-test --location=global \
+  --issuer-uri=https://keycloak.obsl.test/realms/obsl \
+  --client-id=obsl \
+  --attribute-mapping="google.subject=assertion.email" \
+  --jwk-json-path=jwks.json \
+  --web-sso-response-type=id-token \
+  --web-sso-assertion-claims-behavior=only-id-token-claims
+
+ALICE='principal://iam.googleapis.com/locations/global/workforcePools/obsl-sso-test/subject/alice@obsl.test'
+gcloud projects add-iam-policy-binding <project> \
+  --role=roles/serviceusage.serviceUsageConsumer --member="$ALICE"
+gcloud projects add-iam-policy-binding <project> \
+  --role=roles/bigquery.jobUser --member="$ALICE"
+```
+
+The project needs the BigQuery and Security Token Service APIs on
+(`gcloud services enable bigquery.googleapis.com sts.googleapis.com --project=<project>`).
+A new grant takes a minute or two to apply. See [BigQuery](bigquery.md).
+
 ## 4. Configure OrionBelt
 
 ```bash
@@ -155,7 +184,7 @@ OIDC_TOKEN_ENDPOINT=http://127.0.0.1:18080/realms/obsl/protocol/openid-connect/t
 OIDC_CLIENT_ID=obsl
 OIDC_CLIENT_SECRET=<$CLIENT_SECRET from step 2>
 
-OBSL_DATABASES=sf,dbx
+OBSL_DATABASES=sf,dbx,bq
 
 DB_SF_TYPE=snowflake
 DB_SF_AUTH=user
@@ -170,6 +199,11 @@ DB_DBX_TYPE=databricks
 DB_DBX_AUTH=user
 DB_DBX_DATABRICKS_SERVER_HOSTNAME=<workspace host>
 DB_DBX_DATABRICKS_HTTP_PATH=<SQL warehouse HTTP path>
+
+DB_BQ_TYPE=bigquery
+DB_BQ_AUTH=user
+DB_BQ_BIGQUERY_PROJECT=<project>
+DB_BQ_WORKFORCE_PROVIDER=//iam.googleapis.com/locations/global/workforcePools/obsl-sso-test/providers/keycloak
 ```
 
 `OIDC_JWKS_FILE` and `OIDC_TOKEN_ENDPOINT` are needed because the issuer's
@@ -177,8 +211,8 @@ address does not resolve, so OrionBelt cannot read its discovery document.
 
 ## 5. Query as a user
 
-With a model loaded (`MODEL_FILES`) whose `settings.defaultDataSource` is `sf`
-or `dbx`, get a user's token from Keycloak and call OrionBelt with it. The
+With a model loaded (`MODEL_FILES`) whose `settings.defaultDataSource` is `sf`,
+`dbx` or `bq`, get a user's token from Keycloak and call OrionBelt with it. The
 token carries `obsl:read`, the scope OrionBelt checks:
 
 ```bash
@@ -192,7 +226,9 @@ curl -s http://localhost:8000/v1/query/execute \
 ```
 
 In the warehouse's **Query History**, the query runs as that user:
-`OBSL_SSO_TEST` with your role in Snowflake, your own user in Databricks.
+`OBSL_SSO_TEST` with your role in Snowflake, your own user in Databricks, and
+`principal://iam.googleapis.com/locations/global/workforcePools/obsl-sso-test/subject/alice@obsl.test`
+in BigQuery.
 
 ## 6. Clean up
 
@@ -206,6 +242,16 @@ USE ROLE SECURITYADMIN; DROP USER obsl_sso_test;
 USE ROLE ACCOUNTADMIN;  DROP INTEGRATION obsl_keycloak_test;
 ```
 
-In Databricks, delete the federation policy. Then stop Keycloak
+In Databricks, delete the federation policy. In Google Cloud, switch the
+workforce provider off (`--no-disabled` switches it on again), or delete the
+pool:
+
+```bash
+gcloud iam workforce-pools providers update-oidc keycloak \
+  --workforce-pool=obsl-sso-test --location=global --disabled
+gcloud iam workforce-pools delete obsl-sso-test --location=global
+```
+
+Then stop Keycloak
 (`docker stop obsl-keycloak`), or remove it with its key:
 `docker rm -f obsl-keycloak && docker volume rm obsl-keycloak-data`.

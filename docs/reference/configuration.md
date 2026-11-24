@@ -61,6 +61,7 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `FLIGHT_TLS_CERT`          | —           | PEM certificate; with the key, Flight serves `grpc+tls` instead of `grpc` (v2.28.0+) |
 | `FLIGHT_TLS_KEY`           | —           | PEM private key. Both or neither                  |
 | `FLIGHT_TLS_CLIENT_CA`     | —           | PEM CA for client certificates; turns on mutual TLS |
+| `QUERY_EXECUTE`            | `false`     | `true`: the REST API runs queries on the configured databases: query execution, OBSQL, one-shot results, rule evaluation, value search, schema inspection. `false`: it only compiles, and those endpoints answer 503. `FLIGHT_ENABLED` turns it on too; pgwire runs queries either way |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution       |
 | `DB_POOL_SIZE`             | `5`         | Idle connections kept per data source     |
 | `DB_MAX_CONNECTIONS`       | `10`        | Connections of one data source in use at once, on every surface; `0` for no limit. Queries past it wait in order of arrival |
