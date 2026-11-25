@@ -2,20 +2,32 @@
 // code + PKCE, in the browser), then create, list and revoke your BI tokens
 // through /v1/auth/tokens. The sign-in token is kept in memory only: a reload
 // signs in again. Everything the server returns is shown as text, never HTML.
+//
+// Where a data source logs in as the user (config.warehouse_sign_in), a new
+// token takes a warehouse sign-in along: the user signs in once more, as
+// OrionBelt's own client, in a popup the server sends back to /tokens/consent,
+// and the token is created with that sign-in.
 "use strict";
 
 const config = JSON.parse(document.getElementById("config").textContent);
 const base = location.pathname.replace(/\/tokens\/?$/, "");
 const redirectUri = location.origin + base + "/tokens";
 const PENDING = "obsl-token-page-sign-in";
+const POLL_MS = 1000;
 let accessToken = null;
 let shownId = null; // the token whose value the page shows once, if any
+let creating = 0; // the latest Create; an earlier one still waiting gives up
 
 const $ = (id) => document.getElementById(id);
 
 function showError(message) {
   $("error").textContent = message;
   $("error").hidden = !message;
+}
+
+function showNotice(message) {
+  $("notice").textContent = message;
+  $("notice").hidden = !message;
 }
 
 function base64url(bytes) {
@@ -138,15 +150,70 @@ async function refreshList() {
   $("none").hidden = tokens.length !== 0;
 }
 
+// The message /tokens/consent posts when the sign-in came back, or a poll's
+// interval, whichever is first.
+function nextSignal(ms) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      window.removeEventListener("message", onMessage);
+      resolve();
+    };
+    const onMessage = (event) => {
+      if (event.origin === location.origin && event.data && event.data.type === "obsl-consent") done();
+    };
+    const timer = setTimeout(done, ms);
+    window.addEventListener("message", onMessage);
+  });
+}
+
+// Sign the user in for the warehouses in ``popup``; the finished sign-in's id.
+// The server's status is what counts: an identity provider may cut the popup
+// off from this page (it then looks closed while the user is still in it).
+async function warehouseSignIn(popup, attempt) {
+  let started;
+  try {
+    started = await api("POST", "/consents");
+  } catch (error) {
+    popup.close();
+    throw error;
+  }
+  popup.location.href = started.authorize_url;
+  showNotice(
+    "Sign in in the window that opened: the token then reaches the data sources " +
+      "that log in as you. If you closed it, create the token again."
+  );
+  const deadline = Date.now() + started.expires_in * 1000;
+  try {
+    while (Date.now() < deadline) {
+      await nextSignal(POLL_MS);
+      if (attempt !== creating) throw new Error("");
+      const status = await api("GET", "/consents/" + encodeURIComponent(started.consent));
+      if (status.status === "finished") return started.consent;
+      if (status.status === "failed") throw new Error(status.message || "The sign-in failed.");
+    }
+    throw new Error("The sign-in took too long: create the token again.");
+  } finally {
+    if (attempt === creating) showNotice("");
+    if (!popup.closed) popup.close();
+  }
+}
+
 async function create(event) {
   event.preventDefault();
   const form = event.target;
   const scopes = [...form.querySelectorAll("input[name=scope]:checked")].map((box) => box.value);
-  const created = await api("POST", "", {
-    label: form.label.value,
-    scopes,
-    days: Number(form.days.value),
-  });
+  const attempt = ++creating;
+  const body = { label: form.label.value, scopes, days: Number(form.days.value) };
+  if (config.warehouse_sign_in) {
+    // Opened now, while the click still counts as the user's: a window opened
+    // after waiting for the server is blocked as an unasked popup. Unnamed, so
+    // a second Create gets its own and the first one's cleanup closes only its own.
+    const popup = window.open("", "", "popup,width=520,height=720");
+    if (!popup) throw new Error("Allow pop-ups for this page: the token's sign-in opens in one.");
+    body.consent = await warehouseSignIn(popup, attempt);
+  }
+  const created = await api("POST", "", body);
   $("token").textContent = created.token;
   $("created").hidden = false;
   shownId = created.id;
@@ -159,7 +226,7 @@ async function run(action) {
   try {
     await action();
   } catch (error) {
-    showError(error.message);
+    if (error.message) showError(error.message); // an empty one: a newer Create took over
   }
 }
 

@@ -49,6 +49,15 @@ OIDC_TOKENS_SCOPES=openid            # Entra: openid api://<OrionBelt app ID>/<s
 Without `OIDC_TOKENS_CLIENT_ID` there is no page (`/tokens` answers 404);
 the API below still works.
 
+Where a data source logs in as you, **Create token** also opens a small
+window at your identity provider: you sign in there once more, for the
+warehouses (see [Data sources that log in as you](#data-sources-that-log-in-as-you)).
+While you are still signed in there, the window closes by itself; the first
+time, your identity provider may ask you to allow OrionBelt access. Then the
+page shows the new token, as above. If your browser blocks the window, allow
+pop-ups for the page. If you close the window before signing in, press
+**Create token** again.
+
 ### With the API
 
 Call OrionBelt with your own sign-in token (the access token your identity
@@ -164,7 +173,7 @@ sign-in still needs. Until then, these sources refuse BI tokens.
 
 ### Over the API
 
-The token page does these steps for you. A client of its own:
+The token page does these steps for you, in a pop-up window. A client of its own:
 
 1. `POST /v1/auth/tokens/consents`, signed in with your identity provider.
    The answer has a sign-in id (`consent`) and an `authorize_url`.

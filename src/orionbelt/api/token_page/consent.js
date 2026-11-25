@@ -12,5 +12,6 @@ message.className = outcome.error ? "error" : "";
 
 if (window.opener && !window.opener.closed) {
   window.opener.postMessage({ type: "obsl-consent", ...outcome }, location.origin);
-  if (!outcome.error) window.close();
 }
+// The page goes on from the server's status; this window has done its part.
+if (!outcome.error) window.close();

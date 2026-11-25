@@ -148,3 +148,14 @@ async def test_it_is_not_part_of_the_api_document(tmp_path: Path) -> None:
     async with _client(_settings(tmp_path)) as client:
         paths = (await client.get("/openapi.json")).json()["paths"]
     assert not [path for path in paths if path.startswith("/tokens")]
+
+
+async def test_the_page_can_run_a_warehouse_sign_in(tmp_path: Path) -> None:
+    """Its status line, and a script that starts the sign-in in a pop-up and polls it."""
+    async with _client(_settings(tmp_path)) as client:
+        page = (await client.get("/tokens")).text
+        script = (await client.get("/tokens/app.js")).text
+    assert '<p id="notice" class="notice" role="status" hidden></p>' in page
+    assert 'api("POST", "/consents")' in script
+    assert 'api("GET", "/consents/" + encodeURIComponent(started.consent))' in script
+    assert "window.open(" in script
