@@ -51,6 +51,11 @@ class OidcConfig:
     # IdP value (a scope or role name) -> the OBSL scopes it grants.
     scope_map: Mapping[str, frozenset[str]] = field(default_factory=dict)
     clock_skew_seconds: int = 60
+    # BI tokens (TOKEN_STORE_PATH, empty: none), with their default and
+    # longest lifetime in days.
+    token_store_path: str = ""
+    token_default_days: int = 90
+    token_max_days: int = 365
     # The sign-in and token endpoints when set (OIDC_AUTHORIZATION_ENDPOINT,
     # OIDC_TOKEN_ENDPOINT), else the discovery document's; and OBSL's own
     # client there, when one is configured.
@@ -67,6 +72,10 @@ class OidcConfig:
             )
         if not self.scope_claims:
             raise AuthConfigError("OIDC_SCOPE_CLAIMS names no claim.")
+        if not 1 <= self.token_default_days <= self.token_max_days:
+            raise AuthConfigError(
+                "TOKEN_DEFAULT_DAYS must be at least 1 and at most TOKEN_MAX_DAYS."
+            )
 
     @property
     def discovery_url(self) -> str:
@@ -136,4 +145,9 @@ def scopes_from_claims(claims: Mapping[str, Any], config: OidcConfig) -> frozens
             if value in _IMPLIED:
                 granted.add(value)
             granted.update(config.scope_map.get(value, ()))
-    return frozenset().union(*(_IMPLIED[scope] for scope in granted))
+    return with_implied(granted)
+
+
+def with_implied(scopes: Iterable[str]) -> frozenset[str]:
+    """``scopes`` with those they imply: admin implies write, write implies read."""
+    return frozenset().union(*(_IMPLIED[scope] for scope in scopes if scope in _IMPLIED))

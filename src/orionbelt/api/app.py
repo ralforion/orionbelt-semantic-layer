@@ -58,6 +58,7 @@ from orionbelt.api.routers import (
     reference,
     sessions,
     shortcuts,
+    tokens,
 )
 from orionbelt.api.routers import lineage as lineage_router
 from orionbelt.api.routers import (
@@ -219,6 +220,9 @@ def oidc_config(settings: Settings) -> OidcConfig | None:
         scope_claims=parse_scope_claims(settings.oidc_scope_claims),
         scope_map=parse_scope_map(settings.oidc_scope_map),
         clock_skew_seconds=settings.oidc_clock_skew_seconds,
+        token_store_path=settings.token_store_path.strip(),
+        token_default_days=settings.token_default_days,
+        token_max_days=settings.token_max_days,
         authorization_endpoint=settings.oidc_authorization_endpoint.strip(),
         token_endpoint=settings.oidc_token_endpoint.strip(),
         client=_oidc_client(settings),
@@ -921,6 +925,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(models_router.router, tags=["models"])
     v1.include_router(settings_router.router, tags=["settings"])
     v1.include_router(cache_stats.router, prefix="/cache", tags=["cache"])
+    v1.include_router(tokens.router, prefix="/auth/tokens", tags=["auth"])
     app.include_router(v1)
 
     # Heartbeat is included OUTSIDE the auth-bearing v1 router: it carries its

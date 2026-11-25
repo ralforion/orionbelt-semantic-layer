@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from orionbelt.models.query import QueryFilterItem, QueryObject
 from orionbelt.models.semantic import ExpressionMode, WeekStart
@@ -1905,3 +1905,55 @@ class ValueSearchResponse(BaseModel):
     maximum: Any = Field(default=None, description="Largest value of a date or number dimension")
     sql: list[str] = Field(default_factory=list, description="The SQL of each query run")
     warnings: list[str] = Field(default_factory=list)
+
+
+# --- BI tokens (/v1/auth/tokens) -----------------------------------------------
+
+
+class BiTokenCreateRequest(BaseModel):
+    """Request body for POST /v1/auth/tokens."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(
+        min_length=1, max_length=100, description="What the token is for, e.g. 'Tableau, laptop'"
+    )
+    scopes: list[str] | None = Field(
+        default=None,
+        description="OBSL scopes for the token, a subset of yours. Default: obsl:read",
+    )
+    days: int | None = Field(
+        default=None,
+        ge=1,
+        description="Lifetime in days. Default TOKEN_DEFAULT_DAYS, at most TOKEN_MAX_DAYS",
+    )
+
+
+class BiTokenInfo(BaseModel):
+    """A BI token as listed: never its secret."""
+
+    id: str = Field(description="The token's id, the part after obsl_tok_")
+    label: str
+    owner: str = Field(description="The owner's subject (sub)")
+    scopes: list[str]
+    created_at: datetime
+    expires_at: datetime
+    last_used_at: datetime | None = None
+
+
+class BiTokenCreated(BiTokenInfo):
+    """A new BI token, the only time its value is shown."""
+
+    token: str = Field(description="The token. Shown once: OrionBelt keeps only a hash of it")
+
+
+class BiTokenList(BaseModel):
+    """Response of GET /v1/auth/tokens."""
+
+    tokens: list[BiTokenInfo]
+
+
+class BiTokensRevoked(BaseModel):
+    """Response of DELETE /v1/auth/tokens?owner=..."""
+
+    revoked: int

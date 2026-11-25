@@ -41,6 +41,7 @@ htmlcov/
 gradio*-production.png
 ui-gradio*.png
 /cache/
+/tokens/
 /usage/
 security/
 infra/

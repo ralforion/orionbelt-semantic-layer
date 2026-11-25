@@ -103,8 +103,13 @@ async def require_auth(request: Request) -> AsyncIterator[Principal]:
         )
     request.state.principal = principal
     # A signed-in user's token is kept for the request, for a data source that
-    # logs in as the user; an API key is not.
-    credential = _extract_credential(request) if principal.kind == "user" else None
+    # logs in as the user; an API key is not, and neither is a BI token: it is
+    # no identity provider token, so there is nothing to exchange.
+    credential = (
+        _extract_credential(request)
+        if principal.kind == "user" and principal.token_id is None
+        else None
+    )
     token = auth_core.bind_principal(principal, credential)
     try:
         if principal.sub is None:

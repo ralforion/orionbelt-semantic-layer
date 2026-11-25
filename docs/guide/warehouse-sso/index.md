@@ -100,7 +100,7 @@ Keycloak: [Try it with a local Keycloak](keycloak.md).
 
 | Answer | What it means | What to check |
 |---|---|---|
-| 401 `SIGN_IN_REQUIRED` | The caller is not a signed-in user: an API key, or no authentication. | Call with the user's access token. |
+| 401 `SIGN_IN_REQUIRED` | The caller is not a signed-in user: an API key, a [BI token](../bi-tokens.md), or no authentication. | Call with the user's access token. |
 | 403 `DATA_SOURCE_SIGN_IN_REFUSED` | The token service refused to issue a warehouse token for this user. The message carries its reason. | The reason usually names what is missing. See the troubleshooting table of [Databricks](databricks.md#troubleshooting) or [Snowflake](snowflake.md#troubleshooting). |
 | 401 `DATA_SOURCE_SIGN_IN_INTERACTION_REQUIRED` | The identity provider wants the user at its sign-in page first: multi-factor authentication, conditional access, consent. | Sign the user in again. Over REST, the `WWW-Authenticate` header says where (`authorization_uri`) and carries the identity provider's claims challenge, when it sent one. |
 | 503 `DATA_SOURCE_SIGN_IN_UNAVAILABLE` | The token service could not be reached, or failed. | The network from OrionBelt to the token endpoint: `OIDC_TOKEN_ENDPOINT`, the one the discovery document names, or (Databricks) the workspace. |

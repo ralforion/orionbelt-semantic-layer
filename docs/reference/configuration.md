@@ -36,6 +36,9 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `OIDC_SWAGGER_CLIENT_ID`   | —           | Public client for signing in on `/docs` ([Swagger UI](../guide/authentication.md#swagger-ui-docs)) |
 | `OIDC_SWAGGER_SCOPES`      | `openid`    | Scopes `/docs` asks for at sign-in |
 | `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT` | from discovery | The IdP's sign-in and token endpoints; only needed without discovery |
+| `TOKEN_STORE_PATH`         | `./tokens/bi_tokens.sqlite` | Under `AUTH_MODE=oidc`: the SQLite file of [tokens for BI tools](../guide/bi-tokens.md), created with the first token; empty turns them off. One OrionBelt process; a persistent volume where the filesystem is not |
+| `TOKEN_DEFAULT_DAYS`       | `90`        | A new BI token's lifetime when the request names none |
+| `TOKEN_MAX_DAYS`           | `365`       | The longest lifetime a BI token may be created with |
 | `OIDC_CLIENT_ID`           | —           | OrionBelt's own client at the IdP, which asks it for a Snowflake token on a signed-in user's behalf ([Snowflake through Entra ID](../guide/warehouse-sso/snowflake.md)) |
 | `OIDC_CLIENT_SECRET`, `OIDC_CLIENT_SECRET_FILE` | — | That client's secret, or a file holding it; one of them with `OIDC_CLIENT_ID` |
 | `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode. Each file is loaded into its own named protected session (addressing name = OBML `name:` field or filename stem). A single path is fine. |

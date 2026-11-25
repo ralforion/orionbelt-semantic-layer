@@ -139,7 +139,7 @@ def _caller() -> tuple[str, str]:
     if principal is None or principal.sub is None or not credential:
         raise SignInRequiredError(
             "This data source logs in as the signed-in user; call with the identity "
-            "provider's access token (AUTH_MODE=oidc), not an API key."
+            "provider's access token (AUTH_MODE=oidc), not an API key or a BI token."
         )
     return principal.sub, credential
 

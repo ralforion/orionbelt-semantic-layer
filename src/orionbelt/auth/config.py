@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from orionbelt.auth.bi_tokens import TokenStore, is_bi_token
 from orionbelt.auth.errors import (
     AuthConfigError,
     AuthError,
@@ -39,6 +40,7 @@ _key_store: KeyStore = KeyStore(frozenset())
 _header_name: str = DEFAULT_HEADER_NAME
 _verifier: JwtVerifier | None = None
 _oidc: OidcConfig | None = None
+_tokens: TokenStore | None = None
 
 
 def resolve_mode(auth_mode: str) -> str:
@@ -59,7 +61,7 @@ def init_auth(
     ``oidc`` is required for ``AUTH_MODE=oidc``; ``verifier`` replaces the
     default :class:`JwtVerifier` built from it (tests inject a fetch).
     """
-    global _mode, _key_store, _header_name, _verifier, _oidc  # noqa: PLW0603
+    global _mode, _key_store, _header_name, _verifier, _oidc, _tokens  # noqa: PLW0603
 
     mode = resolve_mode(auth_mode)
     if mode not in _VALID_MODES:
@@ -105,6 +107,15 @@ def init_auth(
     _header_name = header
     _verifier = new_verifier
     _oidc = oidc if mode == MODE_OIDC else None
+    _tokens = (
+        TokenStore(
+            oidc.token_store_path,
+            default_days=oidc.token_default_days,
+            max_days=oidc.token_max_days,
+        )
+        if oidc is not None and mode == MODE_OIDC and oidc.token_store_path
+        else None
+    )
 
 
 def _check_key_strength(keys: frozenset[str]) -> None:
@@ -127,12 +138,13 @@ def _check_key_strength(keys: frozenset[str]) -> None:
 
 def reset_auth() -> None:
     """Reset auth state to defaults (for tests / shutdown)."""
-    global _mode, _key_store, _header_name, _verifier, _oidc  # noqa: PLW0603
+    global _mode, _key_store, _header_name, _verifier, _oidc, _tokens  # noqa: PLW0603
     _mode = MODE_NONE
     _key_store = KeyStore(frozenset())
     _header_name = DEFAULT_HEADER_NAME
     _verifier = None
     _oidc = None
+    _tokens = None
 
 
 def get_mode() -> str:
@@ -148,6 +160,28 @@ def get_header_name() -> str:
 def get_oidc_metadata() -> dict[str, Any] | None:
     """The issuer's discovery document under ``oidc``, when it was read; else None."""
     return _verifier.metadata if _verifier is not None else None
+
+
+def check_still_valid(principal: Principal | None) -> None:
+    """Raise when ``principal`` signed in with a BI token that is no longer valid.
+
+    For a connection authenticated once and kept open (the Postgres
+    protocol); a caller without a BI token passes. REST and Flight check the
+    credential on every call anyway.
+
+    Raises:
+        TokenInvalidError: The BI token was revoked, expired, or is gone.
+    """
+    if principal is None or principal.token_id is None:
+        return
+    if _tokens is None:
+        raise TokenInvalidError("BI tokens are not enabled (TOKEN_STORE_PATH)")
+    _tokens.check_active(principal.token_id)
+
+
+def get_token_store() -> TokenStore | None:
+    """The BI token store, under ``oidc`` when ``TOKEN_STORE_PATH`` is set."""
+    return _tokens
 
 
 def get_oidc_client() -> OidcClient | None:
@@ -217,8 +251,9 @@ def authenticate(credential: str | None) -> Principal:
     - ``api_key``: missing credential → ``AuthRequiredError``; wrong key →
       ``AuthInvalidError``; valid key → the api_key principal.
     - ``oidc``: a JWT-shaped credential is verified as the IdP's access token
-      (``TokenInvalidError`` when it does not verify); anything else is
-      checked against the service keys, when any are configured.
+      (``TokenInvalidError`` when it does not verify), a BI token against the
+      token store; anything else is checked against the service keys, when
+      any are configured.
     """
     if _mode == MODE_NONE:
         return ANONYMOUS
@@ -232,6 +267,10 @@ def authenticate(credential: str | None) -> Principal:
 
     if not credential:
         raise AuthRequiredError("Bearer token required")
+    if is_bi_token(credential):
+        if _tokens is None:
+            raise TokenInvalidError("BI tokens are not enabled (TOKEN_STORE_PATH)")
+        return _tokens.authenticate(credential)
     if looks_like_jwt(credential):
         if _verifier is None:  # init_auth always sets it in oidc mode
             raise AuthConfigError("AUTH_MODE=oidc is not initialised")

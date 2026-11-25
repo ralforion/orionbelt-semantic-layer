@@ -23,7 +23,7 @@ import struct
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from orionbelt.auth import bind_principal
+from orionbelt.auth import AuthError, Principal, bind_principal, check_still_valid
 from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.auth import (
@@ -102,6 +102,12 @@ async def _hello_world_handler(
             "pass it as query_handler= when starting the server."
         ),
     )
+
+
+#: Messages that can run a query (Parse and Describe pre-run some, Bind runs
+#: one): a connection signed in with a BI token checks the token again before
+#: each. Execute only replays rows one of them fetched.
+_QUERY_TAGS = frozenset({b"Q", b"P", b"B", b"D"})
 
 
 class PgWireServer:
@@ -462,8 +468,10 @@ class PgWireServer:
         if auth.principal is not None:
             # This connection's task runs as its caller from here on, so the
             # session manager shows it only its own sessions, as on REST. The
-            # connection was authenticated once: it stays open after a token
-            # expires, as a Postgres connection does.
+            # connection was authenticated once: it stays open after an
+            # identity provider token expires, as a Postgres connection does.
+            # A BI token is checked again before each query (see below), so a
+            # revoked or expired one ends the connection.
             bind_principal(auth.principal, auth.credential)
 
         # Handshake complete: AuthOk + a small set of ParameterStatus
@@ -493,6 +501,10 @@ class PgWireServer:
         while True:
             tag, body = await protocol.read_message(reader.readexactly)
             if tag == b"X":  # Terminate
+                return
+            if tag in _QUERY_TAGS and not await self._token_still_valid(
+                writer, auth.principal, peer
+            ):
                 return
             if tag == b"Q":
                 # A Simple Query implicitly closes any pending extended
@@ -551,6 +563,24 @@ class PgWireServer:
             # skip-until-Sync state described above.
             if _contains_error_response(reply_bytes):
                 skip_until_sync = True
+
+    async def _token_still_valid(
+        self, writer: asyncio.StreamWriter, principal: Principal | None, peer: object
+    ) -> bool:
+        """Whether a BI token the connection signed in with still holds; else end it.
+
+        Revoking a token, or its expiry, would otherwise leave an open
+        connection reading data: the point of revoking is that it does not.
+        """
+        if principal is None or principal.token_id is None:
+            return True  # an API key or an identity provider token: nothing to recheck
+        try:
+            await asyncio.to_thread(check_still_valid, principal)
+        except AuthError as exc:
+            logger.info("pgwire session closed peer=%s: %s", peer, exc.message)
+            await self._safe_send_error(writer, code="28000", message=exc.message)
+            return False
+        return True
 
     async def _dispatch_extended(
         self,
