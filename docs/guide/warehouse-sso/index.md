@@ -68,7 +68,9 @@ Keycloak: [Try it with a local Keycloak](keycloak.md).
 
 - **Every caller must be a signed-in user.** An API key, or no authentication,
   is refused with 401 `SIGN_IN_REQUIRED`, before any cache lookup. API keys
-  keep working for the other data sources.
+  keep working for the other data sources. A BI tool's [BI token](../bi-tokens.md)
+  is accepted when it holds a
+  [warehouse sign-in](../bi-tokens.md#data-sources-that-log-in-as-you).
 - **Connections per user.** A connection is opened for its caller, and after
   the query waits for that user's next one, so a user asking several
   questions in a row connects once. Another user never gets it. It is closed
@@ -95,6 +97,29 @@ Keycloak: [Try it with a local Keycloak](keycloak.md).
 - OrionBelt **refuses to start** when a source logs in as the user and
   `AUTH_MODE` is not `oidc`, or when a Snowflake source does and OrionBelt has
   no client at the identity provider or does not know its token endpoint.
+
+## Queries across data sources
+
+A query whose data objects come from several data sources runs one query per
+source and joins the results in OrionBelt ([federation](../federation.md)).
+Each of those queries logs in to its source the way that source is set up:
+
+- **A source that logs in as the user** runs its part as the signed-in user.
+  Two such sources, say Snowflake and Databricks, mean one sign-in at each,
+  and each warehouse applies its own grants and row-level security to its own
+  part only.
+- **A source with a service account** runs its part as that account, for
+  every user. OrionBelt does not filter those rows per user.
+- **Every source must accept the caller.** One source that logs in as the user
+  refuses an API key, or a BI token without a warehouse sign-in, before any
+  part runs.
+- **The joined result is cached per user**, no longer than the strictest
+  source allows.
+- **One failed sign-in fails the whole query**: there is no partial result.
+- **Values travel between warehouses.** When OrionBelt narrows one part to the
+  keys another part returned ([key injection](../federation.md#key-injection)),
+  those keys are written into the second warehouse's query, and so appear in
+  its query history under the user's name.
 
 ## When a query is refused
 
