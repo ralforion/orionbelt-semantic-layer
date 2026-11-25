@@ -37,6 +37,8 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `OIDC_SWAGGER_SCOPES`      | `openid`    | Scopes `/docs` asks for at sign-in |
 | `OIDC_AUTHORIZATION_ENDPOINT`, `OIDC_TOKEN_ENDPOINT` | from discovery | The IdP's sign-in and token endpoints; only needed without discovery |
 | `TOKEN_STORE_PATH`         | `./tokens/bi_tokens.sqlite` | Under `AUTH_MODE=oidc`: the SQLite file of [tokens for BI tools](../guide/bi-tokens.md), created with the first token; empty turns them off. One OrionBelt process; a persistent volume where the filesystem is not |
+| `OIDC_TOKENS_CLIENT_ID`    | —           | The [BI token page](../guide/bi-tokens.md#on-the-token-page)'s own public client at the IdP (separate from Swagger's), with the redirect URI `<API URL>/tokens`; unset: no page |
+| `OIDC_TOKENS_SCOPES`       | `openid`    | Scopes the token page's sign-in asks for, space-separated |
 | `TOKEN_DEFAULT_DAYS`       | `90`        | A new BI token's lifetime when the request names none |
 | `TOKEN_MAX_DAYS`           | `365`       | The longest lifetime a BI token may be created with |
 | `OIDC_CLIENT_ID`           | —           | OrionBelt's own client at the IdP, which asks it for a Snowflake token on a signed-in user's behalf ([Snowflake through Entra ID](../guide/warehouse-sso/snowflake.md)) |

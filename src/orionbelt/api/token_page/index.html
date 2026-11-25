@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OrionBelt · BI tokens</title>
+  <link rel="stylesheet" href="tokens/app.css">
+</head>
+<body>
+  <header>
+    <h1>OrionBelt · BI tokens</h1>
+    <div id="who" hidden>
+      <span id="user"></span>
+      <button type="button" id="sign-out" class="secondary">Sign out</button>
+    </div>
+  </header>
+  <main>
+    <p id="error" class="error" role="alert" hidden></p>
+
+    <section id="signed-out" hidden>
+      <p>
+        A BI token is a password for one BI tool (Tableau, Power BI, DBeaver, Excel)
+        that cannot sign in by itself. It acts as you, with the scopes you give it.
+      </p>
+      <button type="button" id="sign-in">Sign in</button>
+    </section>
+
+    <section id="signed-in" hidden>
+      <h2>Create a token</h2>
+      <form id="create">
+        <label>Label
+          <input name="label" required maxlength="100" placeholder="Tableau, laptop">
+        </label>
+        <fieldset>
+          <legend>Scopes <span class="hint">(only ones you hold)</span></legend>
+          <label><input type="checkbox" name="scope" value="obsl:read" checked disabled> obsl:read</label>
+          <label><input type="checkbox" name="scope" value="obsl:write"> obsl:write</label>
+          <label><input type="checkbox" name="scope" value="obsl:admin"> obsl:admin</label>
+        </fieldset>
+        <label>Days
+          <input name="days" type="number" min="1" required>
+          <span class="hint" id="max-days"></span>
+        </label>
+        <button type="submit">Create token</button>
+      </form>
+
+      <div id="created" class="created" hidden>
+        <p><strong>Copy it now, it is not shown again.</strong></p>
+        <div class="token-row">
+          <code id="token"></code>
+          <button type="button" id="copy">Copy</button>
+        </div>
+      </div>
+
+      <h2>Your tokens</h2>
+      <p id="none" class="hint" hidden>No tokens yet.</p>
+      <table id="tokens" hidden>
+        <thead>
+          <tr><th>Label</th><th>Scopes</th><th>Expires</th><th>Last used</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+  <script type="application/json" id="config">__CONFIG__</script>
+  <script src="tokens/app.js"></script>
+</body>
+</html>

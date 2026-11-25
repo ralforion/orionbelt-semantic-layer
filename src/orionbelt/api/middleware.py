@@ -105,6 +105,20 @@ def _method_label(scope: Scope) -> str:
     return method if method in _METHODS else "other"
 
 
+def _app_path(scope: Scope) -> str:
+    """The request's path within the app, without the ``root_path`` it is mounted at.
+
+    Under a root path (``/obsl``), ``path`` carries it (``/obsl/tokens``) while
+    the app's routes are relative to it (``/tokens``). A path that only starts
+    with the same letters (``/obslx``) is not under it.
+    """
+    path: str = scope.get("path", "")
+    root: str = scope.get("root_path", "")
+    if root and path.startswith(root) and path[len(root) : len(root) + 1] in ("", "/"):
+        return path[len(root) :]
+    return path
+
+
 def _route_label(scope: Scope) -> str:
     """The template of the route a request matched, ``unmatched`` for none.
 
@@ -117,11 +131,7 @@ def _route_label(scope: Scope) -> str:
     template = getattr(scope.get("route"), "path", None)
     if not isinstance(template, str) or not template:
         return "unmatched"
-    path = scope.get("path", "")
-    root = scope.get("root_path", "")
-    if root and path.startswith(root):
-        path = path[len(root) :]
-    head = [part for part in path.split("/") if part]
+    head = [part for part in _app_path(scope).split("/") if part]
     tail = [part for part in template.split("/") if part]
     if len(head) > len(tail):
         candidate = "/" + "/".join([*head[: len(head) - len(tail)], *tail])
@@ -160,12 +170,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
 
     def __init__(
-        self, app: ASGIApp, docs_connect_src: Callable[[], Iterable[str]] | None = None
+        self,
+        app: ASGIApp,
+        docs_connect_src: Callable[[], Iterable[str]] | None = None,
+        tokens_connect_src: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         super().__init__(app)
         self._docs_connect_src = docs_connect_src
+        self._tokens_connect_src = tokens_connect_src
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # The app's own path, also under a root path. Read before the request
+        # is routed: a mounted app (the Gradio UI at /ui) moves the scope's
+        # root_path to its mount point on the way down.
+        path = _app_path(request.scope)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -174,7 +192,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # use a relaxed CSP for /ui paths.  Swagger UI / ReDoc need the
         # jsdelivr CDN for JS + CSS assets.  All other API endpoints get
         # a strict policy.
-        path = request.url.path
         if path.startswith("/ui"):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
@@ -198,6 +215,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 f"connect-src {connect_src}; "
                 "worker-src 'self' blob:; "
                 "frame-ancestors 'none'"
+            )
+        elif path in ("/tokens", "/tokens/app.js", "/tokens/app.css"):
+            # The BI tokens page: its own script and style only, and the
+            # identity provider's token endpoint, where it exchanges the code.
+            extra = self._tokens_connect_src() if self._tokens_connect_src is not None else ()
+            connect_src = " ".join(("'self'", *extra))
+            response.headers["Content-Security-Policy"] = (
+                f"default-src 'self'; connect-src {connect_src}; frame-ancestors 'none'"
             )
         else:
             response.headers["Content-Security-Policy"] = (
