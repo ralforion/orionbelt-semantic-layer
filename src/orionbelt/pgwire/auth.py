@@ -44,10 +44,6 @@ from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire.protocol import StartupMessage
 from orionbelt.pgwire.scram import ScramServerExchange
 
-# Password mechanisms offered when a credential is required.
-MECH_SCRAM = "scram-sha-256"
-MECH_CLEARTEXT = "cleartext"
-
 
 @dataclass(frozen=True)
 class AuthResult:
@@ -68,22 +64,6 @@ def auth_required() -> bool:
 
 # Back-compat alias (Phase 2 cleartext-only name).
 password_required = auth_required
-
-
-def select_mechanism(pgwire_auth_mode: str, *, tls: bool = False) -> str:
-    """Pick the password mechanism for credential exchange.
-
-    SCRAM-SHA-256 is the secure default. Operators opt into cleartext (for
-    clients that lack SCRAM support) via ``PGWIRE_AUTH_MODE=password`` or
-    ``=cleartext``. Any other value (including the legacy default ``trust``)
-    selects SCRAM. Under ``AUTH_MODE=oidc`` a TLS connection gets cleartext,
-    the only mechanism that can carry an access token; TLS protects it.
-    """
-    if tls and get_mode() == MODE_OIDC:
-        return MECH_CLEARTEXT
-    if (pgwire_auth_mode or "").strip().lower() in {"password", "cleartext"}:
-        return MECH_CLEARTEXT
-    return MECH_SCRAM
 
 
 def scram_candidate_keys() -> tuple[str, ...]:

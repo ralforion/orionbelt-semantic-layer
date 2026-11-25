@@ -18,7 +18,8 @@ import struct
 
 import pytest
 
-from orionbelt.auth import init_auth, reset_auth
+from orionbelt.auth import get_key_last_used, init_auth, reset_auth
+from orionbelt.auth.keys import key_id
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.server import PgWireServer
 
@@ -235,6 +236,24 @@ async def test_scram_valid_key() -> None:
             await writer.drain()
             writer.close()
             await writer.wait_closed()
+
+
+async def test_a_scram_login_records_its_key_s_use() -> None:
+    """GET /v1/auth/status shows when each key last logged a client in, SCRAM included."""
+    init_auth(auth_mode="api_key", api_keys=API_KEY)
+    assert get_key_last_used() == {key_id(API_KEY): None}
+    server = await _make_server()  # default → SCRAM
+    async with _running(server):
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+        try:
+            await _scram_handshake(reader, writer, API_KEY)
+            await _drain_until(reader, b"Z")
+        finally:
+            writer.write(_terminate_frame())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+    assert get_key_last_used()[key_id(API_KEY)] is not None
 
 
 # --- DoS hardening: auth timeout + frame-size cap ---

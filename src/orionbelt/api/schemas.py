@@ -1981,6 +1981,94 @@ class BiTokenConsentStatus(BaseModel):
     message: str = Field(default="", description="Why the sign-in failed")
 
 
+class AuthKeyStatus(BaseModel):
+    """An API key, by its id: never the key."""
+
+    id: str = Field(description="Eight hex characters of a SHA-256 of the key")
+    last_used_since_start: datetime | None = Field(
+        default=None, description="Last authenticated a caller, since this process started"
+    )
+
+
+class AuthSigningKeys(BaseModel):
+    """The identity provider's signing keys OrionBelt verifies tokens with."""
+
+    source: str = Field(description="The JWKS URL, or OIDC_JWKS_FILE")
+    count: int
+    loaded_at: datetime | None = None
+
+
+class AuthOidcStatus(BaseModel):
+    """What AUTH_MODE=oidc verifies tokens against, and where it talks to the IdP."""
+
+    issuer: str
+    audience: str
+    authorization_endpoint: str | None = None
+    token_endpoint: str | None = None
+    revocation_endpoint: str | None = None
+    signing_keys: AuthSigningKeys
+    scope_claims: list[str]
+    scope_map: dict[str, list[str]]
+    client_id: str | None = Field(
+        default=None, description="OrionBelt's own client at the IdP (OIDC_CLIENT_ID)"
+    )
+
+
+class AuthBiTokensStatus(BaseModel):
+    """The BI token store."""
+
+    enabled: bool
+    store: str | None = None
+    active: int = Field(default=0, description="Neither revoked nor expired")
+    with_warehouse_sign_in: int = 0
+    default_days: int | None = None
+    max_days: int | None = None
+
+
+class AuthWarehouseSignIn(BaseModel):
+    """Whether a new BI token gets a warehouse sign-in, and what it still needs."""
+
+    ready: bool
+    missing: list[str]
+
+
+class AuthUserLoginSource(BaseModel):
+    """A data source that logs in as the user."""
+
+    name: str
+    login: str = Field(description="How it gets the user's warehouse token")
+
+
+class AuthSurfaceStatus(BaseModel):
+    """A network surface besides REST."""
+
+    enabled: bool
+    tls: bool
+    login: str | None = Field(default=None, description="How a client logs in")
+
+
+class AuthSurfaces(BaseModel):
+    """Flight SQL, the Postgres wire protocol, and the sign-in pages."""
+
+    flight: AuthSurfaceStatus
+    pgwire: AuthSurfaceStatus
+    tokens_page: bool = Field(description="The /tokens page is served")
+    swagger_sign_in: bool = Field(description="/docs signs in with the IdP")
+
+
+class AuthStatus(BaseModel):
+    """Response of GET /v1/auth/status: how authentication is set up. Never a secret."""
+
+    mode: str
+    api_key_header: str
+    service_keys: list[AuthKeyStatus]
+    oidc: AuthOidcStatus | None = None
+    bi_tokens: AuthBiTokensStatus
+    warehouse_sign_in: AuthWarehouseSignIn
+    user_login_sources: list[AuthUserLoginSource]
+    surfaces: AuthSurfaces
+
+
 class BiTokensRevoked(BaseModel):
     """Response of DELETE /v1/auth/tokens?owner=..."""
 

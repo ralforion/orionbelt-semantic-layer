@@ -54,7 +54,18 @@ def test_multiple_keys_one_matches() -> None:
     ex = ScramServerExchange(["other-key-aaaaaaaaaaaa", KEY, "third-key-bbbbbbbbbbbb"])
     bare = "n=,r=zzz"
     server_first = ex.handle_client_first(f"n,,{bare}")
+    assert ex.matched_key is None
     assert ex.handle_client_final(_client_final(KEY, bare, server_first)).startswith("v=")
+    assert ex.matched_key == KEY  # the server records that key's use
+
+
+def test_a_stored_verifier_matches_no_key() -> None:
+    salt = b"0123456789abcdef"
+    ex = ScramServerExchange.with_verifier(ScramVerifier(salt, 4096, *scram_keys(KEY, salt, 4096)))
+    bare = "n=,r=stored"
+    server_first = ex.handle_client_first(f"n,,{bare}")
+    ex.handle_client_final(_client_final(KEY, bare, server_first))
+    assert ex.matched_key is None  # a BI token, not an API key
 
 
 def test_a_stored_verifier_checks_the_password_without_holding_it() -> None:

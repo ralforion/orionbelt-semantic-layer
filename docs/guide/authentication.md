@@ -395,6 +395,54 @@ export API_KEYS="$NEW_KEY"            # remove the old key; redeploy
 Editing the variable and restarting is the revocation mechanism — there is no
 separate revocation endpoint at this scale.
 
+Before you remove the old key, check that nothing still uses it: its
+`last_used_since_start` in [`GET /v1/auth/status`](#checking-the-setup).
+
+## Checking the setup
+
+### Key ids
+
+OrionBelt never shows an API key. It names each one by its **id**: eight hex
+characters of a SHA-256 of the key, in startup lines, error messages and the
+status endpoint. The id says nothing about the key. To find which key an id
+is, compute it:
+
+```bash
+python3 -c "import hashlib, sys; print(hashlib.sha256(b'obsl-key:' + sys.argv[1].encode()).hexdigest()[:8])" "$KEY"
+```
+
+### At startup
+
+OrionBelt logs one line per part, for example:
+
+```text
+Auth: oidc; issuer https://login.example.com/realms/obsl; audience obsl; 2 service key(s) (3f2a9c41, 77b0e1d2)
+Auth: oidc keys loaded from https://login.example.com/realms/obsl/protocol/openid-connect/certs (2 key(s))
+Auth: BI tokens on (store ./tokens/bi_tokens.sqlite: 14 active, 9 with a warehouse sign-in; warehouse sign-ins can be made)
+Auth: data sources that log in as the user: sf (snowflake, token_exchange), dbx (databricks, token federation)
+pgwire surface enabled on 0.0.0.0:5432 (AUTH_MODE=oidc, SCRAM-SHA-256, TLS off, semantic=True)
+Flight SQL server started on port 8815 (vendor=duckdb, AUTH_MODE=oidc)
+```
+
+### `GET /v1/auth/status`
+
+An admin (`obsl:admin`) gets the same, and more, as JSON. It never contains
+a secret:
+
+| Part | What it says |
+|---|---|
+| `mode`, `api_key_header` | `AUTH_MODE`, and the header API keys are read from |
+| `service_keys` | Each API key's id, and when it last authenticated a caller since OrionBelt started (`null`: not since then). Kept in memory only: a restart starts over |
+| `oidc` | Issuer, audience, the sign-in, token and revocation endpoints in use (set or discovered), the signing keys (where from, how many, when loaded), the scope claims and map, OrionBelt's own client ID |
+| `bi_tokens` | On or off, the store, how many tokens are active and how many hold a warehouse sign-in, the default and longest lifetime |
+| `warehouse_sign_in` | Whether a new BI token gets a warehouse sign-in, or what it still needs |
+| `user_login_sources` | The data sources that log in as the user, and how each gets the user's warehouse token |
+| `surfaces` | Flight SQL and the Postgres wire protocol (on, TLS, how a client logs in), the `/tokens` page, and the sign-in on `/docs` |
+
+```bash
+curl -s https://obsl.example.com/v1/auth/status -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
 ## Where keys live
 
 `API_KEYS` is read from the environment; choose the mechanism that fits your

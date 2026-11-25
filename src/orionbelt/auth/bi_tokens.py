@@ -383,6 +383,18 @@ class TokenStore:
                 is not None
             )
 
+    def counts(self) -> tuple[int, int]:
+        """Tokens neither revoked nor expired, and how many of them hold a warehouse sign-in."""
+        with self._connection() as conn:
+            if conn is None:
+                return 0, 0
+            active, signed_in = conn.execute(
+                "SELECT COUNT(*), COUNT(idp_refresh_ct) FROM bi_tokens "
+                "WHERE revoked_at IS NULL AND expires_at > ?",
+                (time.time(),),
+            ).fetchone()
+        return int(active), int(signed_in)
+
     def sweep(self) -> int:
         """Drop the sign-ins of revoked and expired tokens; how many were (at startup).
 

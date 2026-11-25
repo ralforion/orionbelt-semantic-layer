@@ -6,13 +6,8 @@ import pytest
 
 from orionbelt.auth import OidcConfig, init_auth, reset_auth
 from orionbelt.auth.jwt_verify import JwtVerifier
-from orionbelt.pgwire.auth import (
-    MECH_CLEARTEXT,
-    MECH_SCRAM,
-    authenticate,
-    password_required,
-    select_mechanism,
-)
+from orionbelt.auth.pgwire_login import MECH_CLEARTEXT, MECH_SCRAM, select_mechanism
+from orionbelt.pgwire.auth import authenticate, password_required
 from orionbelt.pgwire.protocol import StartupMessage
 from tests.oidc_tokens import AUDIENCE, ISSUER, CountingFetch, FakeIssuer
 

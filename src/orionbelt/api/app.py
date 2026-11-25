@@ -48,6 +48,7 @@ from orionbelt.api.openapi_security import (
     swagger_init_oauth,
 )
 from orionbelt.api.routers import (
+    auth_status,
     cache_stats,
     composables,
     convert,
@@ -96,7 +97,8 @@ from orionbelt.service.session_manager import SessionManager
 from orionbelt.service.user_login import (
     DataSourceSignInError,
     SignInInteractionRequiredError,
-    any_source_logs_in_as_user,
+    describe_login,
+    user_login_sources,
 )
 from orionbelt.service.value_search import ValueSearchConfig
 from orionbelt.settings import Settings
@@ -396,12 +398,19 @@ def _refuse_unusable_user_login() -> None:
 
 
 def _report_bi_token_sign_in() -> None:
-    """Say at startup whether BI tokens can reach data sources that log in as the user.
+    """Name the data sources that log in as the user, and whether BI tokens reach them.
 
     Not a reason to refuse the start: without the pieces, those sources
     refuse BI tokens, as they did before warehouse sign-ins existed.
     """
-    if get_mode() != MODE_OIDC or get_token_store() is None or not any_source_logs_in_as_user():
+    sources = user_login_sources()
+    if get_mode() != MODE_OIDC or not sources:
+        return
+    logger.info(
+        "Auth: data sources that log in as the user: %s",
+        ", ".join(f"{source.name} ({describe_login(source)})" for source in sources),
+    )
+    if get_token_store() is None:
         return
     missing = warehouse_sign_in_missing()
     if missing:
@@ -752,9 +761,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
             settings.flight_enabled = True
             logger.info(
-                "Flight SQL server started on port %d (vendor=%s)",
+                "Flight SQL server started on port %d (vendor=%s, AUTH_MODE=%s)",
                 settings.flight_port,
                 settings.db_vendor,
+                get_mode(),
             )
             # Refresh cached deps so /v1/settings and query gating
             # reflect the auto-detected Flight state.
@@ -995,6 +1005,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(settings_router.router, tags=["settings"])
     v1.include_router(cache_stats.router, prefix="/cache", tags=["cache"])
     v1.include_router(tokens.router, prefix="/auth/tokens", tags=["auth"])
+    v1.include_router(auth_status.router, prefix="/auth", tags=["auth"])
     app.include_router(token_page.build_router(settings))
     app.include_router(v1)
 
