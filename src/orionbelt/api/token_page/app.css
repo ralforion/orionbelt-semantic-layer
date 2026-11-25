@@ -68,6 +68,7 @@ button {
 button.secondary { background: transparent; color: var(--accent); }
 .hint { color: var(--muted); font-size: 0.9em; }
 .error { color: var(--error); }
+.notice { color: var(--muted); }
 .created {
   margin-top: 1rem;
   padding: 0.8rem 1rem;
