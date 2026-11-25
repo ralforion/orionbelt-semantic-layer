@@ -917,3 +917,71 @@ class TestBigQuery:
         assert kwargs["access_token"] == "dbx:idp-token-of-alice"
         assert kwargs["credentials_file"] is None  # the service account key stays unused
         assert kwargs["project"] == "analytics-prod"
+
+
+class TestSnowflakeWithABiToken:
+    """Entra ID: a BI token's refresh token is redeemed for the warehouse's scope.
+
+    Entra's refresh token belongs to the user and OBSL's client, not to one
+    resource, so it yields the Snowflake token directly: no on-behalf-of step.
+    """
+
+    def test_it_is_redeemed_for_the_source_s_scope_and_the_rotated_one_kept(
+        self, lake: DataSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import secrets
+        from urllib.parse import quote
+
+        from orionbelt.auth import get_token_store
+
+        config = OidcConfig(
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            token_endpoint=TOKEN_ENDPOINT,
+            client=OidcClient(client_id="obsl-app", client_secret=CLIENT_SECRET),
+            token_store_path=str(tmp_path / "bi.sqlite"),
+            token_store_keys=(secrets.token_bytes(32),),
+        )
+        init_auth(
+            auth_mode="oidc",
+            oidc=config,
+            verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+        )
+        store = get_token_store()
+        assert store is not None
+        _, record = store.create(
+            owner_sub="alice",
+            owner_email=None,
+            label="Tableau",
+            scopes=frozenset({SCOPE_READ}),
+            days=90,
+            refresh_token="rt-entra-1",
+        )
+        posted: list[tuple[str, dict[str, str], Any]] = []
+
+        def post(url: str, data: dict[str, str], timeout: float, auth: Any = None) -> Any:
+            posted.append((url, data, auth))
+            body = {"access_token": "sf-token", "refresh_token": "rt-entra-2", "expires_in": 3600}
+            return SimpleNamespace(status_code=200, json=lambda: body)
+
+        monkeypatch.setattr(user_login.httpx, "post", post)
+        user_login.reset_tokens()
+        principal = Principal(
+            kind="user", sub="alice", scopes=frozenset({SCOPE_READ}), token_id=record.id
+        )
+        binding = bind_principal(principal)
+        try:
+            assert user_login.database_token(lake) == "sf-token"
+        finally:
+            reset_principal(binding)
+            reset_auth()
+            user_login.reset_tokens()
+        ((url, form, auth),) = posted
+        assert url == TOKEN_ENDPOINT
+        assert form == {
+            "grant_type": "refresh_token",
+            "refresh_token": "rt-entra-1",
+            "scope": "api://snowflake-app/session:role-any",
+        }
+        assert auth == ("obsl-app", quote(CLIENT_SECRET, safe=""))
+        assert store.refresh_token(record.id) == "rt-entra-2"

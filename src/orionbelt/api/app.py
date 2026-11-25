@@ -80,17 +80,24 @@ from orionbelt.auth import (
     get_mode,
     get_oidc_client,
     get_token_endpoint,
+    get_token_store,
     parse_scope_claims,
     parse_scope_map,
     resolve_mode,
+    warehouse_sign_in_missing,
 )
+from orionbelt.auth.sealing import parse_keys as parse_store_keys
 from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor, metrics
 from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.federated_executor import FederationLimits, spill_directory
 from orionbelt.service.federated_executor import configure as configure_federation
 from orionbelt.service.session_manager import SessionManager
-from orionbelt.service.user_login import DataSourceSignInError, SignInInteractionRequiredError
+from orionbelt.service.user_login import (
+    DataSourceSignInError,
+    SignInInteractionRequiredError,
+    any_source_logs_in_as_user,
+)
 from orionbelt.service.value_search import ValueSearchConfig
 from orionbelt.settings import Settings
 
@@ -227,8 +234,47 @@ def oidc_config(settings: Settings) -> OidcConfig | None:
         token_max_days=settings.token_max_days,
         authorization_endpoint=settings.oidc_authorization_endpoint.strip(),
         token_endpoint=settings.oidc_token_endpoint.strip(),
+        revocation_endpoint=settings.oidc_revocation_endpoint.strip(),
         client=_oidc_client(settings),
+        token_store_keys=_token_store_keys(settings),
+        consent_scopes=_consent_scopes(settings),
+        consent_redirect_uri=settings.oidc_consent_redirect_uri.strip(),
     )
+
+
+def _token_store_keys(settings: Settings) -> tuple[bytes, ...]:
+    """The keys BI tokens' warehouse sign-ins are encrypted with (``TOKEN_STORE_KEY``).
+
+    Raises ``AuthConfigError`` when both settings are set, the file cannot be
+    read, or a key is not 32 bytes of base64.
+    """
+    raw = settings.token_store_key.get_secret_value().strip()
+    key_file = settings.token_store_key_file.strip()
+    if raw and key_file:
+        raise AuthConfigError("Set TOKEN_STORE_KEY or TOKEN_STORE_KEY_FILE, not both.")
+    if key_file:
+        try:
+            raw = Path(key_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise AuthConfigError(
+                f"TOKEN_STORE_KEY_FILE {key_file!r} cannot be read ({exc.strerror})."
+            ) from None
+        if not raw:
+            raise AuthConfigError(f"TOKEN_STORE_KEY_FILE {key_file!r} is empty.")
+        return parse_store_keys(raw, setting="TOKEN_STORE_KEY_FILE")
+    return parse_store_keys(raw)
+
+
+def _consent_scopes(settings: Settings) -> str:
+    """The scopes of a warehouse sign-in: ``OIDC_CONSENT_SCOPES``, else the page's and
+    ``offline_access``."""
+    explicit = settings.oidc_consent_scopes.split()
+    if explicit:
+        return " ".join(explicit)
+    scopes = settings.oidc_tokens_scopes.split() or ["openid"]
+    if "offline_access" not in scopes:
+        scopes.append("offline_access")
+    return " ".join(scopes)
 
 
 def _oidc_client(settings: Settings) -> OidcClient | None:
@@ -347,6 +393,25 @@ def _refuse_unusable_user_login() -> None:
             "token endpoint is unknown: set OIDC_TOKEN_ENDPOINT (OIDC_JWKS_URI and "
             "OIDC_JWKS_FILE skip the discovery document that names it)."
         )
+
+
+def _report_bi_token_sign_in() -> None:
+    """Say at startup whether BI tokens can reach data sources that log in as the user.
+
+    Not a reason to refuse the start: without the pieces, those sources
+    refuse BI tokens, as they did before warehouse sign-ins existed.
+    """
+    if get_mode() != MODE_OIDC or get_token_store() is None or not any_source_logs_in_as_user():
+        return
+    missing = warehouse_sign_in_missing()
+    if missing:
+        logger.warning(
+            "Data sources that log in as the user refuse BI tokens: a BI token's warehouse "
+            "sign-in needs %s.",
+            ", ".join(missing),
+        )
+    else:
+        logger.info("BI tokens created on /tokens take a warehouse sign-in along")
 
 
 def _start_duckdb_workers() -> None:
@@ -600,6 +665,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         oidc=oidc_config(settings),
     )
     _refuse_unusable_user_login()
+    _report_bi_token_sign_in()
 
     # Start Arrow Flight SQL server only when FLIGHT_ENABLED=true. It is an
     # extra network surface (binds 0.0.0.0), so it must be opted into

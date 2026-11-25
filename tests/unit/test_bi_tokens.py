@@ -5,6 +5,7 @@ See design/PLAN_bi_tokens.md (decisions T1-T9) and docs/guide/bi-tokens.md.
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
 import stat
 from collections.abc import Iterator
@@ -26,6 +27,7 @@ from orionbelt.auth import (
 from orionbelt.auth.bi_tokens import TokenStore, is_bi_token, scram_keys, token_id_of_user
 from orionbelt.auth.errors import AuthInvalidError
 from orionbelt.auth.jwt_verify import JwtVerifier
+from orionbelt.auth.sealing import Sealer
 from orionbelt.pgwire.auth import authenticate as pgwire_authenticate
 from orionbelt.pgwire.protocol import StartupMessage
 from tests.oidc_tokens import AUDIENCE, ISSUER, CountingFetch, FakeIssuer
@@ -319,3 +321,140 @@ class TestNotExchangedForAWarehouseToken:
         by_token = Principal(kind="user", sub="alice", scopes=READ, token_id="a" * 12)
         assert user_credential_of(context(signed_in, "the-idp-token")) == "the-idp-token"
         assert user_credential_of(context(by_token, "obsl_tok_...")) is None
+
+
+@pytest.fixture
+def sealed_store(tmp_path: Path) -> tuple[TokenStore, list[str]]:
+    """A store that keeps warehouse sign-ins, and the refresh tokens its revocations drop."""
+    revoked: list[str] = []
+    store = TokenStore(
+        str(tmp_path / "bi.sqlite"),
+        sealer=Sealer([secrets.token_bytes(32)]),
+        on_sign_in_revoked=revoked.append,
+    )
+    return store, revoked
+
+
+def _with_sign_in(store: TokenStore, refresh_token: str, owner: str = "alice") -> str:
+    _, record = store.create(
+        owner_sub=owner,
+        owner_email=None,
+        label="Tableau",
+        scopes=READ,
+        days=90,
+        refresh_token=refresh_token,
+    )
+    assert record.warehouse_sign_in
+    return record.id
+
+
+class TestWarehouseSignIn:
+    """A token may hold the identity provider's refresh token: encrypted, and dropped with it."""
+
+    def test_it_is_kept_encrypted_and_read_back(
+        self, sealed_store: tuple[TokenStore, list[str]]
+    ) -> None:
+        store, _ = sealed_store
+        token_id = _with_sign_in(store, "rt-alice-1")
+        assert store.refresh_token(token_id) == "rt-alice-1"
+        assert store.has_sign_in(token_id)
+        assert [t.warehouse_sign_in for t in store.list_tokens("alice")] == [True]
+        raw = sqlite3.connect(store.path).execute("SELECT * FROM bi_tokens").fetchall()
+        assert "rt-alice-1" not in repr(raw)
+
+    def test_a_token_without_one(self, sealed_store: tuple[TokenStore, list[str]]) -> None:
+        store, _ = sealed_store
+        _, token_id = _create(store)
+        assert store.refresh_token(token_id) is None
+        assert not store.has_sign_in(token_id)
+        assert [t.warehouse_sign_in for t in store.list_tokens("alice")] == [False]
+
+    def test_without_a_key_none_is_kept(self, store: TokenStore) -> None:
+        with pytest.raises(ValueError, match="TOKEN_STORE_KEY"):
+            store.create(
+                owner_sub="alice",
+                owner_email=None,
+                label="Tableau",
+                scopes=READ,
+                days=90,
+                refresh_token="rt",
+            )
+
+    def test_a_rotated_refresh_token_replaces_the_last_one(
+        self, sealed_store: tuple[TokenStore, list[str]]
+    ) -> None:
+        store, _ = sealed_store
+        token_id = _with_sign_in(store, "rt-1")
+        store.replace_refresh_token(token_id, "rt-2")
+        assert store.refresh_token(token_id) == "rt-2"
+
+    def test_a_revoked_token_s_sign_in_is_dropped_and_revoked_at_the_idp(
+        self, sealed_store: tuple[TokenStore, list[str]]
+    ) -> None:
+        store, revoked = sealed_store
+        token_id = _with_sign_in(store, "rt-1")
+        assert store.revoke(token_id, owner_sub="alice")
+        assert revoked == ["rt-1"]
+        assert store.refresh_token(token_id) is None
+        store.replace_refresh_token(token_id, "rt-2")  # a refresh finishing late
+        assert store.refresh_token(token_id) is None
+
+    def test_offboarding_drops_every_sign_in_of_the_owner(
+        self, sealed_store: tuple[TokenStore, list[str]]
+    ) -> None:
+        store, revoked = sealed_store
+        first = _with_sign_in(store, "rt-a")
+        second = _with_sign_in(store, "rt-b")
+        bobs = _with_sign_in(store, "rt-bob", owner="bob")
+        assert store.revoke_owner("alice") == 2
+        assert sorted(revoked) == ["rt-a", "rt-b"]
+        assert store.refresh_token(first) is None and store.refresh_token(second) is None
+        assert store.refresh_token(bobs) == "rt-bob"
+
+    def test_one_the_idp_refused_is_dropped_without_revoking(
+        self, sealed_store: tuple[TokenStore, list[str]]
+    ) -> None:
+        store, revoked = sealed_store
+        token_id = _with_sign_in(store, "rt-1")
+        store.drop_refresh_token(token_id)
+        assert store.refresh_token(token_id) is None
+        assert revoked == []
+
+    def test_an_expired_token_s_sign_in_is_dropped(
+        self, sealed_store: tuple[TokenStore, list[str]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, _ = sealed_store
+        expiring = _with_sign_in(store, "rt-1")
+        swept = _with_sign_in(store, "rt-2")
+        later = bi_tokens.time.time() + 91 * 86400
+        monkeypatch.setattr(bi_tokens.time, "time", lambda: later)
+        assert store.refresh_token(expiring) is None
+        assert store.sweep() == 1  # the other one
+        monkeypatch.undo()
+        assert not store.has_sign_in(expiring) and not store.has_sign_in(swept)
+
+    def test_a_sealed_value_moved_to_another_row_does_not_open(
+        self, sealed_store: tuple[TokenStore, list[str]]
+    ) -> None:
+        store, _ = sealed_store
+        alices = _with_sign_in(store, "rt-alice")
+        bobs = _with_sign_in(store, "rt-bob", owner="bob")
+        with sqlite3.connect(store.path) as conn:
+            conn.execute(
+                "UPDATE bi_tokens SET (idp_refresh_ct, idp_refresh_key) = "
+                "(SELECT idp_refresh_ct, idp_refresh_key FROM bi_tokens WHERE id = ?) "
+                "WHERE id = ?",
+                (alices, bobs),
+            )
+        assert store.refresh_token(bobs) is None
+
+    def test_a_store_written_before_gets_the_columns(self, tmp_path: Path) -> None:
+        path = tmp_path / "bi.sqlite"
+        old = TokenStore(str(path))
+        _, token_id = _create(old)
+        with sqlite3.connect(path) as conn:
+            for column in ("idp_refresh_ct", "idp_refresh_key", "idp_refresh_at"):
+                conn.execute(f"ALTER TABLE bi_tokens DROP COLUMN {column}")
+        store = TokenStore(str(path), sealer=Sealer([secrets.token_bytes(32)]))
+        assert [t.id for t in store.list_tokens("alice")] == [token_id]
+        assert _with_sign_in(store, "rt-1") != token_id

@@ -20,6 +20,13 @@ The caller's token is read from the request context
 (:func:`orionbelt.auth.current_credential`); it is never logged, cached or
 stored. Exchanged tokens are kept in process memory per (data source, user)
 until shortly before they expire.
+
+A BI tool's caller holds a BI token, which is no identity provider token. A
+BI token created with a warehouse sign-in holds the identity provider's
+refresh token for its owner (``auth/consent.py``); OBSL redeems it, as its
+own client, for the owner's token and exchanges that as above. The minted
+token is kept in memory per BI token until shortly before it expires; a
+refresh token the identity provider rotates is stored before it is used.
 """
 
 from __future__ import annotations
@@ -40,8 +47,11 @@ from orionbelt.auth import (
     OidcClient,
     current_credential,
     current_principal,
+    get_consent_scopes,
     get_oidc_client,
     get_token_endpoint,
+    get_token_store,
+    warehouse_sign_in_missing,
 )
 
 logger = logging.getLogger("orionbelt.user_login")
@@ -98,10 +108,29 @@ class SignInRequiredError(DataSourceSignInError):
 
 
 class SignInRefusedError(DataSourceSignInError):
-    """The warehouse's token service refused to issue a token for this user."""
+    """The warehouse's token service refused to issue a token for this user.
+
+    ``error`` is the OAuth error code it answered with, when it sent one.
+    """
 
     code = "DATA_SOURCE_SIGN_IN_REFUSED"
     status = 403
+
+    def __init__(self, message: str, error: str | None = None) -> None:
+        super().__init__(message)
+        self.error = error
+
+
+class BiTokenSignInEndedError(DataSourceSignInError):
+    """A BI token's warehouse sign-in is over: the identity provider no longer honours it.
+
+    Revoked there, the user disabled or gone, unused for too long, or a sign-in
+    policy that wants the user at the sign-in page again. A new BI token
+    signs in anew.
+    """
+
+    code = "BI_TOKEN_SIGN_IN_ENDED"
+    status = 401
 
 
 class SignInInteractionRequiredError(DataSourceSignInError):
@@ -132,22 +161,72 @@ def logs_in_as_user(source: Any) -> bool:
     return getattr(source, "login", SERVICE_LOGIN) == USER_LOGIN
 
 
-def _caller() -> tuple[str, str]:
-    """The signed-in caller's subject and token. Raises SignInRequiredError."""
+def any_source_logs_in_as_user() -> bool:
+    """Whether a configured data source logs in as the user (``DB_<NAME>_AUTH=user``)."""
+    try:
+        from ob_flight.datasources import DataSourceConfigError, configured_datasources
+    except ImportError:  # no ob-flight-extension: no named data sources
+        return False
+    try:
+        return any(logs_in_as_user(source) for source in configured_datasources())
+    except DataSourceConfigError:
+        return False
+
+
+def bi_token_sign_in_available() -> bool:
+    """Whether a new BI token gets a warehouse sign-in: a source needs one, and it can be made."""
+    return not warehouse_sign_in_missing() and any_source_logs_in_as_user()
+
+
+@dataclass(frozen=True)
+class _Caller:
+    """Who a query on a ``user`` source runs as, and what stands for their sign-in."""
+
+    sub: str
+    #: The identity provider token the request came with; else None, and
+    credential: str | None
+    #: the BI token whose warehouse sign-in stands in for it.
+    token_id: str | None = None
+
+
+def _caller() -> _Caller:
+    """The signed-in caller. Raises SignInRequiredError."""
     principal = current_principal()
     credential = current_credential()
-    if principal is None or principal.sub is None or not credential:
+    if principal is not None and principal.sub is not None:
+        if credential:
+            return _Caller(principal.sub, credential)
+        if principal.token_id is not None and _holds_sign_in(principal.token_id):
+            return _Caller(principal.sub, None, principal.token_id)
+    if principal is not None and principal.token_id is not None:
+        missing = warehouse_sign_in_missing()
+        if missing:
+            raise SignInRequiredError(
+                "This data source logs in as the signed-in user, and BI tokens on this "
+                f"server hold no warehouse sign-in (it needs {', '.join(missing)}): call "
+                "with the identity provider's access token."
+            )
         raise SignInRequiredError(
-            "This data source logs in as the signed-in user; call with the identity "
-            "provider's access token (AUTH_MODE=oidc), not an API key or a BI token."
+            "This data source logs in as the signed-in user, and this BI token holds no "
+            "warehouse sign-in: create a new BI token on the /tokens page."
         )
-    return principal.sub, credential
+    raise SignInRequiredError(
+        "This data source logs in as the signed-in user; call with the identity "
+        "provider's access token (AUTH_MODE=oidc) or a BI token, not an API key."
+    )
+
+
+def _holds_sign_in(token_id: str) -> bool:
+    with _tokens_lock:
+        if token_id in _minted:
+            return True
+    store = get_token_store()
+    return store is not None and store.has_sign_in(token_id)
 
 
 def caller_scope() -> str:
     """The user part of a cache scope: a hash of the caller, never the raw ``sub``."""
-    sub, _ = _caller()
-    return hashlib.sha256(f"sub:{sub}".encode()).hexdigest()[:32]
+    return hashlib.sha256(f"sub:{_caller().sub}".encode()).hexdigest()[:32]
 
 
 def max_cache_ttl(source: Any) -> float | None:
@@ -171,6 +250,11 @@ class _Issued:
 
 _tokens: dict[tuple[str, str], _Issued] = {}
 _locks: dict[tuple[str, str], threading.Lock] = {}
+#: A BI token's owner's identity provider token, minted from its warehouse
+#: sign-in, by token id; and one lock per BI token, so its refresh token is
+#: redeemed (and a rotated one stored) once at a time.
+_minted: dict[str, _Issued] = {}
+_sign_in_locks: dict[str, threading.Lock] = {}
 _tokens_lock = threading.Lock()
 
 
@@ -179,6 +263,8 @@ def reset_tokens() -> None:
     with _tokens_lock:
         _tokens.clear()
         _locks.clear()
+        _minted.clear()
+        _sign_in_locks.clear()
 
 
 @dataclass(frozen=True)
@@ -210,8 +296,8 @@ def database_token(source: Any) -> str:
 
 
 def _database_login(source: Any) -> _Issued:
-    sub, credential = _caller()
-    key = (source.fingerprint(), sub)
+    caller = _caller()
+    key = (source.fingerprint(), caller.sub)
     with _tokens_lock:
         issued = _tokens.get(key)
         lock = _locks.setdefault(key, threading.Lock())
@@ -222,7 +308,7 @@ def _database_login(source: Any) -> _Issued:
             issued = _tokens.get(key)
         if issued is not None and issued.expires_at - _RENEW_MARGIN_SECONDS > time.monotonic():
             return issued
-        token, expires_in = _exchange(source, credential)
+        token, expires_in = _exchange_as(source, caller)
         issued = _Issued(token, time.monotonic() + expires_in)
         with _tokens_lock:
             now = time.monotonic()
@@ -255,6 +341,87 @@ def _login_overrides(source: Any, token: str) -> dict[str, Any]:
     raise SignInRefusedError(  # configured_datasources refuses this; defence in depth
         f"Data source '{source.name}' ({source.dialect}) cannot log in as the user."
     )
+
+
+def _exchange_as(source: Any, caller: _Caller) -> tuple[str, float]:
+    """A warehouse token for ``caller``: from their request's token, or their BI token's."""
+    if caller.credential is not None:
+        return _exchange(source, caller.credential)
+    token_id = caller.token_id or ""  # _caller sets one of the two
+    if source.dialect == "snowflake" and source.oauth_exchange() == ENTRA_OBO:
+        # Entra's refresh token is bound to the user and OBSL's client, not to
+        # one resource: redeemed for the warehouse's scope, it yields the
+        # warehouse token itself, with no on-behalf-of step.
+        with _sign_in_lock(token_id):
+            return _redeem_sign_in(token_id, source.oauth_scope() or "", source)
+    return _exchange(source, _bi_token_user_token(token_id, source))
+
+
+def _sign_in_lock(token_id: str) -> threading.Lock:
+    with _tokens_lock:
+        return _sign_in_locks.setdefault(token_id, threading.Lock())
+
+
+def _bi_token_user_token(token_id: str, source: Any) -> str:
+    """The BI token's owner's identity provider token, minted from its warehouse sign-in."""
+    lock = _sign_in_lock(token_id)
+    with _tokens_lock:
+        issued = _minted.get(token_id)
+    if issued is not None and issued.expires_at - _RENEW_MARGIN_SECONDS > time.monotonic():
+        return issued.token
+    with lock:
+        with _tokens_lock:
+            issued = _minted.get(token_id)
+        if issued is not None and issued.expires_at - _RENEW_MARGIN_SECONDS > time.monotonic():
+            return issued.token
+        token, expires_in = _redeem_sign_in(token_id, get_consent_scopes(), source)
+        issued = _Issued(token, time.monotonic() + expires_in)
+        with _tokens_lock:
+            now = time.monotonic()
+            for stale in [k for k, v in _minted.items() if v.expires_at <= now]:
+                del _minted[stale]
+                if stale != token_id:
+                    _sign_in_locks.pop(stale, None)
+            _minted[token_id] = issued
+        return token
+
+
+def _redeem_sign_in(token_id: str, scope: str, source: Any) -> tuple[str, float]:
+    """Redeem the BI token's refresh token at the identity provider. Holds its sign-in lock.
+
+    A refresh token the identity provider rotates is stored before the new
+    token is used: some (Okta) end the whole sign-in when an old one comes
+    back. One it refuses (``invalid_grant``, or a sign-in the user must go
+    through again) is dropped: the BI token's sign-in has ended.
+    """
+    store = get_token_store()
+    client, endpoint = _client_at_idp(source)
+    refresh_token = store.refresh_token(token_id) if store is not None else None
+    if store is None or refresh_token is None:
+        raise BiTokenSignInEndedError(
+            "This BI token's warehouse sign-in has ended: create a new BI token on the "
+            "/tokens page."
+        )
+    form = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    if scope:
+        form["scope"] = scope
+    credentials = (quote(client.client_id, safe=""), quote(client.client_secret, safe=""))
+    try:
+        body = _token_response(source, endpoint, form, auth=credentials)
+    except (SignInRefusedError, SignInInteractionRequiredError) as exc:
+        if isinstance(exc, SignInRefusedError) and exc.error != "invalid_grant":
+            raise  # OBSL's client or its scope, not the user's sign-in
+        store.drop_refresh_token(token_id)
+        with _tokens_lock:
+            _minted.pop(token_id, None)
+        raise BiTokenSignInEndedError(
+            f"{exc.message} This BI token's warehouse sign-in has ended: create a new BI "
+            "token on the /tokens page."
+        ) from None
+    rotated = body.get("refresh_token")
+    if isinstance(rotated, str) and rotated and rotated != refresh_token:
+        store.replace_refresh_token(token_id, rotated)
+    return _issued_token(source, body)
 
 
 def _exchange(source: Any, subject_token: str) -> tuple[str, float]:
@@ -392,6 +559,13 @@ def _post_token_request(
     ``auth`` is the client's HTTP Basic credentials, for a client that
     authenticates that way.
     """
+    return _issued_token(source, _token_response(source, url, form, auth=auth))
+
+
+def _token_response(
+    source: Any, url: str, form: Mapping[str, str], auth: tuple[str, str] | None = None
+) -> dict[str, Any]:
+    """POST a token request; its answer. Raises the sign-in errors. Never logs a token."""
     try:
         response = httpx.post(url, data=dict(form), auth=auth, timeout=_EXCHANGE_TIMEOUT_SECONDS)
     except httpx.HTTPError as exc:
@@ -418,9 +592,15 @@ def _post_token_request(
                 claims=claims if isinstance(claims, str) and claims else None,
             )
         raise SignInRefusedError(
-            f"Data source '{source.name}' refused to log in this user ({detail})."
+            f"Data source '{source.name}' refused to log in this user ({detail}).",
+            error=body.get("error") if isinstance(body, dict) else None,
         )
-    token = body.get("access_token") if isinstance(body, dict) else None
+    return body if isinstance(body, dict) else {}
+
+
+def _issued_token(source: Any, body: Mapping[str, Any]) -> tuple[str, float]:
+    """The access token a token service answered with, and for how many seconds."""
+    token = body.get("access_token")
     if not isinstance(token, str) or not token:
         raise SignInUnavailableError(
             f"The sign-in service of data source '{source.name}' returned no access token."

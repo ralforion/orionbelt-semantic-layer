@@ -81,6 +81,7 @@ async def test_the_page_is_told_how_to_sign_in(tmp_path: Path) -> None:
         "token_endpoint": TOKEN_ENDPOINT,
         "default_days": 30,
         "max_days": 180,
+        "warehouse_sign_in": False,  # no data source logs in as the user
     }
 
 
