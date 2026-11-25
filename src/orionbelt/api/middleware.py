@@ -180,6 +180,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         self._tokens_connect_src = tokens_connect_src
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # The app's own path, also under a root path. Read before the request
+        # is routed: a mounted app (the Gradio UI at /ui) moves the scope's
+        # root_path to its mount point on the way down.
+        path = _app_path(request.scope)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -187,9 +191,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Gradio UI requires inline scripts/styles and external fonts —
         # use a relaxed CSP for /ui paths.  Swagger UI / ReDoc need the
         # jsdelivr CDN for JS + CSS assets.  All other API endpoints get
-        # a strict policy. Paths are the app's own, also when it is mounted
-        # under a root path.
-        path = _app_path(request.scope)
+        # a strict policy.
         if path.startswith("/ui"):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
