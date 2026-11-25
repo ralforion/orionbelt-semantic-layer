@@ -135,7 +135,9 @@ def serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Serve:
         monkeypatch.setenv(name, value)
 
     @asynccontextmanager
-    async def run(*, with_key: bool = True) -> AsyncIterator[tuple[AsyncClient, Services]]:
+    async def run(
+        *, with_key: bool = True, with_page: bool = True
+    ) -> AsyncIterator[tuple[AsyncClient, Services]]:
         issuer = FakeIssuer()
         services = Services(issuer)
         monkeypatch.setattr(user_login.httpx, "post", services.post)  # every module's httpx
@@ -159,7 +161,7 @@ def serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Serve:
             oidc_revocation_endpoint=REVOKE_AT,
             oidc_client_id="obsl",
             oidc_client_secret="obsl-secret",
-            oidc_tokens_client_id="obsl-tokens",
+            oidc_tokens_client_id="obsl-tokens" if with_page else "",
             oidc_tokens_scopes="openid obsl:write",
             token_store_path=str(tmp_path / "bi-tokens.sqlite"),
             token_store_key=(
@@ -376,6 +378,17 @@ async def test_only_the_signed_in_user_starts_and_uses_a_sign_in(serve: Serve) -
         assert mine.json()["warehouse_sign_in"] is True
 
 
+async def test_the_api_flow_needs_no_token_page(serve: Serve) -> None:
+    """A client of its own runs the steps the page would: the callback is there for it."""
+    async with serve(with_page=False) as (client, services):
+        assert (await client.get("/tokens")).status_code == 404
+        created = await _bi_token(client, services)  # start, callback, status, create
+        assert (await _execute(client, _bearer(created["token"]))).status_code == 200
+        assert (await client.get("/tokens/consent.js")).status_code == 200
+        assert (await client.get("/tokens/app.css")).status_code == 200
+        assert (await client.get("/tokens/app.js")).status_code == 404  # the page's own
+
+
 async def test_a_sign_in_cancelled_at_the_idp_says_so(serve: Serve) -> None:
     async with serve() as (client, services):
         started = await client.post("/v1/auth/tokens/consents", headers=_alice(services))
@@ -397,6 +410,8 @@ async def test_without_a_key_bi_tokens_hold_no_sign_in(serve: Serve) -> None:
         refused = await client.post("/v1/auth/tokens/consents", headers=_alice(services))
         assert refused.status_code == 404
         assert refused.json()["detail"]["code"] == "WAREHOUSE_SIGN_IN_OFF"
+        callback = await client.get("/tokens/consent", params={"state": "s", "code": "c"})
+        assert callback.status_code == 404
         page = await client.get("/tokens")
         assert '"warehouse_sign_in": false' in page.text
 

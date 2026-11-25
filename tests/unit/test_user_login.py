@@ -985,3 +985,81 @@ class TestSnowflakeWithABiToken:
         }
         assert auth == ("obsl-app", quote(CLIENT_SECRET, safe=""))
         assert store.refresh_token(record.id) == "rt-entra-2"
+
+
+class TestBiTokenRefreshLocks:
+    """One redemption of a BI token's refresh token at a time, whatever else is refreshed."""
+
+    def test_another_token_s_refresh_leaves_a_running_one_s_lock_alone(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import secrets
+
+        from orionbelt.auth import get_token_store
+
+        config = OidcConfig(
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            token_endpoint=TOKEN_ENDPOINT,
+            client=OidcClient(client_id="obsl-app", client_secret=CLIENT_SECRET),
+            token_store_path=str(tmp_path / "bi.sqlite"),
+            token_store_keys=(secrets.token_bytes(32),),
+        )
+        init_auth(
+            auth_mode="oidc",
+            oidc=config,
+            verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+        )
+        store = get_token_store()
+        assert store is not None
+        ids = {}
+        for owner in ("alice", "bob"):
+            _, record = store.create(
+                owner_sub=owner,
+                owner_email=None,
+                label="Tableau",
+                scopes=frozenset({SCOPE_READ}),
+                days=90,
+                refresh_token=f"rt-{owner}",
+            )
+            ids[owner] = record.id
+        alice_at_idp, release = threading.Event(), threading.Event()
+        redeemed: list[str] = []
+
+        def post(url: str, data: dict[str, str], timeout: float, auth: Any = None) -> Any:
+            redeemed.append(data["refresh_token"])
+            if data["refresh_token"] == "rt-alice":
+                alice_at_idp.set()
+                assert release.wait(10)
+            body = {"access_token": f"at-for-{data['refresh_token']}", "expires_in": 300}
+            return SimpleNamespace(status_code=200, json=lambda: body)
+
+        monkeypatch.setattr(user_login.httpx, "post", post)
+        user_login.reset_tokens()
+        # Alice's last minted token has just expired: it is stale for Bob's cleanup.
+        user_login._minted[ids["alice"]] = user_login._Issued("old", time.monotonic() - 1)
+        source = SimpleNamespace(name="crm")
+        results: list[str] = []
+        try:
+            first = threading.Thread(
+                target=lambda: results.append(user_login._bi_token_user_token(ids["alice"], source))
+            )
+            first.start()
+            assert alice_at_idp.wait(10)
+            assert user_login._bi_token_user_token(ids["bob"], source) == "at-for-rt-bob"
+            # Alice again, for another source, while her refresh is still at the IdP.
+            second = threading.Thread(
+                target=lambda: results.append(user_login._bi_token_user_token(ids["alice"], source))
+            )
+            second.start()
+            second.join(0.3)
+            assert redeemed.count("rt-alice") == 1  # it waits, it does not redeem again
+            release.set()
+            first.join(10)
+            second.join(10)
+        finally:
+            release.set()
+            reset_auth()
+            user_login.reset_tokens()
+        assert results == ["at-for-rt-alice", "at-for-rt-alice"]
+        assert redeemed.count("rt-alice") == 1

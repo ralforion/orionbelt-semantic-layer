@@ -252,7 +252,10 @@ _tokens: dict[tuple[str, str], _Issued] = {}
 _locks: dict[tuple[str, str], threading.Lock] = {}
 #: A BI token's owner's identity provider token, minted from its warehouse
 #: sign-in, by token id; and one lock per BI token, so its refresh token is
-#: redeemed (and a rotated one stored) once at a time.
+#: redeemed (and a rotated one stored) once at a time. The locks are kept for
+#: the process's life, one per BI token used: a lock dropped while a refresh
+#: holds it would let the next query make a new one and redeem the same
+#: refresh token again, which ends the sign-in where the IdP rotates them.
 _minted: dict[str, _Issued] = {}
 _sign_in_locks: dict[str, threading.Lock] = {}
 _tokens_lock = threading.Lock()
@@ -379,9 +382,7 @@ def _bi_token_user_token(token_id: str, source: Any) -> str:
         with _tokens_lock:
             now = time.monotonic()
             for stale in [k for k, v in _minted.items() if v.expires_at <= now]:
-                del _minted[stale]
-                if stale != token_id:
-                    _sign_in_locks.pop(stale, None)
+                del _minted[stale]  # its lock stays: a refresh may hold it right now
             _minted[token_id] = issued
         return token
 

@@ -9,7 +9,9 @@ docs/guide/bi-tokens.md.
 
 ``/tokens/consent`` is where the identity provider sends the popup of a
 warehouse sign-in back (``auth/consent.py``): the server redeems the code as
-OBSL's own client, and the small page left in the popup tells the opener.
+OBSL's own client, and the small page left in the popup tells the opener. It
+is served whenever such a sign-in can be started, with or without the page:
+a client of its own may run the same steps over the API.
 """
 
 from __future__ import annotations
@@ -56,6 +58,11 @@ def build_router(settings: Settings) -> APIRouter:
         if not token_page_enabled(settings) or get_token_store() is None:
             raise HTTPException(status_code=404, detail="Not Found")
 
+    def _require_consent() -> None:
+        """A warehouse sign-in can be started (``POST /v1/auth/tokens/consents``)."""
+        if get_token_store() is None or not bi_token_sign_in_available():
+            raise HTTPException(status_code=404, detail="Not Found")
+
     @router.get("/tokens", response_class=HTMLResponse)
     def token_page() -> HTMLResponse:
         store = get_token_store()
@@ -86,7 +93,11 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.get("/tokens/app.css")
     def token_page_style() -> Response:
-        _require_enabled()
+        """The page's style, which the warehouse sign-in's page uses too."""
+        if token_page_enabled(settings):
+            _require_enabled()
+        else:
+            _require_consent()
         return Response((_FILES / "app.css").read_bytes(), media_type="text/css")
 
     @router.get("/tokens/consent", response_class=HTMLResponse)
@@ -97,7 +108,7 @@ def build_router(settings: Settings) -> APIRouter:
         error_description: str = Query(""),
     ) -> HTMLResponse:
         """Where the identity provider sends a warehouse sign-in back."""
-        _require_enabled()
+        _require_consent()
         outcome: dict[str, str]
         if error:
             outcome = {"error": f"Sign-in failed: {error_description or error}"}
@@ -115,7 +126,7 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.get("/tokens/consent.js")
     def token_consent_script() -> Response:
-        _require_enabled()
+        _require_consent()
         return Response((_FILES / "consent.js").read_bytes(), media_type="text/javascript")
 
     return router
