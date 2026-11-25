@@ -160,10 +160,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
 
     def __init__(
-        self, app: ASGIApp, docs_connect_src: Callable[[], Iterable[str]] | None = None
+        self,
+        app: ASGIApp,
+        docs_connect_src: Callable[[], Iterable[str]] | None = None,
+        tokens_connect_src: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         super().__init__(app)
         self._docs_connect_src = docs_connect_src
+        self._tokens_connect_src = tokens_connect_src
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
@@ -198,6 +202,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 f"connect-src {connect_src}; "
                 "worker-src 'self' blob:; "
                 "frame-ancestors 'none'"
+            )
+        elif path in ("/tokens", "/tokens/app.js", "/tokens/app.css"):
+            # The BI tokens page: its own script and style only, and the
+            # identity provider's token endpoint, where it exchanges the code.
+            extra = self._tokens_connect_src() if self._tokens_connect_src is not None else ()
+            connect_src = " ".join(("'self'", *extra))
+            response.headers["Content-Security-Policy"] = (
+                f"default-src 'self'; connect-src {connect_src}; frame-ancestors 'none'"
             )
         else:
             response.headers["Content-Security-Policy"] = (

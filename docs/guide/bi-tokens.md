@@ -22,6 +22,35 @@ someone has to be signed in to create one.
 
 ## Create one
 
+### On the token page
+
+Open `https://obsl.example.com/tokens`, sign in with your identity provider,
+and fill in a label, the scopes and the number of days. The page shows the
+new token once, with a **Copy** button, and lists your tokens with a
+**Revoke** button each. Your sign-in stays in the page only: reloading it
+asks you to sign in again (usually without typing anything, while your
+identity provider still knows you).
+
+The page signs in as its own client at your identity provider, separate
+from the one Swagger's `/docs` uses, so each can be allowed or turned off on
+its own. Set it up once:
+
+| Identity provider | The page's client |
+|---|---|
+| Keycloak | A public client (**Client authentication** off) with **Standard flow** on and PKCE `S256`; **Valid redirect URIs** `https://obsl.example.com/tokens`; **Web origins** `https://obsl.example.com` (the page fetches the token from the browser). Its tokens must name OrionBelt's audience, as for any sign-in. |
+| Entra ID | An app registration with the redirect URI `https://obsl.example.com/tokens` under the **Single-page application** platform; `OIDC_TOKENS_SCOPES` asks for OrionBelt's scope, `openid api://<OrionBelt app ID>/<scope>`. |
+| Okta | A **Single-Page Application** integration with the sign-in redirect URI `https://obsl.example.com/tokens`, and `https://obsl.example.com` as a trusted origin. |
+
+```bash
+OIDC_TOKENS_CLIENT_ID=<the page's client ID>
+OIDC_TOKENS_SCOPES=openid            # Entra: openid api://<OrionBelt app ID>/<scope>
+```
+
+Without `OIDC_TOKENS_CLIENT_ID` there is no page (`/tokens` answers 404);
+the API below still works.
+
+### With the API
+
 Call OrionBelt with your own sign-in token (the access token your identity
 provider gave you):
 
@@ -96,6 +125,8 @@ when they leave: `DELETE /v1/auth/tokens?owner=<their sub>`.
 | `TOKEN_STORE_PATH` | `./tokens/bi_tokens.sqlite` | The token store; empty turns BI tokens off |
 | `TOKEN_DEFAULT_DAYS` | `90` | A new token's lifetime when the request names none |
 | `TOKEN_MAX_DAYS` | `365` | The longest lifetime a request may ask for |
+| `OIDC_TOKENS_CLIENT_ID` | (none) | The token page's own public client at the identity provider; unset: no page |
+| `OIDC_TOKENS_SCOPES` | `openid` | What the token page's sign-in asks for |
 
 ## When something is refused
 

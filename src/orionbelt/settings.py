@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     oidc_client_id: str = ""
     oidc_client_secret: SecretStr = SecretStr("")
     oidc_client_secret_file: str = ""
+    # The BI tokens page (/tokens): its own public client at the IdP, separate
+    # from Swagger's, with the redirect URI <API URL>/tokens; and the scopes
+    # its sign-in asks for. Unset: no page.
+    oidc_tokens_client_id: str = ""
+    oidc_tokens_scopes: str = "openid"
     # BI tokens (AUTH_MODE=oidc): long-lived tokens users create for BI tools.
     # One SQLite file, opened when the first token is created; one OBSL
     # process (a persistent volume where the filesystem is not).

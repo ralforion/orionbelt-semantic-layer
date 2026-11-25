@@ -69,6 +69,15 @@ def docs_connect_sources(settings: Settings) -> tuple[str, ...]:
     """
     if not _swagger_sign_in(settings):
         return ()
+    return idp_connect_sources(settings)
+
+
+def idp_connect_sources(settings: Settings) -> tuple[str, ...]:
+    """The identity provider's origins a browser page signing in there fetches from.
+
+    Its issuer's and its token endpoint's (``OIDC_TOKEN_ENDPOINT``, else the
+    discovered one, which may be on another host).
+    """
     token_url = _endpoint(settings.oidc_token_endpoint, "token_endpoint") or ""
     urls = (settings.oidc_issuer.strip(), token_url)
     return tuple(dict.fromkeys(o for o in (_origin(u) for u in urls if u) if o))

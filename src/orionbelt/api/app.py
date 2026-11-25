@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from orionbelt import __version__
+from orionbelt.api import token_page
 from orionbelt.api.auth import require_auth
 from orionbelt.api.deps import (
     AppRuntime,
@@ -42,6 +43,7 @@ from orionbelt.api.middleware import (
 )
 from orionbelt.api.openapi_security import (
     docs_connect_sources,
+    idp_connect_sources,
     install_openapi_security,
     swagger_init_oauth,
 )
@@ -872,6 +874,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         SecurityHeadersMiddleware,
         docs_connect_src=functools.partial(docs_connect_sources, settings),
+        tokens_connect_src=functools.partial(idp_connect_sources, settings),
     )
     app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(
@@ -926,6 +929,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     v1.include_router(settings_router.router, tags=["settings"])
     v1.include_router(cache_stats.router, prefix="/cache", tags=["cache"])
     v1.include_router(tokens.router, prefix="/auth/tokens", tags=["auth"])
+    app.include_router(token_page.build_router(settings))
     app.include_router(v1)
 
     # Heartbeat is included OUTSIDE the auth-bearing v1 router: it carries its
