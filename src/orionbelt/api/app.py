@@ -672,7 +672,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     _refuse_unusable_user_login()
     _report_bi_token_sign_in()
-    configure_audit(settings.audit_log, settings.audit_log_path)
+    configure_audit(settings.audit_log, settings.audit_log_path, settings.audit_sink)
 
     # Start Arrow Flight SQL server only when FLIGHT_ENABLED=true. It is an
     # extra network surface (binds 0.0.0.0), so it must be opted into

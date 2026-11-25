@@ -3,7 +3,8 @@
 ``AUDIT_LOG`` turns it on: ``log`` writes each event through the logger
 ``orionbelt.audit`` (a JSON line with ``LOG_FORMAT=json`` or ``cloudrun``,
 which log shippers take as is), ``file`` appends JSON lines to
-``AUDIT_LOG_PATH``. Off by default.
+``AUDIT_LOG_PATH``, ``custom`` hands each event to an object of your own,
+made by ``AUDIT_SINK=<module>:<factory>``. Off by default.
 
 An event says who (the caller's kind, ``sub``, the API key's id or the BI
 token's id), what (a REST route template, a Flight command, a pgwire login or
@@ -18,6 +19,7 @@ send by the hundred. See design/PLAN_auth_phase6.md (A5-A7).
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import threading
@@ -33,16 +35,22 @@ from orionbelt.auth.principal import Principal
 AUDIT_OFF = "off"
 AUDIT_TO_LOG = "log"
 AUDIT_TO_FILE = "file"
-_MODES = (AUDIT_OFF, AUDIT_TO_LOG, AUDIT_TO_FILE)
+AUDIT_TO_SINK = "custom"
+_MODES = (AUDIT_OFF, AUDIT_TO_LOG, AUDIT_TO_FILE, AUDIT_TO_SINK)
 
 logger = logging.getLogger("orionbelt.auth")
 
 
 class AuditSink(Protocol):
-    """Where audit events go."""
+    """Where audit events go: ``AUDIT_SINK`` names a factory that returns one.
+
+    ``emit`` may be called from several threads at once, and should return
+    quickly: it runs inside the request it records. An exception it raises is
+    logged and the request goes on.
+    """
 
     def emit(self, event: dict[str, Any]) -> None:
-        """Record one event; may raise, the caller logs and goes on."""
+        """Record one event (a JSON-ready dict); may raise."""
 
 
 class LogSink:
@@ -71,18 +79,27 @@ class FileSink:
 _sink: AuditSink | None = None
 
 
-def configure_audit(mode: str, path: str = "") -> None:
-    """Set where events go (``AUDIT_LOG``, ``AUDIT_LOG_PATH``). Raises AuthConfigError.
+def configure_audit(mode: str, path: str = "", sink_spec: str = "") -> None:
+    """Set where events go (``AUDIT_LOG``, ``AUDIT_LOG_PATH``, ``AUDIT_SINK``).
 
-    The file sink is opened once here, so a path that cannot be written
-    refuses the start instead of losing every event.
+    Raises AuthConfigError. The file sink is opened, and a custom sink made,
+    here, so a destination that cannot work refuses the start instead of
+    losing every event.
     """
     global _sink  # noqa: PLW0603
     chosen = (mode or AUDIT_OFF).strip().lower()
     if chosen not in _MODES:
         raise AuthConfigError(f"AUDIT_LOG={mode!r} is not one of: {', '.join(_MODES)}.")
+    if sink_spec.strip() and chosen != AUDIT_TO_SINK:
+        raise AuthConfigError(
+            f"AUDIT_SINK is set, but AUDIT_LOG is {chosen!r}: set AUDIT_LOG=custom to use it."
+        )
     if chosen == AUDIT_OFF:
         _sink = None
+        return
+    if chosen == AUDIT_TO_SINK:
+        _sink = _custom_sink(sink_spec.strip())
+        logger.info("Audit: events go to AUDIT_SINK %s", sink_spec.strip())
         return
     if chosen == AUDIT_TO_LOG:
         # Its own level: LOG_LEVEL=WARNING quiets the application, not the audit.
@@ -102,6 +119,39 @@ def configure_audit(mode: str, path: str = "") -> None:
             ) from None
         _sink = sink
     logger.info("Audit: events go to %s", "the log" if chosen == AUDIT_TO_LOG else path.strip())
+
+
+def _custom_sink(spec: str) -> AuditSink:
+    """The sink ``AUDIT_SINK=<module>:<factory>`` makes. Raises AuthConfigError."""
+    module_name, separator, factory_name = spec.partition(":")
+    if not separator or not module_name or not factory_name:
+        raise AuthConfigError(
+            "AUDIT_LOG=custom needs AUDIT_SINK=<module>:<factory>, "
+            "for example mycompany.obsl_audit:make_sink."
+        )
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise AuthConfigError(
+            f"AUDIT_SINK {spec!r}: cannot import {module_name!r} ({exc})."
+        ) from None
+    factory = getattr(module, factory_name, None)
+    if not callable(factory):
+        raise AuthConfigError(
+            f"AUDIT_SINK {spec!r}: {module_name} has no callable {factory_name!r}."
+        )
+    try:
+        made = factory()
+    except Exception as exc:  # noqa: BLE001 - any failure of the factory refuses the start
+        raise AuthConfigError(
+            f"AUDIT_SINK {spec!r}: the factory failed ({type(exc).__name__}: {exc})."
+        ) from None
+    if not callable(getattr(made, "emit", None)):
+        raise AuthConfigError(
+            f"AUDIT_SINK {spec!r}: the factory returned no object with emit(event)."
+        )
+    sink: AuditSink = made
+    return sink
 
 
 def reset_audit() -> None:

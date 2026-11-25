@@ -42,8 +42,9 @@ with a comma-separated second key.
 | `AUTH_MODE` | `none` | `none`, `api_key`, or `oidc`. |
 | `API_KEYS` | — | Comma-separated valid keys (≥32 chars, high-entropy). Required when `AUTH_MODE=api_key`. |
 | `API_KEY_HEADER` | `X-API-Key` | REST header name. `Authorization: Bearer` is always accepted as a fallback. |
-| `AUDIT_LOG` | `off` | `off`, `log` or `file`: [who did what](#who-did-what). |
+| `AUDIT_LOG` | `off` | `off`, `log`, `file` or `custom`: [who did what](#who-did-what). |
 | `AUDIT_LOG_PATH` | — | The file `AUDIT_LOG=file` appends to. |
+| `AUDIT_SINK` | — | `<module>:<factory>` making the object `AUDIT_LOG=custom` hands each event to. |
 
 Startup fails fast (refuses to boot) if `AUTH_MODE=api_key` with an empty
 `API_KEYS`, or if any key is shorter than 32 characters or low-entropy.
@@ -455,6 +456,7 @@ Off by default:
 | `off` | Nowhere |
 | `log` | The logger `orionbelt.audit`: with `LOG_FORMAT=json` or `cloudrun`, one JSON line each, which log shippers (Cloud Logging and others) take as is |
 | `file` | `AUDIT_LOG_PATH`, one JSON line each, appended. Rotate it with the system's tools: OrionBelt opens the file for each event |
+| `custom` | An object of your own, made by `AUDIT_SINK=<module>:<factory>` (see below) |
 
 ```json
 {"time": "2026-11-25T21:40:12.031+00:00", "surface": "rest",
@@ -473,6 +475,53 @@ Off by default:
 [id](#key-ids). An event never holds a token, a key, SQL text, a value or a
 row. A path that cannot be written refuses the start; an event that cannot
 be written later is logged and skipped, without failing the request.
+
+#### Your own destination
+
+With `AUDIT_LOG=custom`, OrionBelt imports `<module>`, calls `<factory>()`
+once at startup, and hands every event to the returned object's
+`emit(event)`. The event is a dict, as in the example above. The module must
+be importable by the OrionBelt process (installed next to it, or on
+`PYTHONPATH`):
+
+```python
+# mycompany/obsl_audit.py
+import json
+import queue
+import threading
+
+
+class QueueSink:
+    """Hands events to a background thread that ships them, so emit returns at once."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[dict] = queue.Queue(maxsize=10_000)
+        threading.Thread(target=self._ship, daemon=True).start()
+
+    def emit(self, event: dict) -> None:
+        self._queue.put_nowait(event)  # raises when full: logged, the request goes on
+
+    def _ship(self) -> None:
+        while True:
+            event = self._queue.get()
+            print(json.dumps(event))  # send it to your SIEM instead
+
+
+def make_sink() -> QueueSink:
+    return QueueSink()
+```
+
+```bash
+AUDIT_LOG=custom
+AUDIT_SINK=mycompany.obsl_audit:make_sink
+```
+
+`emit` runs inside the request it records, possibly on several threads at
+once, so keep it quick and thread-safe. An exception it raises is logged and
+the request goes on. OrionBelt refuses to start when the module or the
+factory cannot be found, the factory fails, or what it returns has no
+`emit`. `AUDIT_SINK` without `AUDIT_LOG=custom` refuses the start too, rather
+than being ignored.
 
 ## Where keys live
 
