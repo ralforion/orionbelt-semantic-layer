@@ -1,4 +1,8 @@
-"""A BI token over the Postgres wire protocol, with psycopg (libpq) and TLS.
+"""A BI token over the Postgres wire protocol, with psycopg (libpq).
+
+Over TLS the token is a cleartext password, with any user name. Without TLS
+the user name is the token's id and SCRAM checks the token against the
+verifier stored with it, so the token never crosses the network.
 
 The connection authenticates once, at startup. A BI token is checked again
 before each query, so revoking it, or its expiry, ends a connection that is
@@ -98,17 +102,17 @@ def _new_token(listener: Listener, days: int = 90) -> tuple[str, str]:
     return token, record.id
 
 
-def _connect(listener: Listener, token: str) -> Any:
+def _connect(listener: Listener, token: str, *, user: str = "obsl", tls: bool = True) -> Any:
     # Autocommit, as BI tools run: otherwise psycopg sends a BEGIN (a simple
     # query) ahead of a prepared statement, and the extended path goes untested.
     return psycopg.connect(
         autocommit=True,
         host="127.0.0.1",
         port=listener.port,
-        user="obsl",
+        user=user,
         password=token,
         dbname=listener.alice_session,
-        sslmode="require",
+        sslmode="require" if tls else "disable",
         connect_timeout=10,
     )
 
@@ -158,3 +162,39 @@ def test_another_token_s_connection_is_not_touched(listener: Listener) -> None:
     with _connect(listener, kept) as conn, _connect(listener, revoked):
         listener.store.revoke(revoked_id, owner_sub="alice")
         assert _tables(conn, prepared=True) == MODEL_TABLES
+
+
+class TestWithoutTLS:
+    """SCRAM, with the token's id as the user name: the token never crosses the network."""
+
+    @pytest.mark.parametrize("prefix", ["", "tok_"])
+    def test_the_token_s_id_as_user_logs_in_as_its_owner(
+        self, listener: Listener, prefix: str
+    ) -> None:
+        token, token_id = _new_token(listener)
+        with _connect(listener, token, user=prefix + token_id, tls=False) as conn:
+            assert not conn.pgconn.ssl_in_use
+            assert _tables(conn, prepared=True) == MODEL_TABLES  # alice's session
+
+    def test_a_wrong_token_and_an_unknown_id_look_the_same(self, listener: Listener) -> None:
+        token, token_id = _new_token(listener)
+        other, _ = _new_token(listener)
+        for user, password in ((token_id, other), ("aaaaaaaaaaaa", token)):
+            with pytest.raises(psycopg.OperationalError, match="BI token is not valid"):
+                _connect(listener, password, user=user, tls=False)
+
+    def test_another_user_name_is_no_token_login(self, listener: Listener) -> None:
+        token, _ = _new_token(listener)
+        with pytest.raises(psycopg.OperationalError, match="SCRAM authentication failed"):
+            _connect(listener, token, user="obsl", tls=False)
+
+    def test_a_revoked_token_is_refused_and_ends_its_open_connection(
+        self, listener: Listener
+    ) -> None:
+        token, token_id = _new_token(listener)
+        with _connect(listener, token, user=token_id, tls=False) as conn:
+            listener.store.revoke(token_id, owner_sub="alice")
+            with pytest.raises(psycopg.OperationalError, match="BI token was revoked"):
+                _tables(conn, prepared=False)
+        with pytest.raises(psycopg.OperationalError, match="BI token was revoked"):
+            _connect(listener, token, user=token_id, tls=False)

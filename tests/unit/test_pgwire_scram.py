@@ -8,6 +8,7 @@ import hmac
 
 import pytest
 
+from orionbelt.auth.bi_tokens import ScramVerifier, scram_keys
 from orionbelt.pgwire.scram import ScramError, ScramServerExchange
 
 KEY = "obsl_pat_scram_unit_key_0123456789ab"
@@ -54,6 +55,23 @@ def test_multiple_keys_one_matches() -> None:
     bare = "n=,r=zzz"
     server_first = ex.handle_client_first(f"n,,{bare}")
     assert ex.handle_client_final(_client_final(KEY, bare, server_first)).startswith("v=")
+
+
+def test_a_stored_verifier_checks_the_password_without_holding_it() -> None:
+    """As Postgres does, and as a BI token is checked: the verifier's salt and iterations."""
+    salt = b"0123456789abcdef"
+    verifier = ScramVerifier(salt, 4096, *scram_keys(KEY, salt, 4096))
+    for password, ok in ((KEY, True), ("a-different-key-entirely-9999", False)):
+        ex = ScramServerExchange.with_verifier(verifier)
+        bare = "n=,r=stored"
+        server_first = ex.handle_client_first(f"n,,{bare}")
+        assert f",s={base64.b64encode(salt).decode()},i=4096" in server_first
+        final = _client_final(password, bare, server_first)
+        if ok:
+            assert ex.handle_client_final(final).startswith("v=")
+        else:
+            with pytest.raises(ScramError, match="no matching key"):
+                ex.handle_client_final(final)
 
 
 def test_nonce_mismatch_rejected() -> None:

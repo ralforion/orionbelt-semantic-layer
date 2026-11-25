@@ -10,7 +10,10 @@ docs/guide/bi-tokens.md.
 A token is opaque, ``obsl_tok_<id>_<secret>``: the id finds it, the secret
 (160 random bits) proves it. The store keeps a SHA-256 of the secret, never
 the token, and a SCRAM-SHA-256 verifier for the Postgres wire protocol, which
-can only be computed while the token is known, at creation.
+can only be computed while the token is known, at creation: a Postgres client
+logs in with the token's id as its user name and the token as its password,
+and SCRAM checks it against that verifier without the token crossing the
+network.
 
 The store is one SQLite file, opened on first use: a server that never
 creates a token leaves no file behind.
@@ -38,6 +41,10 @@ from orionbelt.auth.principal import Principal
 
 TOKEN_PREFIX = "obsl_tok_"
 _TOKEN_RE = re.compile(r"^obsl_tok_([0-9a-f]{12})_([0-9a-f]{40})$")
+#: A Postgres user name that names a token: its id, or ``tok_`` and its id.
+_USER_RE = re.compile(r"^(?:tok_)?([0-9a-f]{12})$")
+#: Derives an unknown id's decoy SCRAM salt; per process.
+_DECOY_KEY = secrets.token_bytes(32)
 _SECONDS_PER_DAY = 86400.0
 #: SCRAM-SHA-256 iteration count of the stored verifier (RFC 7677's minimum).
 _SCRAM_ITERATIONS = 4096
@@ -93,6 +100,29 @@ class BiToken:
     expires_at: float
     last_used_at: float | None
     revoked_at: float | None
+
+
+@dataclass(frozen=True)
+class ScramVerifier:
+    """What a SCRAM-SHA-256 login is checked against (RFC 5802); never the password."""
+
+    salt: bytes
+    iterations: int
+    stored_key: bytes
+    server_key: bytes
+
+
+def token_id_of_user(user: str) -> str | None:
+    """The token id a Postgres user name names (``3f2a9c41b7e0`` or ``tok_3f2a9c41b7e0``)."""
+    match = _USER_RE.match(user)
+    return match.group(1) if match else None
+
+
+def _refuse_inactive(revoked_at: float | None, expires_at: float, now: float) -> None:
+    if revoked_at is not None:
+        raise TokenInvalidError("BI token was revoked")
+    if expires_at <= now:
+        raise TokenInvalidError("BI token expired")
 
 
 def _record(row: tuple[Any, ...]) -> BiToken:
@@ -257,19 +287,68 @@ class TokenStore:
         if row is None or not hmac.compare_digest(str(row[0]), _sha256(secret)):
             self._failed(token_id)
             raise TokenInvalidError(_INVALID)
-        record = _record(row[1:])
+        return self._signed_in(_record(row[1:]))
+
+    def scram_verifier(self, token_id: str) -> ScramVerifier:
+        """The verifier a Postgres SCRAM login with this token's id is checked against.
+
+        An unknown id gets a decoy: the same salt on every attempt, as a real
+        id has, and keys no password matches, so a client cannot tell an
+        unknown id from a wrong password.
+        """
+        with self._connection() as conn:
+            row = (
+                conn.execute(
+                    "SELECT scram_salt, scram_iterations, scram_stored_key, scram_server_key "
+                    "FROM bi_tokens WHERE id = ?",
+                    (token_id,),
+                ).fetchone()
+                if conn is not None
+                else None
+            )
+        if row is None:
+            salt = hmac.new(_DECOY_KEY, token_id.encode(), hashlib.sha256).digest()[:16]
+            return ScramVerifier(
+                salt, _SCRAM_ITERATIONS, secrets.token_bytes(32), secrets.token_bytes(32)
+            )
+        salt, iterations, stored_key, server_key = row
+        return ScramVerifier(bytes(salt), int(iterations), bytes(stored_key), bytes(server_key))
+
+    def scram_login(self, token_id: str, *, proven: bool) -> Principal:
+        """The token's owner as the caller, once a SCRAM login with its id ``proven`` it.
+
+        Raises:
+            TokenInvalidError: The proof failed (it counts towards the id's
+                lock), the id is locked, or the token is revoked or expired.
+        """
+        if not proven:
+            self._failed(token_id)
+            raise TokenInvalidError(_INVALID)
+        if self._blocked(token_id):
+            raise TokenInvalidError(_INVALID)
+        with self._connection() as conn:
+            row = (
+                conn.execute(
+                    f"SELECT {_COLUMNS} FROM bi_tokens WHERE id = ?", (token_id,)
+                ).fetchone()
+                if conn is not None
+                else None
+            )
+        if row is None:
+            raise TokenInvalidError(_INVALID)
+        return self._signed_in(_record(row))
+
+    def _signed_in(self, record: BiToken) -> Principal:
+        """The owner of a token that proved itself, unless it is revoked or expired."""
         now = time.time()
-        if record.revoked_at is not None:
-            raise TokenInvalidError("BI token was revoked")
-        if record.expires_at <= now:
-            raise TokenInvalidError("BI token expired")
-        self._touch(token_id, now)
+        _refuse_inactive(record.revoked_at, record.expires_at, now)
+        self._touch(record.id, now)
         return Principal(
             kind="user",
             sub=record.owner_sub,
             email=record.owner_email,
             scopes=record.scopes,
-            token_id=token_id,
+            token_id=record.id,
         )
 
     def check_active(self, token_id: str) -> None:
@@ -293,10 +372,7 @@ class TokenStore:
         if row is None:
             raise TokenInvalidError(_INVALID)
         revoked_at, expires_at = row
-        if revoked_at is not None:
-            raise TokenInvalidError("BI token was revoked")
-        if float(expires_at) <= time.time():
-            raise TokenInvalidError("BI token expired")
+        _refuse_inactive(revoked_at, float(expires_at), time.time())
 
     def _blocked(self, token_id: str) -> bool:
         with self._lock:

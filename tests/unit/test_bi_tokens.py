@@ -23,7 +23,7 @@ from orionbelt.auth import (
     init_auth,
     reset_auth,
 )
-from orionbelt.auth.bi_tokens import TokenStore, is_bi_token, scram_keys
+from orionbelt.auth.bi_tokens import TokenStore, is_bi_token, scram_keys, token_id_of_user
 from orionbelt.auth.errors import AuthInvalidError
 from orionbelt.auth.jwt_verify import JwtVerifier
 from orionbelt.pgwire.auth import authenticate as pgwire_authenticate
@@ -181,11 +181,52 @@ class TestTheStore:
         assert iterations == 4096
         assert (stored_key, server_key) == scram_keys(token, salt, iterations)
 
+    def test_a_postgres_user_name_names_a_token_by_its_id(self) -> None:
+        assert token_id_of_user("3f2a9c41b7e0") == "3f2a9c41b7e0"
+        assert token_id_of_user("tok_3f2a9c41b7e0") == "3f2a9c41b7e0"
+        for user in ("obsl", "", "3F2A9C41B7E0", "3f2a9c41b7e", "obsl_tok_3f2a9c41b7e0"):
+            assert token_id_of_user(user) is None, user
+
+    def test_a_scram_login_uses_the_verifier_stored_with_the_token(self, store: TokenStore) -> None:
+        token, token_id = _create(store)
+        verifier = store.scram_verifier(token_id)
+        assert (verifier.stored_key, verifier.server_key) == scram_keys(
+            token, verifier.salt, verifier.iterations
+        )
+        assert store.scram_login(token_id, proven=True).sub == "alice"
+
+    def test_an_unknown_id_gets_a_decoy_no_password_matches(self, store: TokenStore) -> None:
+        """Its salt stays the same, as a real id's does, so the id's existence does not show."""
+        _create(store)
+        first, again = store.scram_verifier("aaaaaaaaaaaa"), store.scram_verifier("aaaaaaaaaaaa")
+        assert first.salt == again.salt and first.iterations == 4096
+        assert first.stored_key != again.stored_key  # nothing a proof could be made for
+        with pytest.raises(TokenInvalidError, match="not valid"):
+            store.scram_login("aaaaaaaaaaaa", proven=True)
+
+    def test_failed_scram_proofs_lock_the_id_and_revoking_stops_it(
+        self, store: TokenStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, token_id = _create(store)
+        clock = [1000.0]
+        monkeypatch.setattr(bi_tokens.time, "monotonic", lambda: clock[0])
+        for _ in range(10):
+            with pytest.raises(TokenInvalidError, match="not valid"):
+                store.scram_login(token_id, proven=False)
+        with pytest.raises(TokenInvalidError, match="not valid"):
+            store.scram_login(token_id, proven=True)  # locked for now
+        clock[0] += 60
+        assert store.scram_login(token_id, proven=True).token_id == token_id
+        store.revoke(token_id, owner_sub=None)
+        with pytest.raises(TokenInvalidError, match="revoked"):
+            store.scram_login(token_id, proven=True)
+
     def test_no_file_until_the_first_token(self, store: TokenStore) -> None:
         with pytest.raises(TokenInvalidError):
             store.authenticate(f"obsl_tok_{'a' * 12}_{'b' * 40}")
         assert store.list_tokens(None) == []
         assert not store.revoke("aaaaaaaaaaaa", owner_sub=None)
+        store.scram_verifier("aaaaaaaaaaaa")
         assert not store.path.exists()
 
 

@@ -8,15 +8,18 @@ pgwire defers to the shared auth subsystem (``orionbelt.auth``) so a single
                 :func:`select_mechanism`: SCRAM-SHA-256 by default (never sends
                 the key on the wire), or cleartext when the operator sets
                 ``PGWIRE_AUTH_MODE=password``.
-* ``oidc``    → the password is an API key (as above) or the IdP's access
-                token. SCRAM cannot check a token (the server would need to
-                hold the secret), so a token is accepted only as a cleartext
-                password on a TLS connection; on a TLS connection pgwire
-                therefore asks for cleartext. Without TLS only API keys work.
+* ``oidc``    → the password is an API key (as above), the IdP's access
+                token or a BI token. SCRAM cannot check an IdP token (the
+                server would need to hold the secret), so it is accepted only
+                as a cleartext password on a TLS connection; on a TLS
+                connection pgwire therefore asks for cleartext. Without TLS,
+                SCRAM checks an API key, or a BI token against the verifier
+                stored with it when the user name is the token's id.
 
-The ``user`` field is ignored for validation (stored only for logging). The
-connection is authenticated once, at startup, as Postgres does: it stays open
-after the token expires. See docs/guide/authentication.md.
+Otherwise the ``user`` field is ignored for validation (stored only for
+logging). The connection is authenticated once, at startup, as Postgres does:
+it stays open after an IdP token expires; a BI token is checked again before
+each query. See docs/guide/authentication.md and docs/guide/bi-tokens.md.
 """
 
 from __future__ import annotations
@@ -32,12 +35,14 @@ from orionbelt.auth import (
     Principal,
     get_api_keys,
     get_mode,
+    get_token_store,
     validate_api_key,
 )
-from orionbelt.auth.bi_tokens import is_bi_token
+from orionbelt.auth.bi_tokens import is_bi_token, token_id_of_user
 from orionbelt.auth.jwt_verify import looks_like_jwt
 from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire.protocol import StartupMessage
+from orionbelt.pgwire.scram import ScramServerExchange
 
 # Password mechanisms offered when a credential is required.
 MECH_SCRAM = "scram-sha-256"
@@ -84,6 +89,35 @@ def select_mechanism(pgwire_auth_mode: str, *, tls: bool = False) -> str:
 def scram_candidate_keys() -> tuple[str, ...]:
     """Return the configured API keys for SCRAM proof verification."""
     return tuple(get_api_keys())
+
+
+def scram_token_id(startup: StartupMessage) -> str | None:
+    """The BI token a SCRAM login is for: its user name is a token's id, under ``oidc``."""
+    if get_mode() != MODE_OIDC or get_token_store() is None:
+        return None
+    return token_id_of_user(startup.user)
+
+
+def bi_token_scram_exchange(token_id: str) -> ScramServerExchange:
+    """A SCRAM exchange checked against the verifier stored with the BI token ``token_id``."""
+    store = get_token_store()
+    if store is None:
+        raise RuntimeError("BI tokens are not enabled (TOKEN_STORE_PATH)")
+    return ScramServerExchange.with_verifier(store.scram_verifier(token_id))
+
+
+def finish_bi_token_scram(token_id: str, *, proven: bool) -> AuthResult:
+    """The outcome of a SCRAM login with a BI token's id, ``proven`` or not by its proof."""
+    store = get_token_store()
+    if store is None:
+        return _refused("BI tokens are not enabled (TOKEN_STORE_PATH)")
+    try:
+        principal = store.scram_login(token_id, proven=proven)
+    except AuthError as exc:
+        return _refused(exc.message)
+    if not principal.has_scope(SCOPE_READ):
+        return _refused(f"insufficient scope: requires {SCOPE_READ}")
+    return AuthResult(ok=True, principal=principal)
 
 
 def _refused(message: str) -> AuthResult:

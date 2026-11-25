@@ -224,7 +224,7 @@ to; anyone else presenting it gets "unknown", as for one that does not exist.
 | Surface | Token | API key | When the token expires |
 |---------|-------|---------|------------------------|
 | Arrow Flight SQL | As the password of a Basic credential, or `Authorization: Bearer` | Yes | Every call checks it, so the next call fails. BI tools cannot refresh a token: give a long-running BI connection a service key |
-| Postgres wire | As the password, **over TLS only** (`sslmode=require`; needs `PGWIRE_TLS_CERT`). On TLS, pgwire asks for a cleartext password, which TLS protects; SCRAM cannot check a token | Yes, with or without TLS | The connection was authenticated when it opened and stays open, as a Postgres connection does. A [BI token](bi-tokens.md) is checked again before each query: revoked or expired, it ends the connection |
+| Postgres wire | As the password, **over TLS only** (`sslmode=require`; needs `PGWIRE_TLS_CERT`). On TLS, pgwire asks for a cleartext password, which TLS protects; SCRAM cannot check a token. A [BI token](bi-tokens.md) also works without TLS, by SCRAM, with its id as the user name | Yes, with or without TLS | The connection was authenticated when it opened and stays open, as a Postgres connection does. A [BI token](bi-tokens.md) is checked again before each query: revoked or expired, it ends the connection |
 
 With `PGWIRE_ENABLED`, OrionBelt refuses to start under `oidc` without either
 `API_KEYS` or `PGWIRE_TLS_CERT`, since no client could log in.
