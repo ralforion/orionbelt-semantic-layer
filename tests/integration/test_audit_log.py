@@ -8,13 +8,15 @@ refusal; never a credential or a value of the query.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
+import structlog
 from httpx import ASGITransport, AsyncClient
 
 from orionbelt.api.app import create_app, oidc_config
@@ -45,6 +47,33 @@ def audit_file(tmp_path: Path) -> Path:
     path = tmp_path / "audit" / "events.jsonl"
     configure_audit("file", str(path))
     return path
+
+
+@contextmanager
+def _application_logging(level: str, log_format: str) -> Iterator[None]:
+    """The application's logging (``configure_logging``) for one test, then the session's.
+
+    ``configure_logging`` binds its handler to ``sys.stdout`` as it is at the
+    call: in a test, pytest's capture, closed when the test ends. Configuring
+    again on the way out binds to that capture once more, and every later log
+    line, from server threads of other tests too, fails as "I/O operation on
+    closed file". So the handlers, levels and structlog settings from before
+    are put back as they were.
+    """
+    root = logging.getLogger()
+    handlers, root_level = root.handlers[:], root.level
+    httpx_level = logging.getLogger("httpx").level
+    structlog_config = structlog.get_config()
+    from orionbelt.api.logging_config import configure_logging
+
+    configure_logging(level, log_format)
+    try:
+        yield
+    finally:
+        root.handlers[:] = handlers
+        root.setLevel(root_level)
+        logging.getLogger("httpx").setLevel(httpx_level)
+        structlog.configure(**structlog_config)
 
 
 def _events(path: Path) -> list[dict[str, Any]]:
@@ -85,15 +114,10 @@ class TestConfiguration:
     def test_the_log_keeps_events_when_the_application_logs_warnings_only(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        from orionbelt.api.logging_config import configure_logging
-
-        configure_logging("WARNING", "json")
-        try:
+        with _application_logging("WARNING", "json"):
             configure_audit("log")
             record(surface="rest", action="GET /v1/sessions", outcome="200")
             out = capsys.readouterr().out
-        finally:
-            configure_logging("INFO", "console")
         (line,) = [json.loads(x) for x in out.splitlines() if '"audit"' in x]
         assert line["event"] == "audit" and line["action"] == "GET /v1/sessions"
 
