@@ -82,6 +82,21 @@ class TestConfiguration:
         record(surface="rest", action="GET /v1/sessions", outcome="200")
         assert "Audit event lost" in caplog.text
 
+    def test_the_log_keeps_events_when_the_application_logs_warnings_only(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from orionbelt.api.logging_config import configure_logging
+
+        configure_logging("WARNING", "json")
+        try:
+            configure_audit("log")
+            record(surface="rest", action="GET /v1/sessions", outcome="200")
+            out = capsys.readouterr().out
+        finally:
+            configure_logging("INFO", "console")
+        (line,) = [json.loads(x) for x in out.splitlines() if '"audit"' in x]
+        assert line["event"] == "audit" and line["action"] == "GET /v1/sessions"
+
     def test_the_log_sink_writes_the_event_s_fields(self) -> None:
         calls: list[tuple[str, dict[str, Any]]] = []
         sink = audit_module.LogSink()
@@ -99,7 +114,7 @@ class TestConfiguration:
 
 
 @asynccontextmanager
-async def _rest(settings: Settings) -> AsyncIterator[AsyncClient]:
+async def _rest(settings: Settings, *, raise_errors: bool = True) -> AsyncIterator[AsyncClient]:
     app = create_app(settings=settings)
     init_session_manager(
         SessionManager(ttl_seconds=3600, cleanup_interval=9999),
@@ -108,7 +123,8 @@ async def _rest(settings: Settings) -> AsyncIterator[AsyncClient]:
         oidc=oidc_config(settings),
     )
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        transport = ASGITransport(app=app, raise_app_exceptions=raise_errors)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
     finally:
         reset_session_manager()
@@ -157,6 +173,22 @@ class TestRest:
         assert event["reason"] == "AUTH_INSUFFICIENT_SCOPE"
         assert event["who"] == {"kind": "user", "sub": "alice"}
         assert token not in audit_file.read_text()
+
+    async def test_an_unhandled_failure_is_still_on_record(
+        self, audit_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("the session store failed")
+
+        monkeypatch.setattr(SessionManager, "list_sessions", broken)
+        async with _rest(Settings(auth_mode="api_key", api_keys=KEY), raise_errors=False) as client:
+            answer = await client.get("/v1/sessions", headers={"X-API-Key": KEY})
+        assert answer.status_code == 500
+        (event,) = _events(audit_file)
+        assert (event["action"], event["outcome"]) == ("GET /v1/sessions", "500")
+        assert event["reason"] == "RuntimeError"
+        assert event["who"]["key_id"] == key_id(KEY)
+        assert "the session store failed" not in audit_file.read_text()
 
     async def test_nothing_is_recorded_when_off(self, tmp_path: Path) -> None:
         async with _rest(Settings(auth_mode="api_key", api_keys=KEY)) as client:

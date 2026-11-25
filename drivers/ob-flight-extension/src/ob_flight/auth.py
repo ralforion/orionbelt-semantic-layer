@@ -33,7 +33,14 @@ class CredentialRejected(Exception):
 
 
 class ScopeMissing(Exception):
-    """The caller authenticated but may not use Flight. Sent to the client."""
+    """The caller authenticated but may not use Flight. Sent to the client.
+
+    ``caller`` is who authenticated, for the audit log.
+    """
+
+    def __init__(self, message: str, caller: Any = None) -> None:
+        super().__init__(message)
+        self.caller = caller
 
 
 #: Returns the caller a credential authenticates as; raises CredentialRejected
@@ -68,7 +75,7 @@ def _check(authenticate: Authenticate, credential: str, *, sign_in: bool = False
         _audit("refused", sign_in=sign_in, reason="invalid_credential")
         raise flight.FlightUnauthenticatedError(str(exc)) from None
     except ScopeMissing as exc:
-        _audit("refused", sign_in=sign_in, reason="insufficient_scope")
+        _audit("refused", sign_in=sign_in, caller=exc.caller, reason="insufficient_scope")
         raise flight.FlightUnauthorizedError(str(exc)) from None
     if sign_in:
         _audit("ok", sign_in=True, caller=caller)
@@ -363,7 +370,7 @@ def _authenticate_with_orionbelt(credential: str) -> Any:
     except AuthError as exc:
         raise CredentialRejected(exc.message) from None
     if not principal.has_scope(SCOPE_READ):
-        raise ScopeMissing(f"Insufficient scope: requires {SCOPE_READ}")
+        raise ScopeMissing(f"Insufficient scope: requires {SCOPE_READ}", caller=principal)
     return principal
 
 

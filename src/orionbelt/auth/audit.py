@@ -85,6 +85,8 @@ def configure_audit(mode: str, path: str = "") -> None:
         _sink = None
         return
     if chosen == AUDIT_TO_LOG:
+        # Its own level: LOG_LEVEL=WARNING quiets the application, not the audit.
+        logging.getLogger("orionbelt.audit").setLevel(logging.INFO)
         _sink = LogSink()
     else:
         if not path.strip():

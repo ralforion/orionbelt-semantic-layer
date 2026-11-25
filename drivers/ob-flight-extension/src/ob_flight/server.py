@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
+import re
 import threading
 import time
 import uuid
@@ -159,9 +160,36 @@ def _bind_caller(context: Any) -> Binding | None:
     return bind_principal(caller, user_credential_of(context))
 
 
-def _audit_query(
-    cache_meta: dict[str, Any] | None, *, outcome: str, reason: str | None = None
-) -> None:
+#: Codes that refuse the caller rather than fail its request.
+_REFUSALS = frozenset({"UNKNOWN_TICKET"})
+
+
+def _reason_of(exc: BaseException) -> str:
+    """A failure's code: the ``[CODE]`` its message opens with, else its type."""
+    match = re.match(r"\[([A-Z_]+)\]", str(exc))
+    return match.group(1) if match else type(exc).__name__
+
+
+def _audit_failure(rpc: str, exc: BaseException, *, reason: str | None = None) -> None:
+    """One audit event for a Flight call that failed or was refused (``AUDIT_LOG``)."""
+    from orionbelt.auth.audit import audit_enabled, record
+
+    if not audit_enabled():
+        return
+    code = reason or _reason_of(exc)
+    refused = code in _REFUSALS or isinstance(
+        exc, (flight.FlightUnauthenticatedError, flight.FlightUnauthorizedError)
+    )
+    record(
+        surface="flight",
+        action=f"call {rpc}",
+        outcome="refused" if refused else "error",
+        principal=current_principal(),
+        reason=code,
+    )
+
+
+def _audit_query(cache_meta: dict[str, Any] | None, *, outcome: str) -> None:
     """One audit event for a semantic query this call ran (``AUDIT_LOG``)."""
     from orionbelt.auth.audit import audit_enabled, record
 
@@ -174,7 +202,6 @@ def _audit_query(
         action="query",
         outcome=outcome,
         principal=current_principal(),
-        reason=reason,
         model_id=meta.get("model_id"),
         data_source=getattr(source, "name", None),
     )
@@ -216,7 +243,12 @@ def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
                     except StopIteration:
                         return
                     except DataSourceSignInError as exc:
-                        raise _flight_error(exc) from None
+                        error = _flight_error(exc)
+                        _audit_failure(method.__name__, error, reason=exc.code)
+                        raise error from None
+                    except Exception as exc:
+                        _audit_failure(method.__name__, exc)
+                        raise
                     finally:
                         if binding is not None:
                             reset_principal(binding)
@@ -232,7 +264,12 @@ def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
         try:
             return method(self, context, *args, **kwargs)
         except DataSourceSignInError as exc:
-            raise _flight_error(exc) from None
+            error = _flight_error(exc)
+            _audit_failure(method.__name__, error, reason=exc.code)
+            raise error from None
+        except Exception as exc:
+            _audit_failure(method.__name__, exc)
+            raise
         finally:
             if binding is not None:
                 reset_principal(binding)
@@ -728,7 +765,8 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
 
         pending = self._pop_pending(ticket_id)
         if pending is None:
-            raise flight.FlightServerError(f"Unknown ticket: {ticket_id}")
+            # Also another caller's ticket: it is not told apart from none.
+            raise flight.FlightServerError(f"[UNKNOWN_TICKET] Unknown ticket: {ticket_id}")
 
         kind = pending[0]
 
@@ -759,13 +797,8 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         )
         schema_raw = pending[4] if len(pending) > 4 else None
         result_schema: pa.Schema | None = schema_raw if isinstance(schema_raw, pa.Schema) else None
-        try:
-            stream = self._execute_sql(
-                sql, dialect, cache_meta=cache_meta, result_schema=result_schema
-            )
-        except Exception as exc:
-            _audit_query(cache_meta, outcome="error", reason=type(exc).__name__)
-            raise
+        # A failure is recorded by ``_as_caller``, as for every RPC.
+        stream = self._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=result_schema)
         _audit_query(cache_meta, outcome="ok")
         return stream
 

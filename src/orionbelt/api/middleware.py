@@ -173,20 +173,29 @@ class AuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if not audit_enabled() or not _app_path(request.scope).startswith("/v1/"):
             return await call_next(request)
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # Unhandled: the server answers 500 further out. Still who and what.
+            self._record(request, outcome="500", reason=type(exc).__name__)
+            raise
+        self._record(request, outcome=str(response.status_code))
+        return response
+
+    @staticmethod
+    def _record(request: Request, *, outcome: str, reason: str | None = None) -> None:
         params = request.scope.get("path_params") or {}
         record(
             surface="rest",
             action=f"{request.method} {_route_label(request.scope)}",
-            outcome=str(response.status_code),
+            outcome=outcome,
             principal=getattr(request.state, "principal", None),
-            reason=getattr(request.state, "audit_reason", None),
+            reason=getattr(request.state, "audit_reason", None) or reason,
             client=request.client.host if request.client else None,
             request_id=structlog.contextvars.get_contextvars().get("request_id"),
             session_id=params.get("session_id"),
             model_id=params.get("model_id"),
         )
-        return response
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
