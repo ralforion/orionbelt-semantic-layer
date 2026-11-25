@@ -37,6 +37,14 @@ Two app registrations:
 The on-behalf-of flow only accepts a user's token issued for the app that
 asks, which is why OrionBelt asks as the same app users sign in to.
 
+For [BI tokens that log in as the user](../bi-tokens.md#data-sources-that-log-in-as-you),
+the OrionBelt app registration also needs, under **Authentication**, the
+**Web** platform with the redirect URI `https://obsl.example.com/tokens/consent`.
+Set `OIDC_CONSENT_SCOPES=openid offline_access api://<OrionBelt app ID>/<scope>`,
+so that the sign-in's token is issued for OrionBelt. A BI token's refresh
+token is then redeemed for the Snowflake scope directly, without the
+on-behalf-of step.
+
 ### Okta
 
 | Okta object | What it needs |
@@ -48,6 +56,16 @@ asks, which is why OrionBelt asks as the same app users sign in to.
 `DB_<NAME>_OAUTH_AUDIENCE` is that authorization server's audience. See Okta's
 [token exchange guide](https://developer.okta.com/docs/guides/set-up-token-exchange/main/)
 and Snowflake's [guide for Okta](https://docs.snowflake.com/en/user-guide/oauth-okta).
+
+[BI tokens that log in as the user](../bi-tokens.md#data-sources-that-log-in-as-you)
+need OrionBelt's client to sign users in as well: the **Authorization Code**
+and **Refresh Token** grants, and the sign-in redirect URI
+`https://obsl.example.com/tokens/consent`. OrionBelt uses one client for both
+(`OIDC_CLIENT_ID`), and Okta's guide shows the **Token Exchange** grant on an
+API Services app, which cannot sign users in. Whether one Okta app can have
+all three grants has not been checked yet. Sources on Databricks and BigQuery
+need no token exchange at Okta: for them, an app with the two sign-in grants
+is enough.
 
 ### Keycloak
 
@@ -62,6 +80,12 @@ Keycloak 26.2 or later, in the realm users sign in to:
 
 `DB_<NAME>_OAUTH_SCOPE` names that client scope, and
 `DB_<NAME>_OAUTH_AUDIENCE` is `snowflake`.
+
+For [BI tokens that log in as the user](../bi-tokens.md#data-sources-that-log-in-as-you),
+the OrionBelt client also signs users in: standard flow, the redirect URI
+`https://obsl.example.com/tokens/consent`, an **Audience** mapper `obsl` on
+the client itself, and `offline_access` as an optional client scope. See
+[the local Keycloak walkthrough](keycloak.md#6-a-bi-token-that-logs-in-as-the-user).
 
 ## 2. The security integration
 
