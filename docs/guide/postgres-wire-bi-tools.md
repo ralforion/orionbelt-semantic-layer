@@ -138,12 +138,44 @@ Every client uses the same connection details:
 | Host | the machine running `orionbelt-api` (`localhost` for local dev) |
 | Port | `PGWIRE_PORT` (default `5432`) |
 | Database | the model addressing name — the OBML `name:` field or, lacking that, the file stem (e.g. `orionbelt_1_commerce`); or `orionbelt` to reach every loaded model, see [Several models in one connection](#several-models-in-one-connection) |
-| Username | any non-empty string (`obsl`, the tool's default — ignored in `trust` mode) |
-| Password | leave empty in `trust` mode; with `AUTH_MODE=api_key` the API key is the password (SCRAM-SHA-256 by default) |
+| Username | see [Logging in](#logging-in); in `trust` mode any non-empty string (`obsl`, the tool's default) |
+| Password | see [Logging in](#logging-in); empty in `trust` mode |
 | TLS / SSL | `disable` unless the server was started with `PGWIRE_TLS_CERT` / `PGWIRE_TLS_KEY` - see [TLS](#tls) above |
 
 To list available model names, query the REST `GET /v1/models`
 endpoint or check the server startup log.
+
+### Logging in
+
+What goes into a tool's username and password fields depends on how the
+server signs callers in (`AUTH_MODE`):
+
+| Server | Username | Password | TLS |
+|---|---|---|---|
+| `AUTH_MODE=none`, the default (`trust`) | any, `obsl` | empty | optional |
+| `AUTH_MODE=api_key` | any | the API key | optional |
+| `AUTH_MODE=oidc`, with a [BI token](bi-tokens.md) | the token's id: the 12 characters after `obsl_tok_`, as in `3f2a9c41b7e0` | the token, `obsl_tok_3f2a9c41b7e0_…` | optional; over TLS any username works |
+| `AUTH_MODE=oidc`, with a service key | `obsl`; any name but a token's id, see below | a key from `API_KEYS` | optional |
+
+Without TLS, the server checks the password with SCRAM-SHA-256: the key or
+token never crosses the network, but the query results do, so use TLS on a
+network you do not trust. SCRAM-SHA-256 has been PostgreSQL's default
+password method since version 14, so current drivers handle it.
+
+Without TLS, under `AUTH_MODE=oidc` with BI tokens on (`TOKEN_STORE_PATH`),
+two forms of username are reserved for BI tokens: 12 lowercase hex
+characters (`3f2a9c41b7e0`) and `tok_` followed by them (`tok_3f2a9c41b7e0`).
+The server checks the password against that token only, so a service key
+sent with such a username is refused. Log in with a service key as `obsl`.
+
+A BI token acts as the person who created it, with the scopes they gave it,
+until it expires or they revoke it. Revoking it also ends a connection that
+is already open, at its next query. Create one on OrionBelt's `/tokens` page,
+see [Tokens for BI Tools](bi-tokens.md). When you replace a token with a new
+one, change both fields: without TLS the username is the token's id, and the
+new token with the old id fails with "BI token is not valid". Your identity
+provider's own access token works as the password too, over TLS only, but it
+expires within the hour: a BI tool needs a BI token.
 
 ### Several models in one connection
 
@@ -177,7 +209,8 @@ DBeaver Community speaks pgwire natively via its bundled PostgreSQL
 JDBC driver.
 
 1. **New Connection → PostgreSQL.** Fill in host, port, database
-   (the model name), username `obsl`, no password.
+   (the model name), and the username and password from
+   [Logging in](#logging-in) (`trust` mode: `obsl`, no password).
 2. **Driver properties → SSL.** Against a server started without
    `PGWIRE_TLS_CERT`, `sslmode = disable`: the default `prefer` falls back
    to plaintext anyway. Against one with a certificate, `sslmode = verify-full`
@@ -207,7 +240,9 @@ JDBC driver.
 Tableau's PostgreSQL connector lives under **Connect → To a Server →
 PostgreSQL**.
 
-1. Enter the connection details from §1.
+1. Enter the connection details from §1, with the username and password
+   from [Logging in](#logging-in). Tick **Require SSL** only against a
+   server with a certificate.
 2. Tableau may probe `pg_catalog.pg_class` and `information_schema.tables`
    at connect time — these are answered by the catalog emulator. Its
    temp-table connect check (create a `"#..."` table, insert, read back,
@@ -238,7 +273,8 @@ PostgreSQL**.
 
 1. **Get Data → PostgreSQL database.** Server: `host:port`. Database:
    the model name.
-2. Authentication: **Database** tab, leave password empty.
+2. Authentication: **Database** tab, with the user name and password from
+   [Logging in](#logging-in); in `trust` mode leave the password empty.
 3. After connecting, the Navigator shows the model table. Tick it and
    load.
 4. Build a visual — drag the dimension and measure onto a chart.
@@ -252,7 +288,8 @@ becomes a network round-trip.
 Self-hosted Metabase ships a Postgres connector.
 
 1. **Admin → Databases → Add database → PostgreSQL.**
-2. Fill in the connection details from §1. Leave SSL off against a server
+2. Fill in the connection details from §1, with the username and password
+   from [Logging in](#logging-in). Leave SSL off against a server
    started without `PGWIRE_TLS_CERT`; against one with a certificate, turn it
    on and give it the issuing CA's certificate, see
    [Which certificate to deploy](#which-certificate-to-deploy).
@@ -277,6 +314,27 @@ query you write in its SQL Runner is parsed and validated by Apache
 Calcite before any pushdown to OBSL. That introduces two shape
 constraints that tools connecting directly to pgwire (DBeaver, Tableau,
 psql) never hit.
+
+### Dremio in front of OrionBelt with sign-in
+
+When OrionBelt runs with `AUTH_MODE=oidc`, Dremio logs in with a
+[BI token](bi-tokens.md). Create one on OrionBelt's `/tokens` page, then add
+the source in Dremio:
+
+1. **Add Source → PostgreSQL.** The host and port of the wire surface;
+   **Database Name**: the model name (or `orionbelt` for every model).
+2. **Authentication: Master Credentials.** Username: the token's id, the
+   12 characters after `obsl_tok_`. Password: the token.
+3. **Encrypt connection** only against a server with a certificate. Without
+   it, the token is checked by SCRAM-SHA-256 and never crosses the network.
+
+Dremio logs in with this one token for everyone who queries the source, so
+they all query as the token's owner, with its scopes. Once the token is
+revoked, the source fails at its next query ("BI token was revoked"). Before
+the token expires, create a new one and change both of the source's
+credentials: the username to the new token's id, the password to the new
+token. The Dremio test stack checks this setup end to end
+(`test_dremio_bi_token.py`).
 
 ### Address the model as `<schema>."model"`
 
@@ -415,7 +473,14 @@ JOIN obsl.support.model AS s USING ("Country Name");
 ```
 
 `sslmode`, `sslrootcert` and `password` work exactly as they do for `psql`,
-because the extension is libpq underneath.
+because the extension is libpq underneath. With a [BI token](bi-tokens.md),
+the user is the token's id and the password the token:
+
+```sql
+ATTACH 'host=127.0.0.1 port=5432 dbname=commerce
+        user=3f2a9c41b7e0 password=obsl_tok_3f2a9c41b7e0_…'
+    AS obsl (TYPE postgres, READ_ONLY);
+```
 
 See **[Using DuckDB as a client](duckdb.md)** for the full guide: both routes
 (this one and Arrow Flight SQL), TLS and authentication, which predicates reach
@@ -430,7 +495,7 @@ These constraints are documented in
 |---|---|---|
 | `psql \d <table>` partially works (psql 16 RLS-policy probe hits DuckDB's correlated-UNNEST limit) | DuckDB engine, not the wire protocol | Use BI tools (they query `information_schema`) or `\dt` |
 | Binary-format Bind parameters decode for the common scalar OIDs only (bool, bytea, int2/4/8, float4/8, text, varchar, name, bpchar) | Anything else would be mangled bytes, so it raises instead | Force text format if the driver supports it; the error names the OID |
-| Authentication is off by default (`trust`) | `AUTH_MODE` governs every surface and ships as `none` | Set `AUTH_MODE=api_key` and `API_KEYS=<key>`; clients then send the key as the **password**, over SCRAM-SHA-256. `PGWIRE_AUTH_MODE=password` drops to cleartext for clients without SCRAM, so pair it with TLS |
+| Authentication is off by default (`trust`) | `AUTH_MODE` governs every surface and ships as `none` | Set `AUTH_MODE=api_key` and `API_KEYS=<key>`, or `AUTH_MODE=oidc` for BI tokens; see [Logging in](#logging-in). `PGWIRE_AUTH_MODE=password` drops to cleartext for clients without SCRAM, so pair it with TLS |
 | DuckDB `ATTACH` needs `SET pg_use_text_protocol = true` | The default reads with `COPY ... TO STDOUT (FORMAT binary)`, which the semantic surface does not implement | Set it once per session, before the first read - see [7. DuckDB](#7-duckdb) |
 | DuckDB 2.0.1+ sends `count(*)` and other aggregates to the server | Remote pushdown, on by default; OBSQL refuses a row count and aggregates of dimensions | `SET pg_enable_remote_pushdown = false` before `ATTACH` - see [Using DuckDB as a client](duckdb.md#pg_enable_remote_pushdown-on-duckdb-201-and-later) |
 | Write operations (`INSERT` / `UPDATE` / `DELETE` / DDL) | Read-only semantic layer | Use the REST API for model management; data writes go to the warehouse, not OBSL |

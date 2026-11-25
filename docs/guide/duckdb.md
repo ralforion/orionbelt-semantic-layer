@@ -133,10 +133,19 @@ ATTACH 'host=obsl.internal port=5432 dbname=commerce user=obsl
     AS obsl (TYPE postgres, READ_ONLY);
 ```
 
+With `AUTH_MODE=oidc`, a person's [BI token](bi-tokens.md) is the password,
+and the user is the token's id, the 12 characters after `obsl_tok_`:
+
+```sql
+ATTACH 'host=obsl.internal port=5432 dbname=commerce
+        user=3f2a9c41b7e0 password=obsl_tok_3f2a9c41b7e0_...  sslmode=require'
+    AS obsl (TYPE postgres, READ_ONLY);
+```
+
 The mechanism is SCRAM-SHA-256 by default, which libpq performs on DuckDB's
 behalf; `PGWIRE_AUTH_MODE=password` drops to cleartext for clients that lack
-SCRAM, and DuckDB is not one of them. Send the key over TLS either way: with
-SCRAM the key never crosses the wire, but the results do.
+SCRAM, and DuckDB is not one of them. Send the key or token over TLS either
+way: with SCRAM it never crosses the wire, but the results do.
 
 ## Route 2: `adbc_scan` over Arrow Flight SQL
 
