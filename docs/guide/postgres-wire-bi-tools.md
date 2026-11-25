@@ -155,19 +155,27 @@ server signs callers in (`AUTH_MODE`):
 | `AUTH_MODE=none`, the default (`trust`) | any, `obsl` | empty | optional |
 | `AUTH_MODE=api_key` | any | the API key | optional |
 | `AUTH_MODE=oidc`, with a [BI token](bi-tokens.md) | the token's id: the 12 characters after `obsl_tok_`, as in `3f2a9c41b7e0` | the token, `obsl_tok_3f2a9c41b7e0_…` | optional; over TLS any username works |
-| `AUTH_MODE=oidc`, with a service key | any | a key from `API_KEYS` | optional |
+| `AUTH_MODE=oidc`, with a service key | `obsl`; any name but a token's id, see below | a key from `API_KEYS` | optional |
 
 Without TLS, the server checks the password with SCRAM-SHA-256: the key or
 token never crosses the network, but the query results do, so use TLS on a
 network you do not trust. SCRAM-SHA-256 has been PostgreSQL's default
 password method since version 14, so current drivers handle it.
 
+Without TLS, under `AUTH_MODE=oidc` with BI tokens on (`TOKEN_STORE_PATH`),
+two forms of username are reserved for BI tokens: 12 lowercase hex
+characters (`3f2a9c41b7e0`) and `tok_` followed by them (`tok_3f2a9c41b7e0`).
+The server checks the password against that token only, so a service key
+sent with such a username is refused. Log in with a service key as `obsl`.
+
 A BI token acts as the person who created it, with the scopes they gave it,
 until it expires or they revoke it. Revoking it also ends a connection that
 is already open, at its next query. Create one on OrionBelt's `/tokens` page,
-see [Tokens for BI Tools](bi-tokens.md). Your identity provider's own access
-token works as the password too, over TLS only, but it expires within the
-hour: a BI tool needs a BI token.
+see [Tokens for BI Tools](bi-tokens.md). When you replace a token with a new
+one, change both fields: without TLS the username is the token's id, and the
+new token with the old id fails with "BI token is not valid". Your identity
+provider's own access token works as the password too, over TLS only, but it
+expires within the hour: a BI tool needs a BI token.
 
 ### Several models in one connection
 
@@ -323,8 +331,10 @@ the source in Dremio:
 Dremio logs in with this one token for everyone who queries the source, so
 they all query as the token's owner, with its scopes. Once the token is
 revoked, the source fails at its next query ("BI token was revoked"). Before
-the token expires, create a new one and change the source's password. The
-Dremio test stack checks this setup end to end (`test_dremio_bi_token.py`).
+the token expires, create a new one and change both of the source's
+credentials: the username to the new token's id, the password to the new
+token. The Dremio test stack checks this setup end to end
+(`test_dremio_bi_token.py`).
 
 ### Address the model as `<schema>."model"`
 

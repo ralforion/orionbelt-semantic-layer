@@ -329,7 +329,11 @@ Under `AUTH_MODE=oidc` the password may be an access token instead; see
 ### Postgres wire (psql, Tableau, Power BI, Metabase, DBeaver)
 
 When `AUTH_MODE` is `api_key` or `oidc`, pgwire requires a password (an API
-key). The username is ignored — pick anything readable in your logs.
+key). The username is ignored, so pick anything readable in your logs, with
+one exception: under `oidc` with [BI tokens](bi-tokens.md) on, a SCRAM login
+(the default without TLS) whose username is 12 lowercase hex characters, or
+`tok_` and them, is a BI token's login and takes no API key. `obsl` is
+always safe.
 
 ```bash
 psql "postgresql://obsl:$KEY@localhost:5432/__default__"

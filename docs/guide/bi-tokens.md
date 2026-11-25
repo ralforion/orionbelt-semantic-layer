@@ -84,7 +84,7 @@ BI token, cannot create one.
 | REST | `Authorization: Bearer obsl_tok_…`, or the API key header |
 | Arrow Flight SQL (DBeaver, Tableau, JDBC, ODBC) | Username `token`, password = the token |
 | Postgres protocol (Tableau, Power BI, psql), over TLS (`sslmode=require`) | Password = the token, any user name |
-| Postgres protocol, without TLS | User name = the token's **id**, the 12 characters after `obsl_tok_` (`3f2a9c41b7e0`, or `tok_3f2a9c41b7e0`); password = the token. OrionBelt checks it with SCRAM against what it stored when the token was created, so the token never crosses the network. A user name of 12 hex characters is always taken as a token's id. |
+| Postgres protocol, without TLS | User name = the token's **id**, the 12 characters after `obsl_tok_` (`3f2a9c41b7e0`, or `tok_3f2a9c41b7e0`); password = the token. OrionBelt checks it with SCRAM against what it stored when the token was created, so the token never crosses the network. A user name of 12 lowercase hex characters, or `tok_` and them, is always taken as a token's id, so a service key logs in under another name, such as `obsl`. |
 
 On the Postgres protocol the token is checked again before each query, so an
 open connection ends once the token is revoked or expires.
@@ -142,7 +142,7 @@ when they leave: `DELETE /v1/auth/tokens?owner=<their sub>`.
 | 401 `invalid_token`, "BI token is not valid" | Unknown or wrong token, or too many failed attempts on its id |
 | Postgres, "BI token is not valid" | Without TLS: the user name is not this token's id, or the token is wrong; or too many failed attempts on its id |
 | Postgres, "SCRAM authentication failed" | Without TLS, a user name that is not a token's id takes an API key only: use the token's id as the user name |
-| 401 `invalid_token`, "BI token expired" / "was revoked" | Create a new one |
+| 401 `invalid_token`, "BI token expired" / "was revoked" | Create a new one. On Postgres without TLS, change the user name to the new token's id as well |
 | 403 `BI_TOKEN_NEEDS_SIGN_IN` | Creating a token needs your identity provider's sign-in, not an API key or a BI token |
 | 403 `SCOPE_NOT_HELD` | You asked for a scope you do not hold |
 | 422 `UNKNOWN_SCOPE` / `TOKEN_LIFETIME_TOO_LONG` | Use `obsl:read`, `obsl:write` or `obsl:admin`; ask for at most `TOKEN_MAX_DAYS` days |
