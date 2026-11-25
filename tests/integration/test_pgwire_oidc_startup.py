@@ -32,12 +32,27 @@ def _settings(**overrides: object) -> Settings:
 
 
 async def test_no_api_keys_and_no_tls_refuses_to_start() -> None:
-    with pytest.raises(AuthConfigError, match="needs API_KEYS or PGWIRE_TLS_CERT"):
+    with pytest.raises(AuthConfigError, match="needs API_KEYS, PGWIRE_TLS_CERT or TOKEN_STORE"):
         await start_pgwire(_settings())
 
 
 async def test_tls_alone_is_enough(tmp_path: Path) -> None:
     pki = _pki(tmp_path)
     runtime = await start_pgwire(_settings(pgwire_tls_cert=pki["cert"], pgwire_tls_key=pki["key"]))
+    assert runtime is not None
+    await runtime.shutdown()
+
+
+async def test_a_token_store_alone_is_enough(tmp_path: Path) -> None:
+    """BI tokens log in by SCRAM, with the token's id as the user name: no TLS needed."""
+    config = OidcConfig(
+        issuer=ISSUER, audience=AUDIENCE, token_store_path=str(tmp_path / "bi.sqlite")
+    )
+    init_auth(
+        auth_mode="oidc",
+        oidc=config,
+        verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+    )
+    runtime = await start_pgwire(_settings())
     assert runtime is not None
     await runtime.shutdown()

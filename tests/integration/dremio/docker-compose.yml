@@ -1,14 +1,17 @@
 # Stage-1 pgwire compat: Dremio OSS connects to OrionBelt's pgwire as a
 # Postgres source. See tests/integration/dremio/README.md for usage.
 #
-# Two services on a shared bridge network:
-#   - obsl    : the OrionBelt API image with PGWIRE_ENABLED=true on :5432
-#               (the commerce demo model + DuckDB are baked into the image)
-#   - dremio  : dremio/dremio-oss exposing :9047 (REST) and :31010 (Flight)
+# Services on a shared bridge network:
+#   - obsl      : the OrionBelt API image with PGWIRE_ENABLED=true on :5432
+#                 (the commerce demo model + DuckDB are baked into the image)
+#   - obsl-auth : the same image under AUTH_MODE=oidc with a token store and
+#                 neither API keys nor TLS, for the BI token scenario
+#                 (test_dremio_bi_token.py; run.sh makes its signing key)
+#   - dremio    : dremio/dremio-oss exposing :9047 (REST) and :31010 (Flight)
 
 services:
   obsl:
-    build:
+    build: &obsl-build
       context: ../../..
       dockerfile: Dockerfile
       args:
@@ -49,6 +52,43 @@ services:
     ports:
       - "18080:8080"
       - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status == 200 else 1)\""]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # OrionBelt with sign-in: Dremio logs in with a BI token (SCRAM, its id as
+  # the user name), the only way in without API keys or TLS. Its identity
+  # provider's keys come from sign_in.py's key set, made by run.sh before the
+  # stack starts (OIDC_JWKS_FILE is read once, at startup); the tests sign
+  # Alice's access token with the private key on the host.
+  obsl-auth:
+    build: *obsl-build
+    image: orionbelt-semantic-layer-api:dremio-test
+    environment:
+      LOG_LEVEL: INFO
+      LOG_FORMAT: console
+      API_SERVER_HOST: 0.0.0.0
+      PORT: 8080
+      PGWIRE_ENABLED: "true"
+      PGWIRE_HOST: 0.0.0.0
+      PGWIRE_PORT: "5432"
+      QUERY_EXECUTE: "true"
+      DB_VENDOR: duckdb
+      DUCKDB_DATABASE: /app/data/orionbelt_1_commerce.duckdb
+      MODEL_DIR: /app/data
+      MODEL_FILES: orionbelt_1_commerce.yaml
+      AUTH_MODE: oidc
+      OIDC_ISSUER: https://idp.test/realms/obsl
+      OIDC_AUDIENCE: obsl-api
+      OIDC_JWKS_FILE: /auth/jwks.json
+      TOKEN_STORE_PATH: /tmp/obsl-tokens/bi_tokens.sqlite
+    volumes:
+      - ./.auth/public:/auth:ro
+    ports:
+      - "18081:8080"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status == 200 else 1)\""]
       interval: 3s

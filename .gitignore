@@ -42,6 +42,8 @@ gradio*-production.png
 ui-gradio*.png
 /cache/
 /tokens/
+# The Dremio stack's sign-in key (tests/integration/dremio/sign_in.py)
+tests/integration/dremio/.auth/
 /usage/
 security/
 infra/

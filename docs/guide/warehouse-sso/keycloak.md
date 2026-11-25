@@ -62,7 +62,7 @@ ADMIN=$(curl -s $KC/realms/master/protocol/openid-connect/token \
 kc() { curl -sf -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' "$@"; }
 R=$KC/admin/realms
 
-kc -X POST $R -d '{"realm": "obsl", "enabled": true}'
+kc -X POST $R -d '{"realm": "obsl", "displayName": "OrionBelt® Semantic Layer", "enabled": true}'
 
 # obsl:read lets a user query OrionBelt; session:role:<ROLE> carries the Snowflake role.
 kc -X POST $R/obsl/client-scopes -d '{"name": "obsl:read", "protocol": "openid-connect",

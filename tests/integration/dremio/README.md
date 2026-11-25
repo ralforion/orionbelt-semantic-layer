@@ -14,6 +14,11 @@ both directions:
   which speaks Arrow Flight SQL over ADBC.
 - **`ob-dremio` on its own**: the driver against Dremio's Flight SQL port,
   with nothing of OBSL in between.
+- **Dremio as a sidecar with a BI token**: a second OBSL, `obsl-auth`, runs
+  under `AUTH_MODE=oidc` with a token store and neither API keys nor TLS.
+  Alice signs in and creates a BI token; Dremio registers `obsl-auth` as a
+  Postgres source with the token's id as user name and the token as password
+  (SCRAM), queries as Alice, and is cut off when she revokes the token.
 
 ## Layout
 
@@ -25,6 +30,8 @@ both directions:
 | `test_dremio_full_circle.py` | Stage 2 — Dremio → OBSL pgwire → `ob-dremio` → Dremio, on the `dremio_info_schema` model |
 | `test_dremio_function_catalog.py`, `test_dremio_measure_sweep.py` | Stage 2 breadth — functions and measures compiled to Dremio SQL and executed |
 | `test_dremio_adbc_driver.py` | The `ob-dremio` driver straight against Flight SQL :32010: PEP 249 surface, Arrow types, parameter binding |
+| `test_dremio_bi_token.py` | Dremio logs in to `obsl-auth` (REST :18081) with a BI token, queries as its owner, and is refused once the token is revoked |
+| `sign_in.py` | Makes `obsl-auth`'s identity provider key in `.auth/` (gitignored) before the stack starts; `run.sh` calls it. Run `python -m tests.integration.dremio.sign_in` first when you start the stack by hand |
 | `run.sh` | One-shot runner — build, up, pytest, down |
 
 ## Why opt-in
