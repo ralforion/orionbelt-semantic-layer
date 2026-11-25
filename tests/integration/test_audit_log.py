@@ -277,3 +277,56 @@ class TestFlight:
         (event,) = _events(audit_file)
         assert (event["surface"], event["action"], event["outcome"]) == ("flight", "query", "ok")
         assert event["target"] == {"model": "sales", "data_source": "crm"}
+
+
+class Collected:
+    """An AUDIT_SINK of the test: keeps the events it is handed."""
+
+    events: list[dict[str, Any]] = []
+
+    def emit(self, event: dict[str, Any]) -> None:
+        Collected.events.append(event)
+
+
+def failing_factory() -> Any:
+    raise RuntimeError("no queue to send to")
+
+
+def without_emit() -> Any:
+    return object()
+
+
+SINK = "tests.integration.test_audit_log:Collected"
+
+
+class TestCustomSink:
+    @pytest.fixture(autouse=True)
+    def _clear(self) -> None:
+        Collected.events.clear()
+
+    async def test_events_reach_the_object_audit_sink_makes(self) -> None:
+        configure_audit("custom", sink_spec=SINK)
+        async with _rest(Settings(auth_mode="api_key", api_keys=KEY)) as client:
+            await client.get("/v1/sessions", headers={"X-API-Key": KEY})
+        (event,) = Collected.events
+        assert (event["action"], event["outcome"]) == ("GET /v1/sessions", "200")
+        assert event["who"] == {"kind": "api_key", "key_id": key_id(KEY)}
+
+    @pytest.mark.parametrize(
+        ("mode", "spec", "match"),
+        [
+            ("custom", "", "needs AUDIT_SINK=<module>:<factory>"),
+            ("custom", "tests.integration.test_audit_log", "needs AUDIT_SINK=<module>:<factory>"),
+            ("custom", "no_such_module_here:make", "cannot import 'no_such_module_here'"),
+            ("custom", "tests.integration.test_audit_log:missing", "has no callable 'missing'"),
+            ("custom", "tests.integration.test_audit_log:failing_factory", "no queue to send to"),
+            ("custom", "tests.integration.test_audit_log:without_emit", "no object with emit"),
+            ("log", SINK, "set AUDIT_LOG=custom"),
+        ],
+    )
+    def test_a_sink_that_cannot_work_refuses_the_start(
+        self, mode: str, spec: str, match: str
+    ) -> None:
+        with pytest.raises(AuthConfigError, match=match):
+            configure_audit(mode, sink_spec=spec)
+        assert not audit_module.audit_enabled()

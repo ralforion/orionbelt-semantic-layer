@@ -69,9 +69,11 @@ class Settings(BaseSettings):
     oidc_token_endpoint: str = ""
     # Who did what: "off" (default), "log" (one event per authenticated action
     # through the logger orionbelt.audit, JSON with LOG_FORMAT=json/cloudrun),
-    # or "file" (JSON lines appended to AUDIT_LOG_PATH).
+    # "file" (JSON lines appended to AUDIT_LOG_PATH), or "custom" (each event
+    # handed to the object AUDIT_SINK=<module>:<factory> makes).
     audit_log: str = "off"
     audit_log_path: str = ""
+    audit_sink: str = ""
     # Where OBSL revokes a BI token's refresh token at the IdP (RFC 7009).
     # Unset: from the discovery document; Entra ID has none.
     oidc_revocation_endpoint: str = ""
