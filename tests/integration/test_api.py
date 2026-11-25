@@ -126,27 +126,17 @@ class TestDialectsEndpoint:
             assert "json_value" in by_name[dialect]["supported_functions"], dialect
 
     async def test_published_examples_match_the_response_shape(self) -> None:
-        """The docs and the GPT action spec show this endpoint's response.
+        """The docs show this endpoint's response.
 
         Renaming a field and leaving the examples behind is how a published
         contract becomes a lie: the response fields were replaced by their
         positive counterparts and three surfaces went on showing the old ones.
         """
-        import yaml
-
         from orionbelt.api.schemas import DialectInfo
 
         repo_root = Path(__file__).resolve().parents[2]
         fields = set(DialectInfo.model_fields)
         retired = {"unsupported_aggregations", "unsupported_functions"}
-
-        spec = yaml.safe_load(
-            (repo_root / "integrations/chatgpt-custom-gpt/openapi-gpt-action.yaml").read_text()
-        )
-        documented = spec["paths"]["/v1/dialects"]["get"]["responses"]["200"]["content"][
-            "application/json"
-        ]["schema"]["properties"]["dialects"]["items"]["properties"]
-        assert set(documented) == fields
 
         for doc in ("docs/api/endpoints.md", "docs/guide/dialects.md"):
             text = (repo_root / doc).read_text()

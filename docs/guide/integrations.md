@@ -29,7 +29,17 @@ model uploads; admin-curated deployments accept batches referencing existing mod
 | **Google ADK** | Python | 10 FunctionTools + Gemini agent example | [`integrations/google-adk/`](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/integrations/google-adk) |
 | **Vercel AI SDK** | TypeScript | 10 tools + Next.js API route example | [`integrations/vercel-ai-sdk/`](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/integrations/vercel-ai-sdk) |
 | **n8n** | JSON | Workflow templates (batch + AI agent) | [`integrations/n8n/`](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/integrations/n8n) |
-| **ChatGPT Custom GPT** | OpenAPI | OpenAPI 3.1 spec + GPT instructions | [`integrations/chatgpt-custom-gpt/`](https://github.com/ralforion/orionbelt-semantic-layer/tree/main/integrations/chatgpt-custom-gpt) |
-| **MCP Server** | Python | 10+ tools for Claude, Copilot, Cursor, Windsurf | [separate repo](https://github.com/ralforion/orionbelt-semantic-layer-mcp) |
+| **MCP Server** | Python | 10+ tools for Claude, ChatGPT, Copilot, Cursor, Windsurf | [separate repo](https://github.com/ralforion/orionbelt-semantic-layer-mcp) |
 
 Each integration directory includes a self-contained README with setup instructions, code examples, and usage patterns. The MCP server is maintained as a [separate repository](https://github.com/ralforion/orionbelt-semantic-layer-mcp).
+
+### ChatGPT
+
+ChatGPT connects through the MCP server. Add it to ChatGPT as a custom MCP
+server, by its HTTPS address: your own deployment over its HTTP transport, or
+the hosted demo at `https://orionbelt.ralforion.com/mcp`.
+
+OpenAI retires Custom GPTs on December 11, 2026, and their actions do not carry
+over to what replaces them. The Custom GPT action spec that used to ship in
+`integrations/chatgpt-custom-gpt/` is therefore removed. A Custom GPT you already
+set up keeps its own copy of the spec and works until OpenAI turns it off.
