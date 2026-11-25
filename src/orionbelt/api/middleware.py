@@ -105,6 +105,20 @@ def _method_label(scope: Scope) -> str:
     return method if method in _METHODS else "other"
 
 
+def _app_path(scope: Scope) -> str:
+    """The request's path within the app, without the ``root_path`` it is mounted at.
+
+    Under a root path (``/obsl``), ``path`` carries it (``/obsl/tokens``) while
+    the app's routes are relative to it (``/tokens``). A path that only starts
+    with the same letters (``/obslx``) is not under it.
+    """
+    path: str = scope.get("path", "")
+    root: str = scope.get("root_path", "")
+    if root and path.startswith(root) and path[len(root) : len(root) + 1] in ("", "/"):
+        return path[len(root) :]
+    return path
+
+
 def _route_label(scope: Scope) -> str:
     """The template of the route a request matched, ``unmatched`` for none.
 
@@ -117,11 +131,7 @@ def _route_label(scope: Scope) -> str:
     template = getattr(scope.get("route"), "path", None)
     if not isinstance(template, str) or not template:
         return "unmatched"
-    path = scope.get("path", "")
-    root = scope.get("root_path", "")
-    if root and path.startswith(root):
-        path = path[len(root) :]
-    head = [part for part in path.split("/") if part]
+    head = [part for part in _app_path(scope).split("/") if part]
     tail = [part for part in template.split("/") if part]
     if len(head) > len(tail):
         candidate = "/" + "/".join([*head[: len(head) - len(tail)], *tail])
@@ -177,8 +187,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Gradio UI requires inline scripts/styles and external fonts —
         # use a relaxed CSP for /ui paths.  Swagger UI / ReDoc need the
         # jsdelivr CDN for JS + CSS assets.  All other API endpoints get
-        # a strict policy.
-        path = request.url.path
+        # a strict policy. Paths are the app's own, also when it is mounted
+        # under a root path.
+        path = _app_path(request.scope)
         if path.startswith("/ui"):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "

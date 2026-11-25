@@ -45,7 +45,7 @@ def _settings(tmp_path: Path, **overrides: Any) -> Settings:
 
 
 @asynccontextmanager
-async def _client(settings: Settings) -> AsyncIterator[AsyncClient]:
+async def _client(settings: Settings, root_path: str = "") -> AsyncIterator[AsyncClient]:
     app = create_app(settings=settings)
     init_session_manager(
         SessionManager(ttl_seconds=3600, cleanup_interval=9999),
@@ -53,7 +53,8 @@ async def _client(settings: Settings) -> AsyncIterator[AsyncClient]:
         oidc=oidc_config(settings),
     )
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        transport = ASGITransport(app=app, root_path=root_path)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
     finally:
         reset_session_manager()
@@ -97,6 +98,21 @@ async def test_its_policy_allows_its_own_files_and_the_token_endpoint(tmp_path: 
             assert policy.startswith("default-src 'self'; connect-src 'self' ")
             assert "https://login.example.test" in policy
             assert "unsafe-inline" not in policy  # no inline script runs on the page
+
+
+async def test_under_a_root_path_its_policy_still_allows_the_token_endpoint(
+    tmp_path: Path,
+) -> None:
+    """Mounted under ``/obsl``: ``/obsl/tokens`` is the page, with the page's policy."""
+    async with _client(_settings(tmp_path), root_path="/obsl") as client:
+        for path in ("/obsl/tokens", "/obsl/tokens/app.js", "/obsl/tokens/app.css"):
+            response = await client.get(path)
+            assert response.status_code == 200, path
+            policy = response.headers["content-security-policy"]
+            assert policy.startswith("default-src 'self'; connect-src 'self' "), path
+            assert "https://login.example.test" in policy, path
+        docs = await client.get("/obsl/docs")
+        assert "https://cdn.jsdelivr.net" in docs.headers["content-security-policy"]
 
 
 async def test_a_setting_cannot_end_the_config_script_early(tmp_path: Path) -> None:
