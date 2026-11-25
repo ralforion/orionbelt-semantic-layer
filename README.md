@@ -500,8 +500,8 @@ Full, two-sided comparisons, including where each of these tools is ahead: [dbt]
 ### Integration Surface
 
 - **REST API** — FastAPI endpoints for model management, validation, compilation, and execution
-- **MCP Server** — [separate thin client](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for Claude, Copilot, Cursor, Windsurf
-- **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n, ChatGPT
+- **MCP Server** — [separate thin client](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for Claude, ChatGPT, Copilot, Cursor, Windsurf
+- **AI Integrations** — LangChain, OpenAI Agents SDK, CrewAI, Google ADK, Vercel AI SDK, n8n
 - **Gradio UI** — interactive web interface for model editing, query testing, and ER diagrams
 - **DB-API 2.0 + Flight SQL** — PEP 249 drivers and Arrow Flight SQL server for DBeaver, Tableau, Power BI; ships with `examples/obsql.py`, a tiny terminal CLI for testing the Flight surface without a BI tool
 - **DuckDB as a client** (v2.27.1+) - a plain DuckDB shell queries the layer, over either surface. `ATTACH ... (TYPE postgres)` mounts the model as a table (`SELECT ... FROM obsl.sales.model`, after `SET pg_use_text_protocol = true`, and on DuckDB 2.0.1+ `SET pg_enable_remote_pushdown = false`); the `adbc_scanner` community extension does it over Flight SQL with Arrow the whole way. Governed measures join to local tables and land in `CREATE TABLE AS`. [Guide](https://ralforion.com/orionbelt-semantic-layer/guide/duckdb/)

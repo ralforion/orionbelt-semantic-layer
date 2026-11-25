@@ -33,6 +33,7 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ### Removed
 
+- **The ChatGPT Custom GPT integration (`integrations/chatgpt-custom-gpt/`).** OpenAI retires Custom GPTs on December 11, 2026, and their actions do not carry over to what replaces them. Connect ChatGPT to the [MCP server](https://github.com/ralforion/orionbelt-semantic-layer-mcp) instead, as a custom MCP server. A Custom GPT already set up from the spec keeps its own copy and works until OpenAI turns it off. See [AI Integrations](docs/guide/integrations.md#chatgpt).
 - **`AUTH_ENABLED`, `FLIGHT_AUTH_MODE` and `FLIGHT_API_TOKEN`.** Deprecated since v2.12.0. A deployment that still sets one to turn authentication on (`AUTH_ENABLED=true`, `FLIGHT_AUTH_MODE=token`, any `FLIGHT_API_TOKEN`) now refuses to start and names it, rather than starting without the authentication it asked for: set `AUTH_MODE=api_key`, and move a Flight token into `API_KEYS`. `FLIGHT_AUTH_MODE=none` is ignored. `GET /v1/settings` reports Flight's `auth_mode` as the `AUTH_MODE` it follows (`none`, `api_key`, `oidc`); it reported `FLIGHT_AUTH_MODE` before, so `none` even with `AUTH_MODE=api_key`.
 
 ### Fixed

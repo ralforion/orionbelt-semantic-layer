@@ -105,10 +105,6 @@ def test_no_deprecated_surface_references(path: Path) -> None:
 
 _QUERY_FILTER_DOC_FILES = (
     pytest.param(_ROOT / "examples" / "quickstart_colab.ipynb", id="quickstart_colab.ipynb"),
-    pytest.param(
-        _ROOT / "integrations" / "chatgpt-custom-gpt" / "openapi-gpt-action.yaml",
-        id="openapi-gpt-action.yaml",
-    ),
 )
 
 
