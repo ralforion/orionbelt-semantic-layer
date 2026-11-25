@@ -33,7 +33,14 @@ class CredentialRejected(Exception):
 
 
 class ScopeMissing(Exception):
-    """The caller authenticated but may not use Flight. Sent to the client."""
+    """The caller authenticated but may not use Flight. Sent to the client.
+
+    ``caller`` is who authenticated, for the audit log.
+    """
+
+    def __init__(self, message: str, caller: Any = None) -> None:
+        super().__init__(message)
+        self.caller = caller
 
 
 #: Returns the caller a credential authenticates as; raises CredentialRejected
@@ -41,14 +48,38 @@ class ScopeMissing(Exception):
 Authenticate = Callable[[str], Any]
 
 
-def _check(authenticate: Authenticate, credential: str) -> Any:
-    """Run ``authenticate``, turning its refusals into Flight errors."""
+def _audit(outcome: str, *, sign_in: bool, caller: Any = None, reason: str | None = None) -> None:
+    """One audit event: a sign-in (ok or refused), or a call refused (``AUDIT_LOG``)."""
+    from orionbelt.auth import Principal
+    from orionbelt.auth.audit import record
+
+    record(
+        surface="flight",
+        action="sign-in" if sign_in else "call",
+        outcome=outcome,
+        principal=caller if isinstance(caller, Principal) else None,
+        reason=reason,
+    )
+
+
+def _check(authenticate: Authenticate, credential: str, *, sign_in: bool = False) -> Any:
+    """Run ``authenticate``, turning its refusals into Flight errors.
+
+    A refusal is audited, and so is a ``sign_in`` that succeeds: the
+    handshake. Other calls authenticate on every RPC; one event each would
+    drown the log.
+    """
     try:
-        return authenticate(credential)
+        caller = authenticate(credential)
     except CredentialRejected as exc:
+        _audit("refused", sign_in=sign_in, reason="invalid_credential")
         raise flight.FlightUnauthenticatedError(str(exc)) from None
     except ScopeMissing as exc:
+        _audit("refused", sign_in=sign_in, caller=exc.caller, reason="insufficient_scope")
         raise flight.FlightUnauthorizedError(str(exc)) from None
+    if sign_in:
+        _audit("ok", sign_in=True, caller=caller)
+    return caller
 
 
 def _decode_token(token: Any) -> str:
@@ -103,7 +134,7 @@ class SharedKeyAuthHandler(flight.ServerAuthHandler):  # type: ignore[misc]
                 "No API key on the handshake stream. This server accepts the "
                 "legacy handshake only; enable api_key mode for header auth."
             )
-        _check(self._authenticate, _decode_token(token))
+        _check(self._authenticate, _decode_token(token), sign_in=True)
         outgoing.write(token)
 
     def is_valid(self, token: bytes) -> str:
@@ -274,6 +305,7 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
         credential = _credential_from_headers(headers)
         if credential is None:
             if _presents_a_credential(headers):
+                _audit("refused", sign_in=_is_handshake(info), reason="missing_credential")
                 # A credential header holding no key - an empty Basic password,
                 # a bare "Bearer", undecodable base64. The client offered
                 # something and it was not a key; saying so beats letting it
@@ -291,11 +323,14 @@ class AuthMiddlewareFactory(flight.ServerMiddlewareFactory):  # type: ignore[mis
                 # handshake that carries a credential header is
                 # AuthenticateBasicToken and is validated like any other call.
                 return None
+            _audit("refused", sign_in=_is_handshake(info), reason="missing_credential")
             raise flight.FlightUnauthenticatedError(
                 "Missing API key. Send it as 'authorization: Bearer <key>', "
                 "'x-api-key: <key>', or the password of a Basic credential."
             )
-        caller = _check(self._authenticate, credential)
+        # AuthenticateBasicToken is the client's sign-in; every other call
+        # carries the credential again.
+        caller = _check(self._authenticate, credential, sign_in=_is_handshake(info))
         return _AuthMiddleware(credential, caller)
 
 
@@ -335,7 +370,7 @@ def _authenticate_with_orionbelt(credential: str) -> Any:
     except AuthError as exc:
         raise CredentialRejected(exc.message) from None
     if not principal.has_scope(SCOPE_READ):
-        raise ScopeMissing(f"Insufficient scope: requires {SCOPE_READ}")
+        raise ScopeMissing(f"Insufficient scope: requires {SCOPE_READ}", caller=principal)
     return principal
 
 

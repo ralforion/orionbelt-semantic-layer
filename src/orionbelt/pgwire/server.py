@@ -27,11 +27,11 @@ from orionbelt.auth import (
     AuthError,
     Principal,
     bind_principal,
+    caller_for_key,
     check_still_valid,
-    note_key_used,
 )
+from orionbelt.auth.audit import audit_enabled, record
 from orionbelt.auth.pgwire_login import MECH_CLEARTEXT, select_mechanism
-from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.auth import (
     AuthResult,
@@ -301,6 +301,18 @@ class PgWireServer:
                 raise protocol.ProtocolError("Repeated SSLRequest on same socket")
 
         result = await self._authenticate(reader, writer, startup)
+        if audit_enabled():
+            peer = writer.get_extra_info("peername")
+            record(
+                surface="pgwire",
+                action="login",
+                outcome="ok" if result.ok else "refused",
+                principal=result.principal,
+                reason=None if result.ok else (result.error_message or "refused"),
+                client=str(peer[0]) if isinstance(peer, tuple) and peer else None,
+                database=startup.database,
+                user=startup.user,
+            )
         if not result.ok:
             return None
         return startup, result
@@ -414,10 +426,8 @@ class PgWireServer:
             result = await asyncio.to_thread(
                 finish_bi_token_scram, token_id, proven=server_final is not None
             )
-        elif server_final is not None:
-            if exchange.matched_key is not None:
-                note_key_used(exchange.matched_key)
-            result = AuthResult(ok=True, principal=API_KEY_PRINCIPAL)
+        elif server_final is not None and exchange.matched_key is not None:
+            result = AuthResult(ok=True, principal=caller_for_key(exchange.matched_key))
         else:
             result = AuthResult(ok=False, error_message="SCRAM authentication failed")
         if server_final is None or not result.ok:

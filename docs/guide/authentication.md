@@ -42,6 +42,8 @@ with a comma-separated second key.
 | `AUTH_MODE` | `none` | `none`, `api_key`, or `oidc`. |
 | `API_KEYS` | — | Comma-separated valid keys (≥32 chars, high-entropy). Required when `AUTH_MODE=api_key`. |
 | `API_KEY_HEADER` | `X-API-Key` | REST header name. `Authorization: Bearer` is always accepted as a fallback. |
+| `AUDIT_LOG` | `off` | `off`, `log` or `file`: [who did what](#who-did-what). |
+| `AUDIT_LOG_PATH` | — | The file `AUDIT_LOG=file` appends to. |
 
 Startup fails fast (refuses to boot) if `AUTH_MODE=api_key` with an empty
 `API_KEYS`, or if any key is shorter than 32 characters or low-entropy.
@@ -442,6 +444,35 @@ a secret:
 ```bash
 curl -s https://obsl.example.com/v1/auth/status -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
+
+### Who did what
+
+`AUDIT_LOG` records one event per authenticated action, and per refusal.
+Off by default:
+
+| `AUDIT_LOG` | Where events go |
+|---|---|
+| `off` | Nowhere |
+| `log` | The logger `orionbelt.audit`: with `LOG_FORMAT=json` or `cloudrun`, one JSON line each, which log shippers (Cloud Logging and others) take as is |
+| `file` | `AUDIT_LOG_PATH`, one JSON line each, appended. Rotate it with the system's tools: OrionBelt opens the file for each event |
+
+```json
+{"time": "2026-11-25T21:40:12.031+00:00", "surface": "rest",
+ "action": "POST /v1/sessions/{session_id}/query/execute", "outcome": "200",
+ "who": {"kind": "user", "sub": "alice", "token_id": "3f2a9c41b7e0"},
+ "target": {"session_id": "a1b2c3"}, "client": "10.0.0.7", "request_id": "c0ffee"}
+```
+
+| Surface | Recorded |
+|---|---|
+| REST | Every `/v1` request: the route as declared (never its values), the session and model the path names, the HTTP status, and for a refusal its code (`AUTH_INVALID`, `AUTH_INSUFFICIENT_SCOPE`, `SIGN_IN_REQUIRED`) |
+| Postgres wire | Each login (ok or refused, with its reason, the database and user name) and each semantic query. Not the catalog lookups and probes BI tools send by the hundred |
+| Flight SQL | Each sign-in (the handshake) and each refused call, and each semantic query with its model and data source |
+
+`who` names the caller: a user's `sub`, a BI token's id, an API key's
+[id](#key-ids). An event never holds a token, a key, SQL text, a value or a
+row. A path that cannot be written refuses the start; an event that cannot
+be written later is logged and skipped, without failing the request.
 
 ## Where keys live
 

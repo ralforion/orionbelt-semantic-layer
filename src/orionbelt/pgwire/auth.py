@@ -33,14 +33,13 @@ from orionbelt.auth import (
     SCOPE_READ,
     AuthError,
     Principal,
+    api_key_caller,
     get_api_keys,
     get_mode,
     get_token_store,
-    validate_api_key,
 )
 from orionbelt.auth.bi_tokens import is_bi_token, token_id_of_user
 from orionbelt.auth.jwt_verify import looks_like_jwt
-from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire.protocol import StartupMessage
 from orionbelt.pgwire.scram import ScramServerExchange
 
@@ -122,8 +121,9 @@ def authenticate(
     if not password:
         return _refused("password authentication required")
     if get_mode() != MODE_OIDC or not (looks_like_jwt(password) or is_bi_token(password)):
-        if validate_api_key(password):
-            return AuthResult(ok=True, principal=API_KEY_PRINCIPAL)
+        caller = api_key_caller(password)
+        if caller is not None:
+            return AuthResult(ok=True, principal=caller)
         return _refused("invalid API key")
     if not tls:
         return _refused(

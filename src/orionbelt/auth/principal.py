@@ -35,6 +35,9 @@ class Principal:
     email: str | None = None
     scopes: frozenset[str] = field(default_factory=frozenset)
     token_id: str | None = None
+    #: The id of the API key that authenticated an ``api_key`` caller, for the
+    #: audit log. Not part of equality: every key is the same caller.
+    key_id: str | None = field(default=None, compare=False)
 
     def has_scope(self, scope: str) -> bool:
         """Return True when this principal is granted ``scope``."""

@@ -15,6 +15,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from orionbelt.auth.audit import audit_enabled, record
+
 logger = logging.getLogger(__name__)
 
 # Body size limits (also enforced by Cloud Armor — keep in sync with
@@ -157,6 +159,43 @@ def _declared_templates(app: object) -> frozenset[str]:
             found = frozenset()
         _TEMPLATES[key] = found
     return found
+
+
+class AuditMiddleware(BaseHTTPMiddleware):
+    """One audit event per ``/v1`` request: who, the route, what on, and the outcome.
+
+    Off unless ``AUDIT_LOG`` is set. The route is the template the request
+    matched (``POST /v1/sessions/{session_id}/query/execute``), never its
+    values; the target is the session and model the path names. A refusal
+    carries the reason ``require_auth`` gave (``request.state.audit_reason``).
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if not audit_enabled() or not _app_path(request.scope).startswith("/v1/"):
+            return await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # Unhandled: the server answers 500 further out. Still who and what.
+            self._record(request, outcome="500", reason=type(exc).__name__)
+            raise
+        self._record(request, outcome=str(response.status_code))
+        return response
+
+    @staticmethod
+    def _record(request: Request, *, outcome: str, reason: str | None = None) -> None:
+        params = request.scope.get("path_params") or {}
+        record(
+            surface="rest",
+            action=f"{request.method} {_route_label(request.scope)}",
+            outcome=outcome,
+            principal=getattr(request.state, "principal", None),
+            reason=getattr(request.state, "audit_reason", None) or reason,
+            client=request.client.host if request.client else None,
+            request_id=structlog.contextvars.get_contextvars().get("request_id"),
+            session_id=params.get("session_id"),
+            model_id=params.get("model_id"),
+        )
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

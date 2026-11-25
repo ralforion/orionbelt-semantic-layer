@@ -21,10 +21,10 @@ from orionbelt.api.deps import init_session_manager, reset_session_manager
 from orionbelt.auth import (
     OidcClient,
     OidcConfig,
+    caller_for_key,
     get_key_last_used,
     get_token_store,
     init_auth,
-    note_key_used,
     reset_auth,
 )
 from orionbelt.auth.jwt_verify import JwtVerifier
@@ -279,8 +279,8 @@ class TestKeyUse:
     def test_a_scram_login_s_key_is_recorded(self) -> None:
         init_auth(auth_mode="api_key", api_keys=KEY)
         assert get_key_last_used() == {key_id(KEY): None}
-        note_key_used(KEY)
-        note_key_used("not a configured key")
+        assert caller_for_key(KEY).key_id == key_id(KEY)
+        assert caller_for_key("not a configured key").key_id is None
         assert get_key_last_used()[key_id(KEY)] is not None
 
 

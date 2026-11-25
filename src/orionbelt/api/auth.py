@@ -85,9 +85,18 @@ async def require_auth(request: Request) -> AsyncIterator[Principal]:
     :func:`orionbelt.auth.bind_principal` until the request ends; its ``sub``
     is added to the request's log lines.
     """
-    principal = await _authenticate(request)
+    try:
+        principal = await _authenticate(request)
+    except HTTPException as exc:
+        detail = exc.detail
+        request.state.audit_reason = (
+            detail.get("code") if isinstance(detail, dict) else auth_core.AUTH_REQUIRED
+        )
+        raise
     scope = required_scope(request.scope.get("endpoint"))
     if not principal.has_scope(scope):
+        request.state.principal = principal  # who was refused, for the audit log
+        request.state.audit_reason = auth_core.AUTH_INSUFFICIENT_SCOPE
         headers = None
         if auth_core.get_mode() == auth_core.MODE_OIDC:
             headers = {

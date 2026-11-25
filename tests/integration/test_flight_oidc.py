@@ -13,6 +13,7 @@ import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -240,6 +241,83 @@ class TestTicketsBelongToTheirCaller:
             client.do_get(ticket, bob).read_all()
         # Bob's attempt did not use it up: it is still Alice's to redeem.
         assert client.do_get(ticket, alice).read_all().num_rows > 0
+
+
+class TestAudit:
+    """A Flight refusal leaves an audit event naming who was refused (AUDIT_LOG)."""
+
+    @pytest.fixture
+    def events(self, tmp_path: Path) -> Iterator[Path]:
+        from orionbelt.auth.audit import configure_audit, reset_audit
+
+        path = tmp_path / "audit.jsonl"
+        configure_audit("file", str(path))
+        yield path
+        reset_audit()
+
+    @staticmethod
+    def _read(path: Path) -> list[dict[str, Any]]:
+        import json
+
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_another_user_s_ticket_is_a_refusal_on_record(
+        self, server: Server, events: Path
+    ) -> None:
+        from pyarrow import flight
+
+        alice = _as(server.idp.token("alice"), server.alice_session)
+        bob = _as(server.idp.token("bob"), server.alice_session)
+        client = _client(server)
+        ticket = client.get_flight_info(_statement(_sql(server)), alice).endpoints[0].ticket
+        with pytest.raises(flight.FlightServerError, match="Unknown ticket"):
+            client.do_get(ticket, bob).read_all()
+        client.do_get(ticket, alice).read_all()
+
+        refused = [e for e in self._read(events) if e["outcome"] == "refused"]
+        assert [(e["action"], e["reason"], e["who"].get("sub")) for e in refused] == [
+            ("call do_get", "UNKNOWN_TICKET", "bob")
+        ]
+        queries = [e for e in self._read(events) if e["action"] == "query"]
+        # No result cache on this server: the model is named all the same.
+        assert [(e["outcome"], e["who"]["sub"], e["target"]) for e in queries] == [
+            ("ok", "alice", {"model": server.alice_session})
+        ]
+
+    def test_a_query_that_fails_says_which_model(
+        self, server: Server, events: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ob_flight.server import OBFlightServer
+        from pyarrow import flight
+
+        def gone(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("the table went away")
+
+        alice = _as(server.idp.token("alice"), server.alice_session)
+        client = _client(server)
+        ticket = client.get_flight_info(_statement(_sql(server)), alice).endpoints[0].ticket
+        monkeypatch.setattr(OBFlightServer, "_execute_sql", gone)
+        with pytest.raises(flight.FlightError):
+            client.do_get(ticket, alice).read_all()
+        (event,) = self._read(events)
+        assert (event["action"], event["outcome"], event["reason"]) == (
+            "query",
+            "error",
+            "RuntimeError",
+        )
+        assert event["target"] == {"model": server.alice_session}
+        assert event["who"]["sub"] == "alice"
+        assert "the table went away" not in events.read_text()
+
+    def test_a_missing_scope_names_who_was_refused(self, server: Server, events: Path) -> None:
+        from pyarrow import flight
+
+        no_scope = _as(server.idp.token("bob", scope=""), server.alice_session)
+        with pytest.raises(flight.FlightUnauthorizedError):
+            _client(server).get_flight_info(_statement(_sql(server)), no_scope)
+        (event,) = self._read(events)
+        assert (event["outcome"], event["reason"]) == ("refused", "insufficient_scope")
+        assert event["who"] == {"kind": "user", "sub": "bob"}
 
 
 class TestPreparedStatementsBelongToTheirCaller:
