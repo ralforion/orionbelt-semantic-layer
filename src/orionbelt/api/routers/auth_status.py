@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
 
+from orionbelt.api.deps import get_flight_info
+from orionbelt.api.openapi_security import swagger_sign_in_offered
 from orionbelt.api.schemas import (
     AuthBiTokensStatus,
     AuthKeyStatus,
@@ -95,12 +97,16 @@ def _bi_tokens() -> AuthBiTokensStatus:
 
 
 def _surfaces(settings: Settings) -> AuthSurfaces:
+    # Flight as it started: FLIGHT_ENABLED alone stays true when its start was
+    # skipped (no or an incompatible ob-flight-extension).
+    flight = get_flight_info() or {}
+    flight_on = bool(flight.get("enabled"))
     pgwire_tls = bool(settings.pgwire_tls_cert)
     return AuthSurfaces(
         flight=AuthSurfaceStatus(
-            enabled=settings.flight_enabled,
-            tls=bool(settings.flight_tls_cert),
-            login=f"AUTH_MODE={get_mode()}" if settings.flight_enabled else None,
+            enabled=flight_on,
+            tls=bool(flight.get("tls")),
+            login=f"AUTH_MODE={get_mode()}" if flight_on else None,
         ),
         pgwire=AuthSurfaceStatus(
             enabled=settings.pgwire_enabled,
@@ -112,7 +118,7 @@ def _surfaces(settings: Settings) -> AuthSurfaces:
             ),
         ),
         tokens_page=token_page_enabled(settings) and get_token_store() is not None,
-        swagger_sign_in=get_mode() == MODE_OIDC and bool(settings.oidc_swagger_client_id.strip()),
+        swagger_sign_in=swagger_sign_in_offered(settings),
     )
 
 

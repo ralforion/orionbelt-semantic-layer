@@ -91,6 +91,17 @@ def _endpoint(explicit: str, discovered: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def swagger_sign_in_offered(settings: Settings) -> bool:
+    """Whether /docs offers sign-in at the IdP: served, with its document, the endpoints known."""
+    return (
+        settings.expose_api_docs
+        and settings.expose_openapi_schema
+        and _swagger_sign_in(settings)
+        and _endpoint(settings.oidc_authorization_endpoint, "authorization_endpoint") is not None
+        and _endpoint(settings.oidc_token_endpoint, "token_endpoint") is not None
+    )
+
+
 def _sign_in_scheme(settings: Settings) -> dict[str, Any] | None:
     """The authorization-code scheme for /docs sign-in; None when the endpoints are unknown."""
     authorization_url = _endpoint(settings.oidc_authorization_endpoint, "authorization_endpoint")

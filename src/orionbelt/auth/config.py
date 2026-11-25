@@ -150,13 +150,14 @@ def init_auth(
         else:
             if dropped:
                 logger.info("Dropped %d warehouse sign-in(s) of revoked or expired tokens", dropped)
+            missing = warehouse_sign_in_missing()
             logger.info(
                 "Auth: BI tokens on (store %s: %d active, %d with a warehouse sign-in; "
                 "warehouse sign-ins %s)",
                 _tokens.path,
                 active,
                 signed_in,
-                "can be made" if _tokens.sealer is not None else "off: no TOKEN_STORE_KEY",
+                f"need {', '.join(missing)}" if missing else "can be made",
             )
     elif mode == MODE_OIDC:
         logger.info("Auth: BI tokens off (TOKEN_STORE_PATH is empty)")

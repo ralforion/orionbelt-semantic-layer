@@ -19,6 +19,7 @@ from httpx import ASGITransport, AsyncClient
 from orionbelt.api.app import create_app, oidc_config
 from orionbelt.api.deps import init_session_manager, reset_session_manager
 from orionbelt.auth import (
+    OidcClient,
     OidcConfig,
     get_key_last_used,
     get_token_store,
@@ -46,13 +47,16 @@ def _reset() -> Iterator[None]:
 
 
 @asynccontextmanager
-async def _client(settings: Settings) -> AsyncIterator[AsyncClient]:
+async def _client(
+    settings: Settings, flight_info: dict[str, object] | None = None
+) -> AsyncIterator[AsyncClient]:
     app = create_app(settings=settings)
     init_session_manager(
         SessionManager(ttl_seconds=3600, cleanup_interval=9999),
         auth_mode=settings.auth_mode,
         api_keys=settings.api_keys,
         oidc=oidc_config(settings),
+        flight_info=flight_info,
     )
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -91,6 +95,21 @@ class TestApiKeyMode:
         assert status["warehouse_sign_in"]["ready"] is False
         assert "AUTH_MODE=oidc" in status["warehouse_sign_in"]["missing"]
         _no_secret_in(answer.text)
+
+    async def test_flight_is_on_only_once_it_started(self) -> None:
+        """FLIGHT_ENABLED stays true when the start was skipped (no ob-flight-extension)."""
+        settings = Settings(auth_mode="api_key", api_keys=KEY, flight_enabled=True)
+        async with _client(settings) as client:
+            skipped = (await client.get("/v1/auth/status", headers={"X-API-Key": KEY})).json()
+        assert skipped["surfaces"]["flight"] == {"enabled": False, "tls": False, "login": None}
+        started = {"enabled": True, "port": 8815, "tls": True}
+        async with _client(settings, flight_info=started) as client:
+            running = (await client.get("/v1/auth/status", headers={"X-API-Key": KEY})).json()
+        assert running["surfaces"]["flight"] == {
+            "enabled": True,
+            "tls": True,
+            "login": "AUTH_MODE=api_key",
+        }
 
     async def test_it_is_in_the_api_document(self) -> None:
         async with _client(Settings(auth_mode="api_key", api_keys=KEY)) as client:
@@ -179,6 +198,22 @@ class TestOidcMode:
         _no_secret_in(answer.text)
         assert "rt-alice" not in answer.text
 
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"expose_api_docs": False},
+            {"expose_openapi_schema": False},
+            {"oidc_authorization_endpoint": "", "oidc_token_endpoint": ""},
+        ],
+    )
+    async def test_docs_sign_in_only_when_docs_offer_it(
+        self, settings: Settings, change: dict[str, object]
+    ) -> None:
+        admin = {"Authorization": f"Bearer {self.issuer.token('root', scope='obsl:admin')}"}
+        async with _client(settings.model_copy(update=change)) as client:
+            status = (await client.get("/v1/auth/status", headers=admin)).json()
+        assert status["surfaces"]["swagger_sign_in"] is False
+
     async def test_only_an_admin(self, settings: Settings) -> None:
         reader = {"Authorization": f"Bearer {self.issuer.token('alice', scope='obsl:read')}"}
         async with _client(settings) as client:
@@ -209,8 +244,35 @@ class TestStartupLines:
         assert f"Auth: oidc; issuer {ISSUER}; audience {AUDIENCE}; 0 service key(s)" in caplog.text
         assert "BI tokens on (store" in caplog.text
         assert "0 active, 0 with a warehouse sign-in" in caplog.text
-        assert "off: no TOKEN_STORE_KEY" in caplog.text
+        assert "warehouse sign-ins need TOKEN_STORE_KEY" in caplog.text
         assert not (tmp_path / "bi.sqlite").exists()  # counting creates no store
+
+    @pytest.mark.parametrize("with_client", [False, True])
+    def test_sign_ins_are_ready_only_with_every_piece(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, with_client: bool
+    ) -> None:
+        config = OidcConfig(
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            token_store_path=str(tmp_path / "bi.sqlite"),
+            token_store_keys=(secrets.token_bytes(32),),
+            authorization_endpoint=f"{ISSUER}/auth",
+            token_endpoint=f"{ISSUER}/token",
+            client=OidcClient(client_id="obsl", client_secret=CLIENT_SECRET)
+            if with_client
+            else None,
+        )
+        with caplog.at_level(logging.INFO, logger="orionbelt.auth"):
+            init_auth(
+                auth_mode="oidc",
+                oidc=config,
+                verifier=JwtVerifier(config, fetch=CountingFetch(FakeIssuer())),
+            )
+        if with_client:
+            assert "warehouse sign-ins can be made" in caplog.text
+        else:
+            assert "warehouse sign-ins need OIDC_CLIENT_ID and OIDC_CLIENT_SECRET" in caplog.text
+            assert "can be made" not in caplog.text
 
 
 class TestKeyUse:

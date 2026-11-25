@@ -776,6 +776,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     "port": settings.flight_port,
                     "auth_mode": resolve_mode(settings.auth_mode),
                     "db_vendor": settings.db_vendor,
+                    "tls": flight_tls is not None,
                 },
                 query_execute_enabled=True,
             )
