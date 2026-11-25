@@ -159,3 +159,10 @@ async def test_the_page_can_run_a_warehouse_sign_in(tmp_path: Path) -> None:
     assert 'api("POST", "/consents")' in script
     assert 'api("GET", "/consents/" + encodeURIComponent(started.consent))' in script
     assert "window.open(" in script
+
+
+async def test_its_header_names_the_product_as_the_sign_in_page_does(tmp_path: Path) -> None:
+    async with _client(_settings(tmp_path)) as client:
+        page = (await client.get("/tokens")).text
+    assert "<h1>OrionBelt® Semantic Layer · BI tokens</h1>" in page
+    assert "<title>OrionBelt® Semantic Layer · BI tokens</title>" in page
