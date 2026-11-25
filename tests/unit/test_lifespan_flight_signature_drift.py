@@ -58,9 +58,21 @@ def _fake_ob_flight_with_old_signature(monkeypatch: pytest.MonkeyPatch) -> Itera
 
     fake_startup.start_flight_background = _old_signature  # type: ignore[attr-defined]
     fake_startup.stop_flight_server = lambda: None  # type: ignore[attr-defined]
+    # The lifespan also reads Flight's TLS settings (ob_flight.tls) and picks
+    # its auth handler (ob_flight.auth) before the call under test. Without
+    # these modules an import fails and the "not installed" branch runs
+    # instead of the signature mismatch, unless an earlier test happened to
+    # import the real ones.
+    fake_tls = types.ModuleType("ob_flight.tls")
+    fake_tls.FlightTLSConfigError = type("FlightTLSConfigError", (Exception,), {})  # type: ignore[attr-defined]
+    fake_tls.load_flight_tls = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+    fake_auth = types.ModuleType("ob_flight.auth")
+    fake_auth.NoopAuthHandler = type("NoopAuthHandler", (), {})  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "ob_flight", fake_pkg)
     monkeypatch.setitem(sys.modules, "ob_flight.startup", fake_startup)
+    monkeypatch.setitem(sys.modules, "ob_flight.tls", fake_tls)
+    monkeypatch.setitem(sys.modules, "ob_flight.auth", fake_auth)
 
     # Force find_spec to see the fake package so the lifespan enters
     # the Flight branch even though no real ob_flight is installed.
@@ -112,6 +124,32 @@ async def test_lifespan_survives_flight_kwarg_mismatch(
         "kwarg mismatch instead of crashing. See #96. "
         f"Got warnings: {warnings}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_flight_start_is_not_reported_as_running(
+    _fake_ob_flight_with_old_signature: None,
+) -> None:
+    """FLIGHT_ENABLED=true, but Flight could not start: nothing may say it runs.
+
+    The Flight state (``GET /v1/settings``, ``GET /v1/auth/status``) is set
+    once Flight has started, not from the setting before trying.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from orionbelt.api.app import create_app
+    from orionbelt.api.deps import get_flight_info
+    from orionbelt.settings import Settings
+
+    settings = Settings(flight_enabled=True, pgwire_enabled=False, api_server_port=0)
+    app = create_app(settings=settings)
+    async with app.router.lifespan_context(app):
+        assert get_flight_info() is None
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            status = (await c.get("/v1/auth/status")).json()
+            shown = (await c.get("/v1/settings")).json()
+    assert status["surfaces"]["flight"] == {"enabled": False, "tls": False, "login": None}
+    assert not shown.get("flight")
 
 
 @pytest.mark.asyncio

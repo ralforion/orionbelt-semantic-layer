@@ -510,15 +510,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     mgr.start()
 
-    # Build Flight info dict if enabled (exposed via GET /v1/settings)
+    # The Flight state (GET /v1/settings, GET /v1/auth/status) is set once
+    # Flight has started, below: FLIGHT_ENABLED alone does not mean it runs,
+    # since its start is skipped without a matching ob-flight-extension.
     flight_info: dict[str, object] | None = None
-    if settings.flight_enabled:
-        flight_info = {
-            "enabled": True,
-            "port": settings.flight_port,
-            "auth_mode": resolve_mode(settings.auth_mode),
-            "db_vendor": settings.db_vendor,
-        }
 
     # query/execute is available when explicitly enabled OR when Flight is enabled
     query_execute_enabled = settings.query_execute or settings.flight_enabled
