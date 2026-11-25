@@ -161,16 +161,30 @@ def logs_in_as_user(source: Any) -> bool:
     return getattr(source, "login", SERVICE_LOGIN) == USER_LOGIN
 
 
-def any_source_logs_in_as_user() -> bool:
-    """Whether a configured data source logs in as the user (``DB_<NAME>_AUTH=user``)."""
+def user_login_sources() -> list[Any]:
+    """The configured data sources that log in as the user (``DB_<NAME>_AUTH=user``)."""
     try:
         from ob_flight.datasources import DataSourceConfigError, configured_datasources
     except ImportError:  # no ob-flight-extension: no named data sources
-        return False
+        return []
     try:
-        return any(logs_in_as_user(source) for source in configured_datasources())
+        return [source for source in configured_datasources() if logs_in_as_user(source)]
     except DataSourceConfigError:
-        return False
+        return []
+
+
+def any_source_logs_in_as_user() -> bool:
+    """Whether a configured data source logs in as the user (``DB_<NAME>_AUTH=user``)."""
+    return bool(user_login_sources())
+
+
+def describe_login(source: Any) -> str:
+    """How a user-login source gets the user's warehouse token, for logs and the status."""
+    if source.dialect == "snowflake":
+        return f"snowflake, {source.oauth_exchange() or 'no exchange set'}"
+    if source.dialect == "bigquery":
+        return "bigquery, workforce identity federation"
+    return f"{source.dialect}, token federation"
 
 
 def bi_token_sign_in_available() -> bool:

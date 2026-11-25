@@ -25,7 +25,13 @@ from orionbelt.auth.errors import (
     TokenInvalidError,
 )
 from orionbelt.auth.jwt_verify import JwtVerifier, looks_like_jwt
-from orionbelt.auth.keys import KeyStore, find_low_strength_keys, find_weak_keys, parse_keys
+from orionbelt.auth.keys import (
+    KeyStore,
+    find_low_strength_keys,
+    find_weak_keys,
+    key_id,
+    parse_keys,
+)
 from orionbelt.auth.oidc import OidcClient, OidcConfig
 from orionbelt.auth.principal import ANONYMOUS, API_KEY_PRINCIPAL, Principal
 from orionbelt.auth.sealing import Sealer
@@ -87,7 +93,12 @@ def init_auth(
             )
         _check_key_strength(keys)
         _key_store = KeyStore(keys)
-        logger.info("Auth: api_key mode; %d key(s) loaded", len(keys))
+        logger.info(
+            "Auth: api_key; %d key(s) (%s), read from header %s",
+            len(keys),
+            ", ".join(_key_store.ids()),
+            header,
+        )
     elif mode == MODE_OIDC:
         if oidc is None:
             raise AuthConfigError("AUTH_MODE=oidc requires OIDC_ISSUER and OIDC_AUDIENCE.")
@@ -95,7 +106,7 @@ def init_auth(
         keys = parse_keys(api_keys)
         if keys:
             _check_key_strength(keys)
-            dotted = [f"{k[:4]}..." for k in sorted(keys) if "." in k]
+            dotted = sorted(key_id(k) for k in keys if "." in k)
             if dotted:
                 raise AuthConfigError(
                     f"With AUTH_MODE=oidc an API key may not contain '.', since a key "
@@ -104,7 +115,13 @@ def init_auth(
         new_verifier = verifier or JwtVerifier(oidc)
         new_verifier.load()
         _key_store = KeyStore(keys)
-        logger.info("Auth: oidc mode; issuer %s; %d service key(s) loaded", oidc.issuer, len(keys))
+        logger.info(
+            "Auth: oidc; issuer %s; audience %s; %d service key(s)%s",
+            oidc.issuer,
+            oidc.audience,
+            len(keys),
+            f" ({', '.join(_key_store.ids())})" if keys else "",
+        )
     else:
         _key_store = KeyStore(frozenset())
         logger.info("Auth: disabled (AUTH_MODE=none)")
@@ -127,15 +144,27 @@ def init_auth(
     if _tokens is not None:
         try:
             dropped = _tokens.sweep()
+            active, signed_in = _tokens.counts()
         except sqlite3.Error as exc:
             logger.warning("BI token store %s could not be read: %s", _tokens.path, exc)
         else:
             if dropped:
                 logger.info("Dropped %d warehouse sign-in(s) of revoked or expired tokens", dropped)
+            missing = warehouse_sign_in_missing()
+            logger.info(
+                "Auth: BI tokens on (store %s: %d active, %d with a warehouse sign-in; "
+                "warehouse sign-ins %s)",
+                _tokens.path,
+                active,
+                signed_in,
+                f"need {', '.join(missing)}" if missing else "can be made",
+            )
+    elif mode == MODE_OIDC:
+        logger.info("Auth: BI tokens off (TOKEN_STORE_PATH is empty)")
 
 
 def _check_key_strength(keys: frozenset[str]) -> None:
-    """Refuse short or low-entropy API keys (names them by a 4-char prefix only)."""
+    """Refuse short or low-entropy API keys (names them by their ids only)."""
     weak = find_weak_keys(keys)
     if weak:
         raise AuthConfigError(
@@ -301,6 +330,28 @@ def _revoke_at_idp(refresh_token: str) -> None:
         logger.warning(
             "The IdP refused to revoke a BI token's sign-in (HTTP %d)", response.status_code
         )
+
+
+def get_oidc_config() -> OidcConfig | None:
+    """The OIDC settings under ``oidc``, else None."""
+    return _oidc
+
+
+def get_signing_keys_status() -> dict[str, Any] | None:
+    """Where the IdP's signing keys come from, how many, when last fetched; None without oidc."""
+    return _verifier.keys_status() if _verifier is not None else None
+
+
+def get_key_last_used() -> dict[str, float | None]:
+    """Each API key's id, and when it last authenticated a caller in this process."""
+    return _key_store.last_used()
+
+
+def note_key_used(key: str) -> None:
+    """Record a use of ``key`` that did not go through :func:`authenticate` (pgwire's SCRAM)."""
+    identifier = _key_store.id_of(key)
+    if identifier is not None:
+        _key_store.used(identifier)
 
 
 def get_api_keys() -> frozenset[str]:

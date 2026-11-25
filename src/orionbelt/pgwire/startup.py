@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 
+from orionbelt.auth.pgwire_login import login_summary
 from orionbelt.pgwire.router import SemanticRouter
 from orionbelt.pgwire.server import PgWireServer, QueryHandler
 from orionbelt.service.session_manager import SessionManager
@@ -110,10 +111,11 @@ async def start_pgwire(
     bound = await server.start()
     task = asyncio.create_task(server.serve_forever(), name="pgwire-server")
     logger.info(
-        "pgwire surface enabled on %s:%d (auth=%s, semantic=%s)",
+        "pgwire surface enabled on %s:%d (%s, TLS %s, semantic=%s)",
         settings.pgwire_host,
         bound,
-        settings.pgwire_auth_mode,
+        login_summary(settings.pgwire_auth_mode, tls=tls is not None),
+        "on" if tls is not None else "off",
         handler is not None,
     )
     return PgWireRuntime(server=server, task=task)

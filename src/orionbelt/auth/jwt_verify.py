@@ -92,6 +92,7 @@ class _KeySet:
         self.metadata: dict[str, Any] | None = None
         self._keys: dict[str | None, _Key] = {}
         self._fetched_at = 0.0
+        self._loaded_wall: float | None = None  # unix time the keys were last (re)loaded
         self._last_attempt = 0.0
         self._lock = threading.Lock()
 
@@ -101,6 +102,7 @@ class _KeySet:
         try:
             if config.jwks_file:
                 self._keys = _parse_key_set(json.loads(Path(config.jwks_file).read_text()))
+                self._loaded_wall = time.time()
                 logger.info(
                     "Auth: oidc keys loaded from OIDC_JWKS_FILE (%d key(s))", len(self._keys)
                 )
@@ -113,6 +115,7 @@ class _KeySet:
             raise AuthConfigError(f"AUTH_MODE=oidc could not load the signing keys: {exc}") from exc
         self._source = source
         self._fetched_at = self._last_attempt = time.monotonic()
+        self._loaded_wall = time.time()
         if not source.startswith("https://"):
             logger.warning("Auth: oidc keys are fetched over plain HTTP from %s", source)
         logger.info("Auth: oidc keys loaded from %s (%d key(s))", source, len(self._keys))
@@ -130,6 +133,14 @@ class _KeySet:
         if not isinstance(jwks_uri, str) or not jwks_uri:
             raise AuthConfigError(f"{self._config.discovery_url} has no jwks_uri")
         return jwks_uri
+
+    def status(self) -> dict[str, Any]:
+        """Where the keys come from, how many there are, and when they were last loaded."""
+        return {
+            "source": self._source or "OIDC_JWKS_FILE",
+            "count": len(self._keys),
+            "loaded_at": self._loaded_wall,
+        }
 
     def key_for(self, kid: str | None) -> _Key:
         """Return the key a token's ``kid`` names. Raises TokenInvalidError."""
@@ -163,6 +174,7 @@ class _KeySet:
             try:
                 self._keys = _parse_key_set(self._fetch(source))
                 self._fetched_at = now
+                self._loaded_wall = time.time()
             except Exception as exc:
                 logger.warning(
                     "Auth: refetching the oidc keys failed, keeping the old ones: %s", exc
@@ -188,6 +200,10 @@ class JwtVerifier:
     def metadata(self) -> dict[str, Any] | None:
         """The issuer's discovery document, or None when it was not read."""
         return self._keys.metadata
+
+    def keys_status(self) -> dict[str, Any]:
+        """Where the signing keys come from, how many, and when they were last loaded."""
+        return self._keys.status()
 
     def verify(self, token: str) -> Principal:
         """Verify ``token`` and return its user principal. Raises TokenInvalidError."""

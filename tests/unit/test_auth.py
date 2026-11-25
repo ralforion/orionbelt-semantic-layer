@@ -19,6 +19,7 @@ from orionbelt.auth.keys import (
     KeyStore,
     find_low_strength_keys,
     find_weak_keys,
+    key_id,
     parse_keys,
 )
 
@@ -44,26 +45,42 @@ class TestKeyStore:
     def test_parse_keys_empty(self) -> None:
         assert parse_keys("") == frozenset()
 
-    def test_find_weak_keys_masks_prefix(self) -> None:
+    def test_find_weak_keys_names_the_key_by_its_id(self) -> None:
         weak = find_weak_keys(frozenset({"short", VALID_KEY}))
-        assert weak == ["shor..."]  # only the <16 char key, masked
+        assert weak == [key_id("short")]  # only the <16 char key, by its id
 
     def test_find_low_strength_flags_short(self) -> None:
         # 20 chars: passes the 16 hard floor but below the 32 recommendation.
         strong = "obsl_pat_" + "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"  # 49 chars, diverse
         low = find_low_strength_keys(frozenset({"0123456789abcdef0123", strong}))
-        assert low == ["0123..."]  # only the short key flagged; the 49-char one passes
+        assert low == [key_id("0123456789abcdef0123")]  # only the short key; the 49-char passes
 
     def test_find_low_strength_flags_low_entropy(self) -> None:
         # Long but only one distinct character -> low entropy.
         low = find_low_strength_keys(frozenset({"a" * 40}))
-        assert low == ["aaaa..."]
+        assert low == [key_id("a" * 40)]
 
     def test_validate_matches(self) -> None:
         store = KeyStore(frozenset({VALID_KEY, "another_long_key_here"}))
         assert store.validate(VALID_KEY) is True
         assert store.validate("wrong") is False
         assert store.validate("") is False
+
+    def test_a_key_id_is_eight_hex_and_says_nothing_of_the_key(self) -> None:
+        identifier = key_id(VALID_KEY)
+        assert len(identifier) == 8 and int(identifier, 16) >= 0
+        assert identifier not in VALID_KEY and VALID_KEY[:4] not in identifier
+        assert key_id(VALID_KEY) == identifier  # stable: an admin can compute it
+
+    def test_a_match_names_the_key_and_records_its_use(self) -> None:
+        other = "another_long_key_here"
+        store = KeyStore(frozenset({VALID_KEY, other}))
+        assert store.last_used() == {key_id(VALID_KEY): None, key_id(other): None}
+        assert store.match(VALID_KEY) == key_id(VALID_KEY)
+        assert store.match("wrong") is None
+        used = store.last_used()
+        assert used[key_id(VALID_KEY)] is not None and used[key_id(other)] is None
+        assert store.id_of(other) == key_id(other) and store.id_of("wrong") is None
 
 
 # --- mode resolution + legacy alias ---

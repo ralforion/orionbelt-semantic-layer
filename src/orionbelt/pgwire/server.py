@@ -23,11 +23,17 @@ import struct
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from orionbelt.auth import AuthError, Principal, bind_principal, check_still_valid
+from orionbelt.auth import (
+    AuthError,
+    Principal,
+    bind_principal,
+    check_still_valid,
+    note_key_used,
+)
+from orionbelt.auth.pgwire_login import MECH_CLEARTEXT, select_mechanism
 from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from orionbelt.pgwire import protocol
 from orionbelt.pgwire.auth import (
-    MECH_CLEARTEXT,
     AuthResult,
     auth_required,
     authenticate,
@@ -35,7 +41,6 @@ from orionbelt.pgwire.auth import (
     finish_bi_token_scram,
     scram_candidate_keys,
     scram_token_id,
-    select_mechanism,
 )
 from orionbelt.pgwire.extended import ExtendedSession
 from orionbelt.pgwire.scram import SCRAM_SHA_256, ScramError, ScramServerExchange
@@ -410,6 +415,8 @@ class PgWireServer:
                 finish_bi_token_scram, token_id, proven=server_final is not None
             )
         elif server_final is not None:
+            if exchange.matched_key is not None:
+                note_key_used(exchange.matched_key)
             result = AuthResult(ok=True, principal=API_KEY_PRINCIPAL)
         else:
             result = AuthResult(ok=False, error_message="SCRAM authentication failed")

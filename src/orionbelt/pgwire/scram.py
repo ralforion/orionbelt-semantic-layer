@@ -89,6 +89,8 @@ class ScramServerExchange:
             "ascii"
         )
         self._stored: tuple[bytes, bytes] | None = None  # StoredKey, ServerKey
+        #: The candidate key the client's proof matched, once it did (none for a verifier).
+        self.matched_key: str | None = None
         self._client_first_bare: str | None = None
         self._server_first: str | None = None
         self._combined_nonce: str | None = None
@@ -165,19 +167,20 @@ class ScramServerExchange:
         except Exception as exc:  # noqa: BLE001 - malformed base64 is a client error
             raise ScramError("invalid client proof encoding") from exc
 
-        for stored_key, server_key in self._verifiers():
+        for key, stored_key, server_key in self._verifiers():
             server_signature = _server_signature(stored_key, server_key, auth_message, client_proof)
             if server_signature is not None:
+                self.matched_key = key
                 return f"v={base64.b64encode(server_signature).decode('ascii')}"
         raise ScramError("no matching key")
 
-    def _verifiers(self) -> Iterator[tuple[bytes, bytes]]:
-        """The (StoredKey, ServerKey) pairs to try: the stored one, or each key's in turn."""
+    def _verifiers(self) -> Iterator[tuple[str | None, bytes, bytes]]:
+        """The key (None for a stored verifier) and (StoredKey, ServerKey) pairs to try."""
         if self._stored is not None:
-            yield self._stored
+            yield None, *self._stored
             return
         for key in self._keys:
-            yield scram_keys(key, self._salt, self._iterations)
+            yield key, *scram_keys(key, self._salt, self._iterations)
 
 
 def _server_signature(
