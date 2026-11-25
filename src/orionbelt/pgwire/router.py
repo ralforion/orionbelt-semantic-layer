@@ -36,6 +36,8 @@ from orionbelt.api.query_cache import (
     execute_query_with_cache,
     execution_result_from_data,
 )
+from orionbelt.auth import current_principal
+from orionbelt.auth.audit import audit_enabled, record
 from orionbelt.cache.noop import NoopCache
 from orionbelt.compiler.fanout import FanoutError
 from orionbelt.compiler.model_table import (
@@ -268,6 +270,23 @@ class SemanticRouter:
                 return protocol.build_command_complete(tag)
             return _encode_result(result, result_formats)
 
+        answer = await self._semantic(sql, database, result_formats)
+        if audit_enabled():
+            record(
+                surface="pgwire",
+                action="query",
+                outcome="error" if answer[:1] == b"E" else "ok",
+                principal=current_principal(),
+                database=database,
+            )
+        return answer
+
+    async def _semantic(self, sql: str, database: str, result_formats: tuple[int, ...]) -> bytes:
+        """A semantic query: translate, compile, run, encode (or an ErrorResponse).
+
+        One audit event each (``handle``): the canned and catalog answers
+        before it are the probes BI tools send by the hundred.
+        """
         try:
             target = self._resolve_target(database, sql)
         except _ModelNotFoundError as exc:

@@ -34,6 +34,7 @@ from orionbelt.api.deps import (
 )
 from orionbelt.api.logging_config import configure_logging
 from orionbelt.api.middleware import (
+    AuditMiddleware,
     MetricsMiddleware,
     RequestBodyLimitMiddleware,
     RequestIdMiddleware,
@@ -87,6 +88,7 @@ from orionbelt.auth import (
     resolve_mode,
     warehouse_sign_in_missing,
 )
+from orionbelt.auth.audit import configure_audit
 from orionbelt.auth.sealing import parse_keys as parse_store_keys
 from orionbelt.cache.factory import build_cache
 from orionbelt.service import db_executor, metrics
@@ -670,6 +672,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     _refuse_unusable_user_login()
     _report_bi_token_sign_in()
+    configure_audit(settings.audit_log, settings.audit_log_path)
 
     # Start Arrow Flight SQL server only when FLIGHT_ENABLED=true. It is an
     # extra network surface (binds 0.0.0.0), so it must be opted into
@@ -893,6 +896,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # unreachable (503). Not a warehouse failure.
         if not isinstance(exc, DataSourceSignInError):
             raise exc
+        request.state.audit_reason = exc.code
         headers = {"WWW-Authenticate": _sign_in_challenge(exc)} if exc.status == 401 else None
         return JSONResponse(
             status_code=exc.status,
@@ -955,6 +959,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         window_seconds=60,
         trusted_proxy_count=settings.trusted_proxy_count,
     )
+    # Inside RequestIdMiddleware, so each event carries the request's id.
+    app.add_middleware(AuditMiddleware)
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(MetricsMiddleware)
 

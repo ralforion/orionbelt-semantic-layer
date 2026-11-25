@@ -159,6 +159,27 @@ def _bind_caller(context: Any) -> Binding | None:
     return bind_principal(caller, user_credential_of(context))
 
 
+def _audit_query(
+    cache_meta: dict[str, Any] | None, *, outcome: str, reason: str | None = None
+) -> None:
+    """One audit event for a semantic query this call ran (``AUDIT_LOG``)."""
+    from orionbelt.auth.audit import audit_enabled, record
+
+    if not audit_enabled():
+        return
+    meta = cache_meta or {}
+    source = meta.get("source")
+    record(
+        surface="flight",
+        action="query",
+        outcome=outcome,
+        principal=current_principal(),
+        reason=reason,
+        model_id=meta.get("model_id"),
+        data_source=getattr(source, "name", None),
+    )
+
+
 def _flight_error(exc: DataSourceSignInError) -> flight.FlightError:
     """The Flight error for a data source that could not log in as the user."""
     if exc.status == 401:
@@ -738,7 +759,15 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         )
         schema_raw = pending[4] if len(pending) > 4 else None
         result_schema: pa.Schema | None = schema_raw if isinstance(schema_raw, pa.Schema) else None
-        return self._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=result_schema)
+        try:
+            stream = self._execute_sql(
+                sql, dialect, cache_meta=cache_meta, result_schema=result_schema
+            )
+        except Exception as exc:
+            _audit_query(cache_meta, outcome="error", reason=type(exc).__name__)
+            raise
+        _audit_query(cache_meta, outcome="ok")
+        return stream
 
     @_as_caller
     def do_put(

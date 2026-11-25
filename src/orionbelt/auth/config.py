@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
@@ -347,11 +348,18 @@ def get_key_last_used() -> dict[str, float | None]:
     return _key_store.last_used()
 
 
-def note_key_used(key: str) -> None:
-    """Record a use of ``key`` that did not go through :func:`authenticate` (pgwire's SCRAM)."""
+def api_key_caller(credential: str | None) -> Principal | None:
+    """The caller an API key authenticates as, named by the key's id, recording its use."""
+    identifier = _key_store.match(credential or "")
+    return replace(API_KEY_PRINCIPAL, key_id=identifier) if identifier is not None else None
+
+
+def caller_for_key(key: str) -> Principal:
+    """The caller of the key a pgwire SCRAM proof matched, recording its use."""
     identifier = _key_store.id_of(key)
     if identifier is not None:
         _key_store.used(identifier)
+    return replace(API_KEY_PRINCIPAL, key_id=identifier)
 
 
 def get_api_keys() -> frozenset[str]:
@@ -406,9 +414,10 @@ def authenticate(credential: str | None) -> Principal:
     if _mode == MODE_API_KEY:
         if not credential:
             raise AuthRequiredError("API key required")
-        if not _key_store.validate(credential):
+        caller = api_key_caller(credential)
+        if caller is None:
             raise AuthInvalidError("Invalid API key")
-        return API_KEY_PRINCIPAL
+        return caller
 
     if not credential:
         raise AuthRequiredError("Bearer token required")
@@ -421,7 +430,8 @@ def authenticate(credential: str | None) -> Principal:
             raise AuthConfigError("AUTH_MODE=oidc is not initialised")
         return _verifier.verify(credential)
     if len(_key_store):
-        if _key_store.validate(credential):
-            return API_KEY_PRINCIPAL
-        raise AuthInvalidError("Invalid API key")
+        caller = api_key_caller(credential)
+        if caller is None:
+            raise AuthInvalidError("Invalid API key")
+        return caller
     raise TokenInvalidError("Token is malformed")

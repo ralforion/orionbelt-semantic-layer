@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # document (needed when OIDC_JWKS_URI / OIDC_JWKS_FILE skip discovery).
     oidc_authorization_endpoint: str = ""
     oidc_token_endpoint: str = ""
+    # Who did what: "off" (default), "log" (one event per authenticated action
+    # through the logger orionbelt.audit, JSON with LOG_FORMAT=json/cloudrun),
+    # or "file" (JSON lines appended to AUDIT_LOG_PATH).
+    audit_log: str = "off"
+    audit_log_path: str = ""
     # Where OBSL revokes a BI token's refresh token at the IdP (RFC 7009).
     # Unset: from the discovery document; Entra ID has none.
     oidc_revocation_endpoint: str = ""

@@ -23,6 +23,7 @@ from orionbelt.auth import (
     validate_api_key,
 )
 from orionbelt.auth.jwt_verify import JwtVerifier
+from orionbelt.auth.keys import key_id
 from orionbelt.auth.oidc import scopes_from_claims
 from orionbelt.auth.principal import API_KEY_PRINCIPAL
 from tests.oidc_tokens import AUDIENCE, ISSUER, CountingFetch, FakeIssuer
@@ -116,7 +117,9 @@ class TestKeysNextToTokens:
         assert (principal.kind, principal.sub) == ("user", "bob")
 
     def test_service_key_is_the_api_key_principal(self) -> None:
-        assert authenticate(SERVICE_KEY) is API_KEY_PRINCIPAL
+        caller = authenticate(SERVICE_KEY)
+        assert caller == API_KEY_PRINCIPAL
+        assert caller.key_id == key_id(SERVICE_KEY)  # which key, for the audit log
 
     def test_wrong_key_is_an_invalid_key_not_a_bad_token(self) -> None:
         with pytest.raises(AuthInvalidError) as excinfo:
