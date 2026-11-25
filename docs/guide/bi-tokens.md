@@ -89,6 +89,9 @@ BI token, cannot create one.
 On the Postgres protocol the token is checked again before each query, so an
 open connection ends once the token is revoked or expires.
 
+Tool by tool (DBeaver, Tableau, Power BI, Metabase, Dremio, DuckDB), the
+fields are in [Connecting BI tools](postgres-wire-bi-tools.md#logging-in).
+
 ## List and revoke
 
 ```bash
