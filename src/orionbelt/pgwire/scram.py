@@ -1,10 +1,14 @@
 """SCRAM-SHA-256 server-side exchange for the pgwire surface.
 
 Implements the server half of RFC 5802 / RFC 7677 as used by the Postgres
-SASL authentication flow. Unlike a normal Postgres server we do not store a
-salted verifier — OBSL holds the cleartext API keys (from ``API_KEYS``), so
-the server picks a fresh random salt per handshake and, at verification time,
-tries each configured key against the client proof. Any match authenticates.
+SASL authentication flow, checked one of two ways:
+
+* API keys: OBSL holds the cleartext keys (from ``API_KEYS``), so the server
+  picks a fresh random salt per handshake and, at verification time, tries
+  each configured key against the client proof. Any match authenticates.
+* A BI token: as a normal Postgres server does, against the salted verifier
+  stored when the token was created (:meth:`ScramServerExchange.with_verifier`),
+  found by the login's user name, the token's id.
 
 SCRAM never transmits the key on the wire (only a proof of knowledge), which
 is why it is the secure default over cleartext password auth on non-TLS
@@ -19,7 +23,9 @@ import base64
 import hashlib
 import hmac
 import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+
+from orionbelt.auth.bi_tokens import ScramVerifier, scram_keys
 
 SCRAM_SHA_256 = "SCRAM-SHA-256"
 DEFAULT_ITERATIONS = 4096
@@ -40,10 +46,6 @@ def _sha256(msg: bytes) -> bytes:
 
 def _xor(a: bytes, b: bytes) -> bytes:
     return bytes(x ^ y for x, y in zip(a, b, strict=True))
-
-
-def _salted_password(password: str, salt: bytes, iterations: int) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
 
 
 def _parse_attributes(message: str) -> dict[str, str]:
@@ -86,10 +88,22 @@ class ScramServerExchange:
         self._server_nonce = server_nonce or base64.b64encode(secrets.token_bytes(18)).decode(
             "ascii"
         )
+        self._stored: tuple[bytes, bytes] | None = None  # StoredKey, ServerKey
         self._client_first_bare: str | None = None
         self._server_first: str | None = None
         self._combined_nonce: str | None = None
         self._gs2_header: str = _GS2_NO_CBIND
+
+    @classmethod
+    def with_verifier(
+        cls, verifier: ScramVerifier, *, server_nonce: str | None = None
+    ) -> ScramServerExchange:
+        """An exchange checked against a stored verifier, with its salt and iterations."""
+        exchange = cls(
+            (), iterations=verifier.iterations, salt=verifier.salt, server_nonce=server_nonce
+        )
+        exchange._stored = (verifier.stored_key, verifier.server_key)
+        return exchange
 
     def handle_client_first(self, client_first_message: str) -> str:
         """Consume client-first-message, return server-first-message."""
@@ -118,9 +132,10 @@ class ScramServerExchange:
     def handle_client_final(self, client_final_message: str) -> str:
         """Verify client-final-message; return server-final-message or raise.
 
-        Tries every candidate key against the client proof. Returns the
-        server-final-message (``v=<ServerSignature>``) on the first match;
-        raises :class:`ScramError` if no key matches.
+        Checks the client proof against the stored verifier, or else every
+        candidate key. Returns the server-final-message
+        (``v=<ServerSignature>``) on the first match; raises
+        :class:`ScramError` if none matches.
         """
         if self._client_first_bare is None or self._server_first is None:
             raise ScramError("client-final received before client-first")
@@ -150,22 +165,29 @@ class ScramServerExchange:
         except Exception as exc:  # noqa: BLE001 - malformed base64 is a client error
             raise ScramError("invalid client proof encoding") from exc
 
-        for key in self._keys:
-            server_signature = self._verify_one(key, auth_message, client_proof)
+        for stored_key, server_key in self._verifiers():
+            server_signature = _server_signature(stored_key, server_key, auth_message, client_proof)
             if server_signature is not None:
                 return f"v={base64.b64encode(server_signature).decode('ascii')}"
         raise ScramError("no matching key")
 
-    def _verify_one(self, key: str, auth_message: bytes, client_proof: bytes) -> bytes | None:
-        """Return the ServerSignature when ``key`` matches the proof, else None."""
-        salted = _salted_password(key, self._salt, self._iterations)
-        client_key = _hmac(salted, b"Client Key")
-        stored_key = _sha256(client_key)
-        client_signature = _hmac(stored_key, auth_message)
-        if len(client_proof) != len(client_signature):
-            return None
-        recovered_client_key = _xor(client_proof, client_signature)
-        if not hmac.compare_digest(_sha256(recovered_client_key), stored_key):
-            return None
-        server_key = _hmac(salted, b"Server Key")
-        return _hmac(server_key, auth_message)
+    def _verifiers(self) -> Iterator[tuple[bytes, bytes]]:
+        """The (StoredKey, ServerKey) pairs to try: the stored one, or each key's in turn."""
+        if self._stored is not None:
+            yield self._stored
+            return
+        for key in self._keys:
+            yield scram_keys(key, self._salt, self._iterations)
+
+
+def _server_signature(
+    stored_key: bytes, server_key: bytes, auth_message: bytes, client_proof: bytes
+) -> bytes | None:
+    """The ServerSignature when the proof matches ``stored_key``, else None."""
+    client_signature = _hmac(stored_key, auth_message)
+    if len(client_proof) != len(client_signature):
+        return None
+    recovered_client_key = _xor(client_proof, client_signature)
+    if not hmac.compare_digest(_sha256(recovered_client_key), stored_key):
+        return None
+    return _hmac(server_key, auth_message)

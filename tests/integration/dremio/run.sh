@@ -39,6 +39,9 @@ if [[ -z "${NO_BUILD:-}" ]]; then
     docker compose -f "$COMPOSE_FILE" build
 fi
 
+# obsl-auth reads its identity provider's keys once, at startup: make them first.
+uv run python -m tests.integration.dremio.sign_in
+
 echo "Starting compose stack..."
 docker compose -f "$COMPOSE_FILE" up -d
 

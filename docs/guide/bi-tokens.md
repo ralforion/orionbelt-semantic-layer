@@ -83,7 +83,11 @@ BI token, cannot create one.
 |---|---|
 | REST | `Authorization: Bearer obsl_tok_…`, or the API key header |
 | Arrow Flight SQL (DBeaver, Tableau, JDBC, ODBC) | Username `token`, password = the token |
-| Postgres protocol (Tableau, Power BI, psql) | Password = the token, any user name, over **TLS** (`sslmode=require`). Without TLS it is refused. The token is checked again before each query, so an open connection ends once the token is revoked or expires. |
+| Postgres protocol (Tableau, Power BI, psql), over TLS (`sslmode=require`) | Password = the token, any user name |
+| Postgres protocol, without TLS | User name = the token's **id**, the 12 characters after `obsl_tok_` (`3f2a9c41b7e0`, or `tok_3f2a9c41b7e0`); password = the token. OrionBelt checks it with SCRAM against what it stored when the token was created, so the token never crosses the network. A user name of 12 hex characters is always taken as a token's id. |
+
+On the Postgres protocol the token is checked again before each query, so an
+open connection ends once the token is revoked or expires.
 
 ## List and revoke
 
@@ -133,6 +137,8 @@ when they leave: `DELETE /v1/auth/tokens?owner=<their sub>`.
 | Answer | What it means |
 |---|---|
 | 401 `invalid_token`, "BI token is not valid" | Unknown or wrong token, or too many failed attempts on its id |
+| Postgres, "BI token is not valid" | Without TLS: the user name is not this token's id, or the token is wrong; or too many failed attempts on its id |
+| Postgres, "SCRAM authentication failed" | Without TLS, a user name that is not a token's id takes an API key only: use the token's id as the user name |
 | 401 `invalid_token`, "BI token expired" / "was revoked" | Create a new one |
 | 403 `BI_TOKEN_NEEDS_SIGN_IN` | Creating a token needs your identity provider's sign-in, not an API key or a BI token |
 | 403 `SCOPE_NOT_HELD` | You asked for a scope you do not hold |

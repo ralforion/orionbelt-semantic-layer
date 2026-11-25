@@ -31,7 +31,10 @@ from orionbelt.pgwire.auth import (
     AuthResult,
     auth_required,
     authenticate,
+    bi_token_scram_exchange,
+    finish_bi_token_scram,
     scram_candidate_keys,
+    scram_token_id,
     select_mechanism,
 )
 from orionbelt.pgwire.extended import ExtendedSession
@@ -319,7 +322,7 @@ class PgWireServer:
         mechanism = select_mechanism(self.auth_mode, tls=tls)
         if mechanism == MECH_CLEARTEXT:
             return await self._run_cleartext(reader, writer, startup, tls=tls)
-        return await self._run_scram(reader, writer)
+        return await self._run_scram(reader, writer, startup)
 
     async def _run_cleartext(
         self,
@@ -347,10 +350,21 @@ class PgWireServer:
         return result
 
     async def _run_scram(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        startup: protocol.StartupMessage,
     ) -> AuthResult:
-        """Drive the server side of a SCRAM-SHA-256 SASL exchange."""
-        exchange = ScramServerExchange(scram_candidate_keys())
+        """Drive the server side of a SCRAM-SHA-256 SASL exchange.
+
+        A user name that is a BI token's id is checked against that token's
+        stored verifier; any other against the API keys.
+        """
+        token_id = scram_token_id(startup)
+        if token_id is None:
+            exchange = ScramServerExchange(scram_candidate_keys())
+        else:
+            exchange = await asyncio.to_thread(bi_token_scram_exchange, token_id)
 
         # 1. Advertise the mechanism.
         writer.write(protocol.build_authentication_sasl([SCRAM_SHA_256]))
@@ -388,13 +402,25 @@ class PgWireServer:
         try:
             server_final = exchange.handle_client_final(client_final)
         except ScramError:
-            await self._send_fatal(writer, code="28P01", message="SCRAM authentication failed")
-            return AuthResult(ok=False)
+            server_final = None
+        if token_id is not None:
+            # A failed proof counts towards the id's lock; a proven token may
+            # still be revoked or expired.
+            result = await asyncio.to_thread(
+                finish_bi_token_scram, token_id, proven=server_final is not None
+            )
+        elif server_final is not None:
+            result = AuthResult(ok=True, principal=API_KEY_PRINCIPAL)
+        else:
+            result = AuthResult(ok=False, error_message="SCRAM authentication failed")
+        if server_final is None or not result.ok:
+            await self._send_fatal(writer, code="28P01", message=result.error_message)
+            return result
 
         # 4. SASLFinal with the server signature; AuthenticationOk follows.
         writer.write(protocol.build_authentication_sasl_final(server_final.encode("utf-8")))
         await self._drain(writer)
-        return AuthResult(ok=True, principal=API_KEY_PRINCIPAL)
+        return result
 
     async def _handle_connection(
         self,
