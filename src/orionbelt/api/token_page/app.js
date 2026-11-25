@@ -167,6 +167,12 @@ function nextSignal(ms) {
   });
 }
 
+// Stops an attempt a newer Create took over; its error says nothing. Checked
+// after every wait: an answer that arrives late must not create a token.
+function stillCurrent(attempt) {
+  if (attempt !== creating) throw new Error("");
+}
+
 // Sign the user in for the warehouses in ``popup``; the finished sign-in's id.
 // The server's status is what counts: an identity provider may cut the popup
 // off from this page (it then looks closed while the user is still in it).
@@ -178,6 +184,10 @@ async function warehouseSignIn(popup, attempt) {
     popup.close();
     throw error;
   }
+  if (attempt !== creating) {
+    popup.close();
+    stillCurrent(attempt);
+  }
   popup.location.href = started.authorize_url;
   showNotice(
     "Sign in in the window that opened: the token then reaches the data sources " +
@@ -187,8 +197,9 @@ async function warehouseSignIn(popup, attempt) {
   try {
     while (Date.now() < deadline) {
       await nextSignal(POLL_MS);
-      if (attempt !== creating) throw new Error("");
+      stillCurrent(attempt);
       const status = await api("GET", "/consents/" + encodeURIComponent(started.consent));
+      stillCurrent(attempt);
       if (status.status === "finished") return started.consent;
       if (status.status === "failed") throw new Error(status.message || "The sign-in failed.");
     }
@@ -212,6 +223,7 @@ async function create(event) {
     const popup = window.open("", "", "popup,width=520,height=720");
     if (!popup) throw new Error("Allow pop-ups for this page: the token's sign-in opens in one.");
     body.consent = await warehouseSignIn(popup, attempt);
+    stillCurrent(attempt);
   }
   const created = await api("POST", "", body);
   $("token").textContent = created.token;
