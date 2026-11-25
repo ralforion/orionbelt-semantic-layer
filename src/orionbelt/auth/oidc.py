@@ -56,12 +56,21 @@ class OidcConfig:
     token_store_path: str = ""
     token_default_days: int = 90
     token_max_days: int = 365
-    # The sign-in and token endpoints when set (OIDC_AUTHORIZATION_ENDPOINT,
-    # OIDC_TOKEN_ENDPOINT), else the discovery document's; and OBSL's own
+    # The sign-in, token and revocation endpoints when set
+    # (OIDC_AUTHORIZATION_ENDPOINT, OIDC_TOKEN_ENDPOINT,
+    # OIDC_REVOCATION_ENDPOINT), else the discovery document's; and OBSL's own
     # client there, when one is configured.
     authorization_endpoint: str = ""
     token_endpoint: str = ""
+    revocation_endpoint: str = ""
     client: OidcClient | None = None
+    # BI tokens' warehouse sign-ins: the keys they are encrypted with
+    # (TOKEN_STORE_KEY; none: no sign-ins), the scopes OBSL's sign-in asks
+    # for, and where the identity provider sends it back (empty: derived from
+    # the request).
+    token_store_keys: tuple[bytes, ...] = field(default=(), repr=False)
+    consent_scopes: str = "openid offline_access"
+    consent_redirect_uri: str = ""
 
     def __post_init__(self) -> None:
         if not self.issuer.strip():

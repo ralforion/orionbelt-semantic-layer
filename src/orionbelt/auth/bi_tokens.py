@@ -15,6 +15,14 @@ logs in with the token's id as its user name and the token as its password,
 and SCRAM checks it against that verifier without the token crossing the
 network.
 
+A token may also hold a **warehouse sign-in**: the identity provider's
+refresh token, which OBSL got by signing the user in once as its own client
+when the token was created. A data source that logs in as the user
+(``DB_<NAME>_AUTH=user``) needs the user's identity provider token, which a BI
+token is not; OBSL redeems the refresh token for one. It is the one secret
+the store must read back, so it is encrypted (``auth/sealing.py``), bound to
+its row, and dropped when the token is revoked or expires.
+
 The store is one SQLite file, opened on first use: a server that never
 creates a token leaves no file behind.
 """
@@ -31,13 +39,14 @@ import sqlite3
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from orionbelt.auth.errors import TokenInvalidError
 from orionbelt.auth.principal import Principal
+from orionbelt.auth.sealing import Sealer
 
 TOKEN_PREFIX = "obsl_tok_"
 _TOKEN_RE = re.compile(r"^obsl_tok_([0-9a-f]{12})_([0-9a-f]{40})$")
@@ -73,13 +82,24 @@ _SCHEMA = (
         scram_salt BLOB NOT NULL,
         scram_iterations INTEGER NOT NULL,
         scram_stored_key BLOB NOT NULL,
-        scram_server_key BLOB NOT NULL
+        scram_server_key BLOB NOT NULL,
+        idp_refresh_ct BLOB,
+        idp_refresh_key TEXT,
+        idp_refresh_at REAL
     )""",
     "CREATE INDEX IF NOT EXISTS bi_tokens_owner ON bi_tokens (owner_sub)",
 )
-_COLUMNS = (
-    "id, owner_sub, owner_email, label, scopes, created_at, expires_at, last_used_at, revoked_at"
+#: Added after the first release of the store: a file written before gets them.
+_SIGN_IN_COLUMNS = (
+    ("idp_refresh_ct", "BLOB"),
+    ("idp_refresh_key", "TEXT"),
+    ("idp_refresh_at", "REAL"),
 )
+_COLUMNS = (
+    "id, owner_sub, owner_email, label, scopes, created_at, expires_at, last_used_at, "
+    "revoked_at, idp_refresh_ct IS NOT NULL"
+)
+_NO_SIGN_IN = "idp_refresh_ct = NULL, idp_refresh_key = NULL, idp_refresh_at = NULL"
 
 
 def is_bi_token(credential: str) -> bool:
@@ -100,6 +120,8 @@ class BiToken:
     expires_at: float
     last_used_at: float | None
     revoked_at: float | None
+    #: Holds the identity provider's refresh token, for sources that log in as the user.
+    warehouse_sign_in: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,7 +148,7 @@ def _refuse_inactive(revoked_at: float | None, expires_at: float, now: float) ->
 
 
 def _record(row: tuple[Any, ...]) -> BiToken:
-    token_id, owner_sub, owner_email, label, scopes, created, expires, used, revoked = row
+    token_id, owner_sub, owner_email, label, scopes, created, expires, used, revoked, sign_in = row
     return BiToken(
         id=str(token_id),
         owner_sub=str(owner_sub),
@@ -137,6 +159,7 @@ def _record(row: tuple[Any, ...]) -> BiToken:
         expires_at=float(expires),
         last_used_at=float(used) if used is not None else None,
         revoked_at=float(revoked) if revoked is not None else None,
+        warehouse_sign_in=bool(sign_in),
     )
 
 
@@ -153,12 +176,30 @@ def scram_keys(password: str, salt: bytes, iterations: int) -> tuple[bytes, byte
 
 
 class TokenStore:
-    """BI tokens in one SQLite file. Thread-safe; one OBSL process at a time."""
+    """BI tokens in one SQLite file. Thread-safe; one OBSL process at a time.
 
-    def __init__(self, path: str, *, default_days: int = 90, max_days: int = 365) -> None:
+    ``sealer`` encrypts warehouse sign-ins; without one a token holds none.
+    ``on_sign_in_revoked`` is called with each refresh token a revocation
+    drops, after the store committed it, to revoke it at the identity
+    provider too.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        default_days: int = 90,
+        max_days: int = 365,
+        sealer: Sealer | None = None,
+        on_sign_in_revoked: Callable[[str], None] | None = None,
+    ) -> None:
         self.path = Path(path)
         self.default_days = default_days
         self.max_days = max_days
+        self.sealer = sealer
+        self._on_sign_in_revoked = on_sign_in_revoked
+        self._prepared = False
+        self._prepare_lock = threading.Lock()
         self._lock = threading.Lock()
         # id -> (failures, window start), oldest first: bounded, never scanned.
         self._failures: OrderedDict[str, tuple[int, float]] = OrderedDict()
@@ -174,10 +215,16 @@ class TokenStore:
         label: str,
         scopes: frozenset[str],
         days: int,
+        refresh_token: str | None = None,
     ) -> tuple[str, BiToken]:
-        """A new token for ``owner_sub``: the token (shown once) and its record."""
+        """A new token for ``owner_sub``: the token (shown once) and its record.
+
+        ``refresh_token`` is the warehouse sign-in the token holds, if any.
+        """
         if not 1 <= days <= self.max_days:
             raise ValueError(f"days must be between 1 and {self.max_days}")
+        if refresh_token is not None and self.sealer is None:
+            raise ValueError("a warehouse sign-in needs TOKEN_STORE_KEY")
         now = time.time()
         with self._connection(create=True) as conn:
             if conn is None:  # create=True always opens the file
@@ -197,13 +244,16 @@ class TokenStore:
                     expires_at=now + days * _SECONDS_PER_DAY,
                     last_used_at=None,
                     revoked_at=None,
+                    warehouse_sign_in=refresh_token is not None,
                 )
+                sealed, key = self._seal(refresh_token, token_id)
                 try:
                     conn.execute(
                         "INSERT INTO bi_tokens (id, secret_sha256, owner_sub, owner_email, "
                         "label, scopes, created_at, expires_at, scram_salt, scram_iterations, "
-                        "scram_stored_key, scram_server_key) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "scram_stored_key, scram_server_key, idp_refresh_ct, idp_refresh_key, "
+                        "idp_refresh_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             token_id,
                             _sha256(secret),
@@ -217,6 +267,9 @@ class TokenStore:
                             _SCRAM_ITERATIONS,
                             stored_key,
                             server_key,
+                            sealed,
+                            key,
+                            now if sealed is not None else None,
                         ),
                     )
                 except sqlite3.IntegrityError:
@@ -248,17 +301,136 @@ class TokenStore:
             query += " AND owner_sub = ?"
             params += (owner_sub,)
         with self._connection() as conn:
-            return conn is not None and conn.execute(query, params).rowcount == 1
+            if conn is None:
+                return False
+            revoked = conn.execute(query, params).rowcount == 1
+            dropped = self._drop_sign_ins(conn, "id = ?", (token_id,)) if revoked else []
+        self._sign_ins_revoked(dropped)
+        return revoked
 
     def revoke_owner(self, owner_sub: str) -> int:
         """Revoke every token of ``owner_sub`` (offboarding); how many were."""
         with self._connection() as conn:
             if conn is None:
                 return 0
-            return conn.execute(
+            revoked = conn.execute(
                 "UPDATE bi_tokens SET revoked_at = ? WHERE owner_sub = ? AND revoked_at IS NULL",
                 (time.time(), owner_sub),
             ).rowcount
+            dropped = self._drop_sign_ins(
+                conn, "owner_sub = ? AND revoked_at IS NOT NULL", (owner_sub,)
+            )
+        self._sign_ins_revoked(dropped)
+        return revoked
+
+    # --- warehouse sign-ins --------------------------------------------------------
+
+    def refresh_token(self, token_id: str) -> str | None:
+        """The identity provider's refresh token the token holds, or None.
+
+        None also for a revoked or expired token, whose sign-in is dropped
+        here, and for one sealed under a key no longer configured.
+        """
+        if self.sealer is None:
+            return None
+        with self._connection() as conn:
+            if conn is None:
+                return None
+            row = conn.execute(
+                "SELECT idp_refresh_ct, idp_refresh_key, revoked_at, expires_at "
+                "FROM bi_tokens WHERE id = ? AND idp_refresh_ct IS NOT NULL",
+                (token_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            sealed, key, revoked_at, expires_at = row
+            if revoked_at is not None or float(expires_at) <= time.time():
+                conn.execute(f"UPDATE bi_tokens SET {_NO_SIGN_IN} WHERE id = ?", (token_id,))
+                return None
+        return self.sealer.open(bytes(sealed), str(key), bound_to=token_id)
+
+    def replace_refresh_token(self, token_id: str, refresh_token: str) -> None:
+        """Keep the refresh token the identity provider issued in place of the last one.
+
+        A sign-in dropped meanwhile (the token revoked) stays dropped.
+        """
+        sealed, key = self._seal(refresh_token, token_id)
+        with self._connection() as conn:
+            if conn is not None:
+                conn.execute(
+                    "UPDATE bi_tokens SET idp_refresh_ct = ?, idp_refresh_key = ?, "
+                    "idp_refresh_at = ? WHERE id = ? AND idp_refresh_ct IS NOT NULL "
+                    "AND revoked_at IS NULL",
+                    (sealed, key, time.time(), token_id),
+                )
+
+    def drop_refresh_token(self, token_id: str) -> None:
+        """Forget the token's sign-in: the identity provider no longer honours it."""
+        with self._connection() as conn:
+            if conn is not None:
+                conn.execute(f"UPDATE bi_tokens SET {_NO_SIGN_IN} WHERE id = ?", (token_id,))
+
+    def has_sign_in(self, token_id: str) -> bool:
+        """Whether the token holds a warehouse sign-in, as far as the store knows."""
+        with self._connection() as conn:
+            return (
+                conn is not None
+                and conn.execute(
+                    "SELECT 1 FROM bi_tokens WHERE id = ? AND idp_refresh_ct IS NOT NULL "
+                    "AND revoked_at IS NULL",
+                    (token_id,),
+                ).fetchone()
+                is not None
+            )
+
+    def sweep(self) -> int:
+        """Drop the sign-ins of revoked and expired tokens; how many were (at startup).
+
+        Not revoked at the identity provider: nobody holds them any more, and
+        it ends them by itself once they go unused.
+        """
+        with self._connection() as conn:
+            if conn is None:
+                return 0
+            return conn.execute(
+                f"UPDATE bi_tokens SET {_NO_SIGN_IN} WHERE idp_refresh_ct IS NOT NULL "
+                "AND (revoked_at IS NOT NULL OR expires_at <= ?)",
+                (time.time(),),
+            ).rowcount
+
+    def _seal(self, refresh_token: str | None, token_id: str) -> tuple[bytes | None, str | None]:
+        if refresh_token is None:
+            return None, None
+        if self.sealer is None:
+            raise ValueError("a warehouse sign-in needs TOKEN_STORE_KEY")
+        return self.sealer.seal(refresh_token, bound_to=token_id)
+
+    def _drop_sign_ins(
+        self, conn: sqlite3.Connection, where: str, params: Sequence[object]
+    ) -> list[str]:
+        """Drop the sign-ins of the rows ``where`` selects; their refresh tokens, readable."""
+        rows = conn.execute(
+            f"SELECT id, idp_refresh_ct, idp_refresh_key FROM bi_tokens "
+            f"WHERE idp_refresh_ct IS NOT NULL AND {where}",
+            tuple(params),
+        ).fetchall()
+        conn.execute(
+            f"UPDATE bi_tokens SET {_NO_SIGN_IN} WHERE idp_refresh_ct IS NOT NULL AND {where}",
+            tuple(params),
+        )
+        if self.sealer is None:
+            return []
+        opened = (
+            self.sealer.open(bytes(sealed), str(key), bound_to=str(token_id))
+            for token_id, sealed, key in rows
+        )
+        return [token for token in opened if token is not None]
+
+    def _sign_ins_revoked(self, refresh_tokens: list[str]) -> None:
+        if self._on_sign_in_revoked is None:
+            return
+        for refresh_token in refresh_tokens:
+            self._on_sign_in_revoked(refresh_token)
 
     # --- authenticating ------------------------------------------------------------
 
@@ -428,7 +600,22 @@ class TokenStore:
             conn.execute("PRAGMA journal_mode=WAL")
             for statement in _SCHEMA:
                 conn.execute(statement)
+            self._prepare(conn)
             with conn:
                 yield conn
         finally:
             conn.close()
+
+    def _prepare(self, conn: sqlite3.Connection) -> None:
+        """Add the columns a file written by an earlier release lacks, once per store."""
+        if self._prepared:
+            return
+        with self._prepare_lock:
+            if self._prepared:
+                return
+            present = {row[1] for row in conn.execute("PRAGMA table_info(bi_tokens)")}
+            for name, kind in _SIGN_IN_COLUMNS:
+                if name not in present:
+                    conn.execute(f"ALTER TABLE bi_tokens ADD COLUMN {name} {kind}")
+            conn.commit()
+            self._prepared = True

@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     # document (needed when OIDC_JWKS_URI / OIDC_JWKS_FILE skip discovery).
     oidc_authorization_endpoint: str = ""
     oidc_token_endpoint: str = ""
+    # Where OBSL revokes a BI token's refresh token at the IdP (RFC 7009).
+    # Unset: from the discovery document; Entra ID has none.
+    oidc_revocation_endpoint: str = ""
     # OBSL's own confidential client at the IdP: asks it for a warehouse token
     # on a signed-in user's behalf where the IdP issues that token (Snowflake
     # with DB_<NAME>_AUTH=user). The secret, or a file holding it.
@@ -84,6 +87,19 @@ class Settings(BaseSettings):
     token_store_path: str = "./tokens/bi_tokens.sqlite"
     token_default_days: int = 90
     token_max_days: int = 365
+    # A BI token on a data source that logs in as the user (DB_<NAME>_AUTH=user):
+    # when the token is created, OBSL signs the user in once as its own client
+    # (OIDC_CLIENT_ID), asking for offline_access, and keeps the identity
+    # provider's refresh token with the token, encrypted with TOKEN_STORE_KEY:
+    # base64 32-byte keys, comma-separated, the first encrypts and each one
+    # decrypts (rotation); or a file holding them. Unset: such sources refuse
+    # BI tokens.
+    token_store_key: SecretStr = SecretStr("")
+    token_store_key_file: str = ""
+    # That sign-in's scopes (empty: OIDC_TOKENS_SCOPES and offline_access) and
+    # where the identity provider sends it back (empty: <API URL>/tokens/consent).
+    oidc_consent_scopes: str = ""
+    oidc_consent_redirect_uri: str = ""
     # Removed settings, read only so the server can refuse to start when one
     # is still set to turn auth on: ignoring it would start without auth.
     # See refuse_removed_auth_settings() in api/app.py.

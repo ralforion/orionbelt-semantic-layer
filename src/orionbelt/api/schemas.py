@@ -1927,6 +1927,14 @@ class BiTokenCreateRequest(BaseModel):
         ge=1,
         description="Lifetime in days. Default TOKEN_DEFAULT_DAYS, at most TOKEN_MAX_DAYS",
     )
+    consent: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "A finished warehouse sign-in (POST /v1/auth/tokens/consents) the token takes "
+            "along, for data sources that log in as the user"
+        ),
+    )
 
 
 class BiTokenInfo(BaseModel):
@@ -1939,6 +1947,10 @@ class BiTokenInfo(BaseModel):
     created_at: datetime
     expires_at: datetime
     last_used_at: datetime | None = None
+    warehouse_sign_in: bool = Field(
+        default=False,
+        description="Holds a warehouse sign-in, for data sources that log in as the user",
+    )
 
 
 class BiTokenCreated(BiTokenInfo):
@@ -1951,6 +1963,22 @@ class BiTokenList(BaseModel):
     """Response of GET /v1/auth/tokens."""
 
     tokens: list[BiTokenInfo]
+
+
+class BiTokenConsentStarted(BaseModel):
+    """Response of POST /v1/auth/tokens/consents: open ``authorize_url`` in a popup."""
+
+    consent: str = Field(description="The sign-in's id, for its status and the new token")
+    authorize_url: str = Field(description="Where the user signs in at the identity provider")
+    expires_in: int = Field(description="Seconds the sign-in may take, until the token exists")
+
+
+class BiTokenConsentStatus(BaseModel):
+    """Response of GET /v1/auth/tokens/consents/{consent}."""
+
+    consent: str
+    status: Literal["pending", "finished", "failed"]
+    message: str = Field(default="", description="Why the sign-in failed")
 
 
 class BiTokensRevoked(BaseModel):

@@ -4,15 +4,22 @@ A signed-in user creates a token for one BI tool; the tool sends it as its
 password, and it authenticates as that user with the token's scopes. Only
 under ``AUTH_MODE=oidc`` with a token store: otherwise every endpoint answers
 404. See docs/guide/bi-tokens.md.
+
+Where a data source logs in as the user, a new token also takes a warehouse
+sign-in along: the user signs in once more, as OBSL's own client, in a popup
+the ``/tokens`` page opens (``consents``), and the token is created with the
+finished sign-in's id. See ``auth/consent.py``.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from orionbelt.api.schemas import (
+    BiTokenConsentStarted,
+    BiTokenConsentStatus,
     BiTokenCreated,
     BiTokenCreateRequest,
     BiTokenInfo,
@@ -25,10 +32,13 @@ from orionbelt.auth import (
     SCOPE_READ,
     Principal,
     current_principal,
+    get_consent_redirect_uri,
     get_token_store,
 )
 from orionbelt.auth.bi_tokens import BiToken, TokenStore
+from orionbelt.auth.consent import LIFETIME_SECONDS, ConsentError, consents
 from orionbelt.auth.oidc import with_implied
+from orionbelt.service.user_login import bi_token_sign_in_available
 
 router = APIRouter()
 
@@ -51,6 +61,23 @@ def _refused(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
+def _signed_in_user() -> str:
+    """The caller's ``sub``, when they signed in with the identity provider."""
+    caller = _caller()
+    if caller.kind != "user" or caller.token_id is not None or not caller.sub:
+        raise _refused(
+            403,
+            "BI_TOKEN_NEEDS_SIGN_IN",
+            "A BI token is created by a user signed in with the identity provider, "
+            "not with an API key or another BI token.",
+        )
+    return caller.sub
+
+
+def _consent_refused(exc: ConsentError) -> HTTPException:
+    return _refused(exc.status, exc.code, exc.message)
+
+
 def _when(seconds: float | None) -> datetime | None:
     return datetime.fromtimestamp(seconds, tz=UTC) if seconds is not None else None
 
@@ -64,6 +91,7 @@ def _info(record: BiToken) -> BiTokenInfo:
         created_at=datetime.fromtimestamp(record.created_at, tz=UTC),
         expires_at=datetime.fromtimestamp(record.expires_at, tz=UTC),
         last_used_at=_when(record.last_used_at),
+        warehouse_sign_in=record.warehouse_sign_in,
     )
 
 
@@ -72,17 +100,13 @@ def create_token(body: BiTokenCreateRequest) -> BiTokenCreated:
     """Create a BI token for yourself. The response is the only time it is shown.
 
     Only a user signed in with the identity provider creates one: an API key
-    is no person, and a BI token cannot make another.
+    is no person, and a BI token cannot make another. With ``consent``, the
+    token holds that finished warehouse sign-in, for data sources that log in
+    as the user.
     """
     store = _store()
+    sub = _signed_in_user()
     caller = _caller()
-    if caller.kind != "user" or caller.token_id is not None or not caller.sub:
-        raise _refused(
-            403,
-            "BI_TOKEN_NEEDS_SIGN_IN",
-            "A BI token is created by a user signed in with the identity provider, "
-            "not with an API key or another BI token.",
-        )
     requested = set(body.scopes or [SCOPE_READ])
     unknown = sorted(requested - FULL_SCOPES)
     if unknown:
@@ -105,14 +129,63 @@ def create_token(body: BiTokenCreateRequest) -> BiTokenCreated:
             "TOKEN_LIFETIME_TOO_LONG",
             f"A token lasts at most {store.max_days} days (TOKEN_MAX_DAYS).",
         )
+    refresh_token = None
+    if body.consent is not None:
+        if store.sealer is None:
+            raise _refused(
+                422, "WAREHOUSE_SIGN_IN_OFF", "Warehouse sign-in is not enabled on this server."
+            )
+        try:
+            refresh_token = consents.take(body.consent, sub)
+        except ConsentError as exc:
+            raise _consent_refused(exc) from None
     token, record = store.create(
-        owner_sub=caller.sub,
+        owner_sub=sub,
         owner_email=caller.email,
         label=body.label,
         scopes=with_implied(requested),
         days=days,
+        refresh_token=refresh_token,
     )
     return BiTokenCreated(token=token, **_info(record).model_dump())
+
+
+@router.post("/consents", status_code=201, response_model=BiTokenConsentStarted)
+def start_consent(request: Request) -> BiTokenConsentStarted:
+    """Start the warehouse sign-in a new BI token takes along.
+
+    Where a data source logs in as the user (``DB_<NAME>_AUTH=user``), a BI
+    token needs the user's identity provider token, which it is not. Open
+    ``authorize_url`` in a popup: the user signs in as OrionBelt's own client,
+    which keeps the identity provider's refresh token for the new token. Poll
+    the sign-in's status, then create the token with ``consent``.
+    """
+    _store()
+    sub = _signed_in_user()
+    if not bi_token_sign_in_available():
+        raise _refused(
+            404, "WAREHOUSE_SIGN_IN_OFF", "Warehouse sign-in is not enabled on this server."
+        )
+    redirect_uri = get_consent_redirect_uri() or str(request.url_for("token_consent"))
+    try:
+        consent, authorize_url = consents.start(sub, redirect_uri)
+    except ConsentError as exc:
+        raise _consent_refused(exc) from None
+    return BiTokenConsentStarted(
+        consent=consent, authorize_url=authorize_url, expires_in=int(LIFETIME_SECONDS)
+    )
+
+
+@router.get("/consents/{consent}", response_model=BiTokenConsentStatus)
+def consent_status(consent: str) -> BiTokenConsentStatus:
+    """Whether your warehouse sign-in finished at the identity provider, or why it failed."""
+    _store()
+    sub = _signed_in_user()
+    try:
+        status, message = consents.status(consent, sub)
+    except ConsentError as exc:
+        raise _consent_refused(exc) from None
+    return BiTokenConsentStatus(consent=consent, status=status, message=message)
 
 
 @router.get("", response_model=BiTokenList)

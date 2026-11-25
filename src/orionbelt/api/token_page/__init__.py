@@ -6,6 +6,12 @@ client, ``OIDC_TOKENS_CLIENT_ID``, separate from Swagger's, and calls
 ``/v1/auth/tokens`` with that sign-in. Served only under ``AUTH_MODE=oidc``
 with a token store and that client; otherwise every path answers 404. See
 docs/guide/bi-tokens.md.
+
+``/tokens/consent`` is where the identity provider sends the popup of a
+warehouse sign-in back (``auth/consent.py``): the server redeems the code as
+OBSL's own client, and the small page left in the popup tells the opener. It
+is served whenever such a sign-in can be started, with or without the page:
+a client of its own may run the same steps over the API.
 """
 
 from __future__ import annotations
@@ -13,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse
 
 from orionbelt.auth import (
@@ -23,6 +29,8 @@ from orionbelt.auth import (
     get_token_store,
     resolve_mode,
 )
+from orionbelt.auth.consent import ConsentError, consents
+from orionbelt.service.user_login import bi_token_sign_in_available
 from orionbelt.settings import Settings
 
 _FILES = Path(__file__).parent
@@ -50,6 +58,11 @@ def build_router(settings: Settings) -> APIRouter:
         if not token_page_enabled(settings) or get_token_store() is None:
             raise HTTPException(status_code=404, detail="Not Found")
 
+    def _require_consent() -> None:
+        """A warehouse sign-in can be started (``POST /v1/auth/tokens/consents``)."""
+        if get_token_store() is None or not bi_token_sign_in_available():
+            raise HTTPException(status_code=404, detail="Not Found")
+
     @router.get("/tokens", response_class=HTMLResponse)
     def token_page() -> HTMLResponse:
         store = get_token_store()
@@ -64,6 +77,8 @@ def build_router(settings: Settings) -> APIRouter:
             "token_endpoint": get_token_endpoint() or "",
             "default_days": store.default_days,
             "max_days": store.max_days,
+            # A new token takes a warehouse sign-in along (a popup at creation).
+            "warehouse_sign_in": bi_token_sign_in_available(),
         }
         page = (_FILES / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(
@@ -78,7 +93,40 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.get("/tokens/app.css")
     def token_page_style() -> Response:
-        _require_enabled()
+        """The page's style, which the warehouse sign-in's page uses too."""
+        if token_page_enabled(settings):
+            _require_enabled()
+        else:
+            _require_consent()
         return Response((_FILES / "app.css").read_bytes(), media_type="text/css")
+
+    @router.get("/tokens/consent", response_class=HTMLResponse)
+    def token_consent(
+        code: str = Query(""),
+        state: str = Query(""),
+        error: str = Query(""),
+        error_description: str = Query(""),
+    ) -> HTMLResponse:
+        """Where the identity provider sends a warehouse sign-in back."""
+        _require_consent()
+        outcome: dict[str, str]
+        if error:
+            outcome = {"error": f"Sign-in failed: {error_description or error}"}
+            consents.fail(state, outcome["error"])
+        else:
+            try:
+                outcome = {"consent": consents.finish(state, code)}
+            except ConsentError as exc:
+                outcome = {"error": exc.message}
+        page = (_FILES / "consent.html").read_text(encoding="utf-8")
+        return HTMLResponse(
+            page.replace("__OUTCOME__", _script_json(outcome)),
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
+
+    @router.get("/tokens/consent.js")
+    def token_consent_script() -> Response:
+        _require_consent()
+        return Response((_FILES / "consent.js").read_bytes(), media_type="text/javascript")
 
     return router

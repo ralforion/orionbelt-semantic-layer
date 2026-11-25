@@ -10,7 +10,11 @@ mode. See design/PLAN_authentication.md §1-§3.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any
+from urllib.parse import quote
+
+import httpx
 
 from orionbelt.auth.bi_tokens import TokenStore, is_bi_token
 from orionbelt.auth.errors import (
@@ -24,6 +28,7 @@ from orionbelt.auth.jwt_verify import JwtVerifier, looks_like_jwt
 from orionbelt.auth.keys import KeyStore, find_low_strength_keys, find_weak_keys, parse_keys
 from orionbelt.auth.oidc import OidcClient, OidcConfig
 from orionbelt.auth.principal import ANONYMOUS, API_KEY_PRINCIPAL, Principal
+from orionbelt.auth.sealing import Sealer
 
 logger = logging.getLogger("orionbelt.auth")
 
@@ -33,6 +38,7 @@ MODE_OIDC = "oidc"
 _VALID_MODES = frozenset({MODE_NONE, MODE_API_KEY, MODE_OIDC})
 
 DEFAULT_HEADER_NAME = "X-API-Key"
+_REVOKE_TIMEOUT_SECONDS = 10.0
 
 # --- module singleton ---
 _mode: str = MODE_NONE
@@ -112,10 +118,20 @@ def init_auth(
             oidc.token_store_path,
             default_days=oidc.token_default_days,
             max_days=oidc.token_max_days,
+            sealer=Sealer(oidc.token_store_keys) if oidc.token_store_keys else None,
+            on_sign_in_revoked=_revoke_at_idp,
         )
         if oidc is not None and mode == MODE_OIDC and oidc.token_store_path
         else None
     )
+    if _tokens is not None:
+        try:
+            dropped = _tokens.sweep()
+        except sqlite3.Error as exc:
+            logger.warning("BI token store %s could not be read: %s", _tokens.path, exc)
+        else:
+            if dropped:
+                logger.info("Dropped %d warehouse sign-in(s) of revoked or expired tokens", dropped)
 
 
 def _check_key_strength(keys: frozenset[str]) -> None:
@@ -207,6 +223,84 @@ def _endpoint(explicit: str, discovered: str) -> str | None:
         return explicit
     value = (get_oidc_metadata() or {}).get(discovered)
     return value if isinstance(value, str) and value else None
+
+
+def get_revocation_endpoint() -> str | None:
+    """Where the identity provider revokes tokens (RFC 7009): the setting, else discovered."""
+    return _endpoint(_oidc.revocation_endpoint if _oidc is not None else "", "revocation_endpoint")
+
+
+def get_audience() -> str:
+    """``OIDC_AUDIENCE``: the audience OBSL's tokens are issued for."""
+    return _oidc.audience if _oidc is not None else ""
+
+
+def get_consent_scopes() -> str:
+    """What OBSL's own sign-in for a BI token's warehouse sign-in asks for."""
+    return _oidc.consent_scopes if _oidc is not None else ""
+
+
+def get_consent_redirect_uri() -> str:
+    """Where the identity provider sends that sign-in back; empty: derived from the request."""
+    return _oidc.consent_redirect_uri if _oidc is not None else ""
+
+
+def verify_access_token(token: str) -> Principal:
+    """The user an identity provider access token is for. Raises ``TokenInvalidError``."""
+    if _verifier is None:
+        raise TokenInvalidError("AUTH_MODE=oidc is not initialised")
+    return _verifier.verify(token)
+
+
+def warehouse_sign_in_missing() -> list[str]:
+    """What a BI token's warehouse sign-in still needs; empty when it can be made.
+
+    It needs the token store with a key to encrypt sign-ins, OBSL's own
+    client at the identity provider, and where users sign in and codes are
+    exchanged there.
+    """
+    if _mode != MODE_OIDC:
+        return ["AUTH_MODE=oidc"]
+    missing = []
+    if _tokens is None:
+        missing.append("TOKEN_STORE_PATH")
+    elif _tokens.sealer is None:
+        missing.append("TOKEN_STORE_KEY")
+    if get_oidc_client() is None:
+        missing.append("OIDC_CLIENT_ID and OIDC_CLIENT_SECRET")
+    if get_authorization_endpoint() is None:
+        missing.append("OIDC_AUTHORIZATION_ENDPOINT")
+    if get_token_endpoint() is None:
+        missing.append("OIDC_TOKEN_ENDPOINT")
+    return missing
+
+
+def _revoke_at_idp(refresh_token: str) -> None:
+    """Revoke a BI token's dropped warehouse sign-in at the identity provider too.
+
+    Best effort, RFC 7009, as OBSL's own client: an identity provider without
+    a revocation endpoint (Entra ID) ends it once it goes unused, and the
+    store holds it no longer either way. Never logs the token.
+    """
+    client = get_oidc_client()
+    endpoint = get_revocation_endpoint()
+    if client is None or endpoint is None:
+        logger.info("A BI token's warehouse sign-in was dropped; no revocation endpoint to call")
+        return
+    try:
+        response = httpx.post(
+            endpoint,
+            data={"token": refresh_token, "token_type_hint": "refresh_token"},
+            auth=(quote(client.client_id, safe=""), quote(client.client_secret, safe="")),
+            timeout=_REVOKE_TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("Could not revoke a BI token's sign-in at the IdP: %s", type(exc).__name__)
+        return
+    if response.status_code >= 400:
+        logger.warning(
+            "The IdP refused to revoke a BI token's sign-in (HTTP %d)", response.status_code
+        )
 
 
 def get_api_keys() -> frozenset[str]:

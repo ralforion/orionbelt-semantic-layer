@@ -144,6 +144,8 @@ ROUTE_SCOPES: dict[str, str] = {
     "shortcuts.shortcut_validate": SCOPE_READ,
     # tokens (BI tokens; admin actions checked again in the handler)
     "tokens.create_token": SCOPE_READ,
+    "tokens.consent_status": SCOPE_READ,
+    "tokens.start_consent": SCOPE_READ,
     "tokens.list_tokens": SCOPE_READ,
     "tokens.revoke_owner_tokens": SCOPE_ADMIN,
     "tokens.revoke_token": SCOPE_READ,
