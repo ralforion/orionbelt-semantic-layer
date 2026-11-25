@@ -120,8 +120,11 @@ def _bootstrap_first_user(client: httpx.Client) -> str:
     return str(login.json()["token"])
 
 
-def _require_obsl_model() -> None:
-    """Skip unless the OBSL this suite registers in Dremio is up and serves the model.
+STACK_HINT = "bring this suite's stack up with `tests/integration/dremio/run.sh`"
+
+
+def obsl_served_models() -> list[str]:
+    """The models the OBSL of this suite serves, by REST; skip if it is not reachable.
 
     Dremio answering on :19047 does not mean this directory's stack is up:
     the demo stack in ``demo/dremio/`` publishes the same port, serves a model
@@ -130,7 +133,6 @@ def _require_obsl_model() -> None:
     connect", which reads like a pgwire regression rather than a wrong stack.
     """
 
-    hint = "bring this suite's stack up with `tests/integration/dremio/run.sh`"
     try:
         resp = httpx.get(f"{OBSL_REST_URL}/v1/models", timeout=5.0)
         resp.raise_for_status()
@@ -138,13 +140,19 @@ def _require_obsl_model() -> None:
         pytest.skip(
             f"Dremio is up at {DREMIO_REST_URL} but OBSL is not reachable at "
             f"{OBSL_REST_URL} ({exc}). The demo stack in demo/dremio/ uses the same "
-            f"Dremio port; {hint}."
+            f"Dremio port; {STACK_HINT}."
         )
-    served = sorted(m["name"] for m in resp.json().get("models", []))
+    return sorted(m["name"] for m in resp.json().get("models", []))
+
+
+def _require_obsl_model() -> None:
+    """Skip unless the OBSL this suite registers in Dremio is up and serves the model."""
+
+    served = obsl_served_models()
     if OBSL_MODEL_NAME not in served:
         pytest.skip(
             f"OBSL at {OBSL_REST_URL} serves {served}, not {OBSL_MODEL_NAME!r}. "
-            f"If it is the demo stack, export OBSL_MODEL_NAME=commerce; otherwise {hint}."
+            f"If it is the demo stack, export OBSL_MODEL_NAME=commerce; otherwise {STACK_HINT}."
         )
 
 
