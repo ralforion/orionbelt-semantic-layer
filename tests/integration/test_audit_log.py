@@ -270,11 +270,10 @@ class TestFlight:
         assert refused["reason"] == "invalid_credential"
 
     def test_a_query_names_its_model_and_source(self, audit_file: Path) -> None:
-        from types import SimpleNamespace
 
         from ob_flight.server import _audit_query
 
-        _audit_query({"model_id": "m1", "source": SimpleNamespace(name="crm")}, outcome="ok")
+        _audit_query({"model": "sales", "data_source": "crm"}, outcome="ok")
         (event,) = _events(audit_file)
         assert (event["surface"], event["action"], event["outcome"]) == ("flight", "query", "ok")
-        assert event["target"] == {"model_id": "m1", "data_source": "crm"}
+        assert event["target"] == {"model": "sales", "data_source": "crm"}

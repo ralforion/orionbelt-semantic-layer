@@ -279,7 +279,35 @@ class TestAudit:
             ("call do_get", "UNKNOWN_TICKET", "bob")
         ]
         queries = [e for e in self._read(events) if e["action"] == "query"]
-        assert [(e["outcome"], e["who"]["sub"]) for e in queries] == [("ok", "alice")]
+        # No result cache on this server: the model is named all the same.
+        assert [(e["outcome"], e["who"]["sub"], e["target"]) for e in queries] == [
+            ("ok", "alice", {"model": server.alice_session})
+        ]
+
+    def test_a_query_that_fails_says_which_model(
+        self, server: Server, events: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ob_flight.server import OBFlightServer
+        from pyarrow import flight
+
+        def gone(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("the table went away")
+
+        alice = _as(server.idp.token("alice"), server.alice_session)
+        client = _client(server)
+        ticket = client.get_flight_info(_statement(_sql(server)), alice).endpoints[0].ticket
+        monkeypatch.setattr(OBFlightServer, "_execute_sql", gone)
+        with pytest.raises(flight.FlightError):
+            client.do_get(ticket, alice).read_all()
+        (event,) = self._read(events)
+        assert (event["action"], event["outcome"], event["reason"]) == (
+            "query",
+            "error",
+            "RuntimeError",
+        )
+        assert event["target"] == {"model": server.alice_session}
+        assert event["who"]["sub"] == "alice"
+        assert "the table went away" not in events.read_text()
 
     def test_a_missing_scope_names_who_was_refused(self, server: Server, events: Path) -> None:
         from pyarrow import flight

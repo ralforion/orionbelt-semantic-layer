@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from typing import Any, cast
 
 import pyarrow as pa
@@ -170,8 +171,24 @@ def _reason_of(exc: BaseException) -> str:
     return match.group(1) if match else type(exc).__name__
 
 
-def _audit_failure(rpc: str, exc: BaseException, *, reason: str | None = None) -> None:
-    """One audit event for a Flight call that failed or was refused (``AUDIT_LOG``)."""
+#: What the current Flight call is querying (model, data source), filled by
+#: ``do_get`` before it runs, so a failure is recorded as that query's.
+_CALL_QUERY: ContextVar[dict[str, str | None] | None] = ContextVar(
+    "obsl_flight_call_query", default=None
+)
+
+
+def _audit_failure(
+    rpc: str,
+    exc: BaseException,
+    *,
+    reason: str | None = None,
+    query: dict[str, str | None] | None = None,
+) -> None:
+    """One audit event for a Flight call that failed or was refused (``AUDIT_LOG``).
+
+    A call that was running a query (``query``) is recorded as that query.
+    """
     from orionbelt.auth.audit import audit_enabled, record
 
     if not audit_enabled():
@@ -182,28 +199,32 @@ def _audit_failure(rpc: str, exc: BaseException, *, reason: str | None = None) -
     )
     record(
         surface="flight",
-        action=f"call {rpc}",
+        action="query" if query else f"call {rpc}",
         outcome="refused" if refused else "error",
         principal=current_principal(),
         reason=code,
+        **(query or {}),
     )
 
 
-def _audit_query(cache_meta: dict[str, Any] | None, *, outcome: str) -> None:
+def _query_of(cache_meta: dict[str, Any] | None) -> dict[str, str | None]:
+    """The model and data source a semantic query reads (``prepare_sql`` notes them)."""
+    query = (cache_meta or {}).get("query")
+    return dict(query) if isinstance(query, dict) else {}
+
+
+def _audit_query(query: dict[str, str | None], *, outcome: str) -> None:
     """One audit event for a semantic query this call ran (``AUDIT_LOG``)."""
     from orionbelt.auth.audit import audit_enabled, record
 
     if not audit_enabled():
         return
-    meta = cache_meta or {}
-    source = meta.get("source")
     record(
         surface="flight",
         action="query",
         outcome=outcome,
         principal=current_principal(),
-        model_id=meta.get("model_id"),
-        data_source=getattr(source, "name", None),
+        **query,
     )
 
 
@@ -261,16 +282,19 @@ def _as_caller[RPC: Callable[..., Any]](method: RPC) -> RPC:
     @functools.wraps(method)
     def call(self: Any, context: Any, *args: Any, **kwargs: Any) -> Any:
         binding = _bind_caller(context)
+        query: dict[str, str | None] = {}
+        running = _CALL_QUERY.set(query)
         try:
             return method(self, context, *args, **kwargs)
         except DataSourceSignInError as exc:
             error = _flight_error(exc)
-            _audit_failure(method.__name__, error, reason=exc.code)
+            _audit_failure(method.__name__, error, reason=exc.code, query=query)
             raise error from None
         except Exception as exc:
-            _audit_failure(method.__name__, exc)
+            _audit_failure(method.__name__, exc, query=query)
             raise
         finally:
+            _CALL_QUERY.reset(running)
             if binding is not None:
                 reset_principal(binding)
 
@@ -797,9 +821,13 @@ class OBFlightServer(flight.FlightServerBase):  # type: ignore[misc]
         )
         schema_raw = pending[4] if len(pending) > 4 else None
         result_schema: pa.Schema | None = schema_raw if isinstance(schema_raw, pa.Schema) else None
-        # A failure is recorded by ``_as_caller``, as for every RPC.
+        # A failure is recorded by ``_as_caller``, as this query's.
+        query = _query_of(cache_meta)
+        running = _CALL_QUERY.get()
+        if running is not None:
+            running.update(query)
         stream = self._execute_sql(sql, dialect, cache_meta=cache_meta, result_schema=result_schema)
-        _audit_query(cache_meta, outcome="ok")
+        _audit_query(query, outcome="ok")
         return stream
 
     @_as_caller

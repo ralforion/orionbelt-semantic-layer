@@ -402,6 +402,30 @@ def prepare_sql(
     sql: str,
     context: flight.ServerCallContext | None = None,
 ) -> tuple[str, str, Any, pa.Schema | None, str, dict[str, Any] | None]:
+    """:func:`_prepare_sql`, with what a semantic query reads for the audit log.
+
+    ``cache_meta["query"]`` names the model and the data source whether or not
+    the query is cacheable (caching is off by default), so its execution, and
+    its failure, can say what was queried.
+    """
+    planned = _prepare_sql(server, sql, context)
+    final, dialect, model, schema, mode, cache_meta = planned
+    if mode != _MODE_SEMANTIC:
+        return planned
+    meta = dict(cache_meta or {})
+    source = meta.get("source")
+    meta["query"] = {
+        "model": getattr(model, "_ob_model_id", None),
+        "data_source": getattr(source, "name", None),
+    }
+    return final, dialect, model, schema, mode, meta
+
+
+def _prepare_sql(
+    server: OBFlightServer,
+    sql: str,
+    context: flight.ServerCallContext | None = None,
+) -> tuple[str, str, Any, pa.Schema | None, str, dict[str, Any] | None]:
     """Resolve model, classify SQL, translate / compile / route.
 
     Returns ``(final_sql_or_token, dialect, model, schema_hint, mode,
