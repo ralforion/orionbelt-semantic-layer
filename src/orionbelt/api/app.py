@@ -91,7 +91,7 @@ from orionbelt.auth import (
 from orionbelt.auth.audit import configure_audit
 from orionbelt.auth.sealing import parse_keys as parse_store_keys
 from orionbelt.cache.factory import build_cache
-from orionbelt.service import db_executor, metrics
+from orionbelt.service import db_executor, gap_log, metrics
 from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.federated_executor import FederationLimits, spill_directory
 from orionbelt.service.federated_executor import configure as configure_federation
@@ -467,6 +467,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """
     settings: Settings = app.state.settings
 
+    # A wrong GAP_LOG or GAP_LOG_SIZE refuses the start before anything opens.
+    gap_log.configure(settings.gap_log, settings.gap_log_size)
     _warn_if_legacy_model_file_set()
     _start_duckdb_workers()
 
@@ -852,6 +854,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         from orionbelt.service.duckdb_source import close_instances
 
         metrics.stop()
+        gap_log.configure(gap_log.GAP_OFF, 1)
         close_pools()
         close_instances()
         try:

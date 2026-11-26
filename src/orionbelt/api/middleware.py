@@ -62,8 +62,8 @@ class MetricsMiddleware:
     (``/v1/sessions/{session_id}/...``, so the series do not grow with
     sessions; ``unmatched`` for a path no route has), and status: no label
     takes a value the client chooses. It marks the request's queries as the
-    ``rest`` surface. A plain ASGI middleware: it passes requests straight on
-    while the metrics are off.
+    ``rest`` surface, with the metrics off too, since the gap log reads it. A
+    plain ASGI middleware: it counts nothing while the metrics are off.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -72,12 +72,24 @@ class MetricsMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         from orionbelt.service import metrics
 
-        if scope["type"] != "http" or not metrics.enabled():
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        surface = metrics.SURFACE.set("rest")
+        try:
+            if metrics.enabled():
+                await self._counted(scope, receive, send)
+            else:
+                await self.app(scope, receive, send)
+        finally:
+            metrics.SURFACE.reset(surface)
+
+    async def _counted(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Pass the request on, then count it with its status and duration."""
+        from orionbelt.service import metrics
+
         status = 500
         started = time.monotonic()
-        surface = metrics.SURFACE.set("rest")
 
         async def record_status(message: Message) -> None:
             nonlocal status
@@ -88,7 +100,6 @@ class MetricsMiddleware:
         try:
             await self.app(scope, receive, record_status)
         finally:
-            metrics.SURFACE.reset(surface)
             metrics.observe_http(
                 _method_label(scope), _route_label(scope), status, time.monotonic() - started
             )

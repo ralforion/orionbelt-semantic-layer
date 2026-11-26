@@ -141,6 +141,7 @@ nav:
       - Trend Analysis: guide/trend-analysis.md
       - Compilation Pipeline: guide/compilation.md
       - Correctness & Drift Tests: guide/correctness-and-drift-tests.md
+      - Gap Log: guide/gap-log.md
       - OBSL Graph & SPARQL: guide/obsl.md
       - External Concept Mappings: guide/concept-mappings.md
       - Freshness Contracts: guide/freshness-contracts.md

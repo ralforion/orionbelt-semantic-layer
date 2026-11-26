@@ -119,7 +119,9 @@ async def require_auth(request: Request) -> AsyncIterator[Principal]:
         if principal.kind == "user" and principal.token_id is None
         else None
     )
-    token = auth_core.bind_principal(principal, credential)
+    token = auth_core.bind_principal(
+        principal, credential, session_id=request.path_params.get("session_id")
+    )
     try:
         if principal.sub is None:
             yield principal

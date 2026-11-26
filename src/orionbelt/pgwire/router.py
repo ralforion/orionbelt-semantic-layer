@@ -66,6 +66,7 @@ from orionbelt.pgwire.types import (
     encode_value,
     oid_for_type_hint,
 )
+from orionbelt.service import gap_log
 from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ColumnMeta,
@@ -322,6 +323,7 @@ class SemanticRouter:
         try:
             query = translate_sql_to_query(_normalize_for_obsql(semantic_sql), target.model)
         except SQLTranslationError as exc:
+            gap_log.record_refusal(target.model_id, exc)
             return _encode_translation_error(exc)
         except Exception as exc:  # noqa: BLE001 — broad guard at protocol boundary
             logger.exception("pgwire translator failed")
