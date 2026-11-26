@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ## [Unreleased]
 
+### Fixed
+
+- **The live deployment tests (`tests/cloudrun/test_cloudrun.sh`) pass against the demo.** The demo serves one model of its own (`MODEL_FILES`), so it refuses to upload or remove a model (HTTP 403), and 23 of the suite's 37 checks failed: the upload, and every check that used the uploaded model. On such a deployment the suite now checks both refusals and runs its queries on the model each new session starts with. The two checks for a missing and a deleted session asked `/sessions/...` without `/v1`, so any 404 passed them, and the second asked for `deleted` rather than the session it had just closed; both now ask `/v1/sessions/<id>`.
+
 ## [3.2.0] - 2026-11-26
 
 ### Upgrading from 3.1

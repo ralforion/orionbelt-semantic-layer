@@ -133,26 +133,38 @@ else
 fi
 
 # ── 8. Load model ───────────────────────────────────────────────────
+# A deployment that serves one model of its own (MODEL_FILES, as the demo
+# does) refuses uploads and puts that model into each new session. The
+# tests then run on that model instead of the uploaded one.
 
+SINGLE_MODEL=""
 MODEL_YAML=$(python3 -c "import json; print(json.dumps(open('$MODEL_FILE').read()))")
 api POST "/v1/sessions/${SESSION_ID}/models" \
     -H "Content-Type: application/json" \
     -d "{\"model_id\": \"test\", \"model_yaml\": ${MODEL_YAML}}"
-MODEL_ID=$(json_field "['model_id']" 2>/dev/null || echo "")
-OBJ_COUNT=$(json_field "['data_objects']" 2>/dev/null || echo "0")
-DIM_COUNT=$(json_field "['dimensions']" 2>/dev/null || echo "0")
-MSR_COUNT=$(json_field "['measures']" 2>/dev/null || echo "0")
-MTR_COUNT=$(json_field "['metrics']" 2>/dev/null || echo "0")
-if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" ]] && [[ "$OBJ_COUNT" -ge 1 ]]; then
-    pass "POST /sessions/{id}/models loads model (${OBJ_COUNT} objects, ${DIM_COUNT} dims, ${MSR_COUNT} measures, ${MTR_COUNT} metrics)"
+if [[ "$HTTP_CODE" == "403" && "$BODY" == *"Single-model mode"* ]]; then
+    SINGLE_MODEL=1
+    pass "POST /sessions/{id}/models refused in single-model mode (HTTP 403)"
 else
-    fail "POST /sessions/{id}/models" "HTTP $HTTP_CODE, body: $BODY"
+    MODEL_ID=$(json_field "['model_id']" 2>/dev/null || echo "")
+    OBJ_COUNT=$(json_field "['data_objects']" 2>/dev/null || echo "0")
+    DIM_COUNT=$(json_field "['dimensions']" 2>/dev/null || echo "0")
+    MSR_COUNT=$(json_field "['measures']" 2>/dev/null || echo "0")
+    MTR_COUNT=$(json_field "['metrics']" 2>/dev/null || echo "0")
+    if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" ]] && [[ "$OBJ_COUNT" -ge 1 ]]; then
+        pass "POST /sessions/{id}/models loads model (${OBJ_COUNT} objects, ${DIM_COUNT} dims, ${MSR_COUNT} measures, ${MTR_COUNT} metrics)"
+    else
+        fail "POST /sessions/{id}/models" "HTTP $HTTP_CODE, body: $BODY"
+    fi
 fi
 
 # ── 9. List models ──────────────────────────────────────────────────
 
 api GET "/v1/sessions/${SESSION_ID}/models"
 MODEL_COUNT=$(json_len "" 2>/dev/null || echo "0")
+if [[ -n "$SINGLE_MODEL" ]]; then
+    MODEL_ID=$(json_field "[0]['model_id']" 2>/dev/null || echo "")
+fi
 if [[ "$HTTP_CODE" == "200" ]] && [[ "$MODEL_COUNT" -ge 1 ]]; then
     pass "GET /sessions/{id}/models lists $MODEL_COUNT model(s)"
 else
@@ -408,7 +420,7 @@ else
 fi
 
 # 26. Missing session
-api GET "/sessions/nonexist999"
+api GET "/v1/sessions/nonexist999"
 if [[ "$HTTP_CODE" == "404" ]]; then
     pass "GET missing session returns 404"
 else
@@ -417,23 +429,36 @@ fi
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 
-# 27. Delete model
+# 27. Delete model (refused in single-model mode)
 api DELETE "/v1/sessions/${SESSION_ID}/models/${MODEL_ID}"
-if [[ "$HTTP_CODE" == "200" ]] || [[ "$HTTP_CODE" == "204" ]]; then
+if [[ -n "$SINGLE_MODEL" ]]; then
+    if [[ "$HTTP_CODE" == "403" ]]; then
+        pass "DELETE /sessions/{id}/models/{mid} refused in single-model mode (HTTP 403)"
+    else
+        fail "DELETE model" "expected 403 in single-model mode, got HTTP $HTTP_CODE"
+    fi
+elif [[ "$HTTP_CODE" == "200" ]] || [[ "$HTTP_CODE" == "204" ]]; then
     pass "DELETE /sessions/{id}/models/{mid} removes model"
 else
     fail "DELETE model" "HTTP $HTTP_CODE"
 fi
 
-# 28. Verify model gone
+# 28. Verify model gone (still there in single-model mode)
 api GET "/v1/sessions/${SESSION_ID}/models/${MODEL_ID}"
-if [[ "$HTTP_CODE" == "404" ]]; then
+if [[ -n "$SINGLE_MODEL" ]]; then
+    if [[ "$HTTP_CODE" == "200" ]]; then
+        pass "Model still served after the refused DELETE"
+    else
+        fail "Model after refused DELETE" "expected 200, got HTTP $HTTP_CODE"
+    fi
+elif [[ "$HTTP_CODE" == "404" ]]; then
     pass "Deleted model returns 404"
 else
     fail "Deleted model check" "expected 404, got HTTP $HTTP_CODE"
 fi
 
 # 29. Delete session
+DELETED_SESSION_ID="$SESSION_ID"
 api DELETE "/v1/sessions/${SESSION_ID}"
 if [[ "$HTTP_CODE" == "200" ]] || [[ "$HTTP_CODE" == "204" ]]; then
     pass "DELETE /sessions/{id} closes session"
@@ -443,7 +468,7 @@ else
 fi
 
 # 30. Verify session gone
-api GET "/sessions/${SESSION_ID:-deleted}"
+api GET "/v1/sessions/${DELETED_SESSION_ID}"
 if [[ "$HTTP_CODE" == "404" ]]; then
     pass "Deleted session returns 404"
 else

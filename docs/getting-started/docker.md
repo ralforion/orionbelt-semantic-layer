@@ -135,8 +135,9 @@ The API is available at `http://localhost:8080`. The UI is at `http://localhost:
 # Skip build (use existing image)
 ./tests/docker/test_docker.sh --no-build
 
-# Run 30 tests against a live Cloud Run deployment
-./tests/cloudrun/test_cloudrun.sh https://orionbelt-semantic-layer-mw2bqg2mva-ew.a.run.app
+# Run 37 tests against a live deployment (the demo serves one model of its own,
+# so the suite checks that uploads and removals are refused and queries that model)
+./tests/cloudrun/test_cloudrun.sh https://orionbelt.ralforion.com
 ```
 
 ## Cloud Run Deployment
