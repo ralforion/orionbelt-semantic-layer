@@ -32,7 +32,7 @@ docker build -f Dockerfile.ui -t orionbelt-semantic-layer-ui .  # UI image (Grad
 ./scripts/release.sh                              # public release (PyPI + docs + tag-triggered Docker publish)
 ./scripts-infra/deploy-gcloud.sh                  # Cloud Run deploy (both services; infra repo, maintainer-only)
 ./tests/docker/test_docker.sh                     # 15 local Docker tests
-./tests/cloudrun/test_cloudrun.sh <CLOUD_RUN_URL> # 30 live API tests
+./tests/cloudrun/test_cloudrun.sh <CLOUD_RUN_URL> # 37 live API tests
 ```
 
 ## Code Review
