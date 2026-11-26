@@ -1,6 +1,6 @@
 [project]
 name = "orionbelt-semantic-layer"
-version = "3.1.1"
+version = "3.2.0"
 description = "OrionBelt Semantic Layer - Compiles and executes YAML semantic models as analytical SQL"
 license = "BUSL-1.1"
 license-files = ["LICENSE"]
@@ -147,21 +147,21 @@ osi = [
 ]
 flight = [
     "pyarrow>=16.0,<27.0",
-    "ob-flight-extension>=3.1.0",
+    "ob-flight-extension>=3.2.0",
     "ob-driver-core>=3.0.0",
-    "ob-bigquery>=3.0.0",
-    "ob-clickhouse>=3.0.0",
-    "ob-databricks>=3.0.0",
+    "ob-bigquery>=3.2.0",
+    "ob-clickhouse>=3.2.0",
+    "ob-databricks>=3.2.0",
     "ob-dremio>=3.0.0",
-    "ob-duckdb>=3.1.0",
+    "ob-duckdb>=3.2.0",
     # The pgwire catalog emulator runs on DuckDB and needs 1.4: macros called
     # with a defaulted argument positionally (pg_get_expr(e, oid, true)), and
     # cursor descriptions that name a list's element type. Declared here too
     # so it applies without waiting for an ob-duckdb release.
     "duckdb>=1.5.6",
-    "ob-mysql>=3.0.0",
-    "ob-postgres>=3.0.0",
-    "ob-snowflake>=3.0.0",
+    "ob-mysql>=3.2.0",
+    "ob-postgres>=3.2.0",
+    "ob-snowflake>=3.2.0",
     "osi-orionbelt>=0.2",
 ]
 # DuckDB sources whose queries run on Hardcharger workers
@@ -177,9 +177,9 @@ hardcharger = [
 # transitives they pull in, shrinking the runtime image substantially.
 flight-duckdb-only = [
     "pyarrow>=16.0,<27.0",
-    "ob-flight-extension>=3.1.0",
+    "ob-flight-extension>=3.2.0",
     "ob-driver-core>=3.0.0",
-    "ob-duckdb>=3.1.0",
+    "ob-duckdb>=3.2.0",
     "duckdb>=1.5.6",  # pgwire catalog emulator, see `flight`
     "osi-orionbelt>=0.2",
 ]
@@ -317,16 +317,16 @@ dev = [
     # Keep in step with the `ui` extra floor (see the note there).
     "gradio>=6.15.1,<7.0",
     "pyarrow>=16.0,<27.0",
-    "ob-flight-extension>=3.1.0",
+    "ob-flight-extension>=3.2.0",
     "ob-driver-core>=3.0.0",
-    "ob-bigquery>=3.0.0",
-    "ob-clickhouse>=3.0.0",
-    "ob-databricks>=3.0.0",
+    "ob-bigquery>=3.2.0",
+    "ob-clickhouse>=3.2.0",
+    "ob-databricks>=3.2.0",
     "ob-dremio>=3.0.0",
-    "ob-duckdb>=3.1.0",
-    "ob-mysql>=3.0.0",
-    "ob-postgres>=3.0.0",
-    "ob-snowflake>=3.0.0",
+    "ob-duckdb>=3.2.0",
+    "ob-mysql>=3.2.0",
+    "ob-postgres>=3.2.0",
+    "ob-snowflake>=3.2.0",
     "osi-orionbelt>=0.2",
     "adbc-driver-flightsql>=1.0",
     "adbc-driver-hardcharger>=2.5.1,<2.8",

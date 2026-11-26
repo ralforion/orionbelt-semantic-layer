@@ -60,6 +60,7 @@ Key settings:
 | `SESSION_RATE_LIMIT`       | `10`        | Max `POST /sessions` per IP per minute      |
 | `MODEL_FILES`              | —           | Comma-separated OBML YAML paths for admin-curated mode |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution         |
+| `AUTH_MODE`                | `none`      | `api_key` or `oidc` to require sign-in: see [Authentication](../guide/authentication.md) |
 | `DB_VENDOR`                | `duckdb`    | Database vendor for query execution         |
 
 See `.env.template` for the full list including database credentials.

@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/ralforion/orionbelt-semantic-layer/releases"><img src="https://img.shields.io/badge/version-3.1.1-purple.svg" alt="Version 3.1.1"></a>
+<a href="https://github.com/ralforion/orionbelt-semantic-layer/releases"><img src="https://img.shields.io/badge/version-3.2.0-purple.svg" alt="Version 3.2.0"></a>
 <a href="https://pypi.org/project/orionbelt-semantic-layer/"><img src="https://img.shields.io/pypi/v/orionbelt-semantic-layer?logo=pypi&logoColor=white" alt="PyPI"></a>
 <a href="https://hub.docker.com/r/ralforion/orionbelt-semantic-layer-api"><img src="https://img.shields.io/docker/pulls/ralforion/orionbelt-semantic-layer-api?logo=docker&logoColor=white&color=2496ED" alt="Docker pulls"></a>
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
@@ -407,7 +407,7 @@ Open [http://localhost:8080/docs](http://localhost:8080/docs) to explore the API
 # docker-compose.yml
 services:
   api:
-    image: ralforion/orionbelt-semantic-layer-api:3.1.1
+    image: ralforion/orionbelt-semantic-layer-api:3.2.0
     ports: ["8080:8080"]
     env_file: .env
     volumes:
@@ -416,7 +416,7 @@ services:
       MODEL_FILES: /app/models/my-model.obml.yml
 
   ui:
-    image: ralforion/orionbelt-semantic-layer-ui:3.1.1
+    image: ralforion/orionbelt-semantic-layer-ui:3.2.0
     ports: ["7860:7860"]
     environment:
       API_BASE_URL: http://api:8080
@@ -432,7 +432,7 @@ See [`.env.template`](.env.template) for the full environment variable reference
 > - `API_SERVER_HOST` is already `0.0.0.0` inside the container — no override needed.
 > - MCP via stdio does not work in Docker. Use the [MCP HTTP client](https://github.com/ralforion/orionbelt-semantic-layer-mcp) for containerized deployments.
 > - Mount models to `/app/models` (or any path) and set `MODEL_FILES` (comma-separated paths) to pre-load on startup.
-> - For production, pin a version tag (`:3.1.1`) rather than `:latest`.
+> - For production, pin a version tag (`:3.2.0`) rather than `:latest`.
 
 ### Claude Desktop / MCP
 
@@ -700,8 +700,8 @@ API_BASE_URL=http://remote-api:8080 orionbelt-ui           # point UI to a remot
 
 | Status | Area |
 |--------|------|
-| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, **PostgreSQL wire protocol (v2.5.0+)**: Tableau / DBeaver / Superset / Power BI / `psql` / **Dremio as a federated Postgres source**, OBSL/SPARQL, **Apache Ossie (OSI) 0.3 interop** with bidirectional schema validation, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides, **Trend Analysis**: partitioned rolling windows, `MetricType.WINDOW` for rank/lag/lead/ntile, 9 statistical aggregates (CORR, COVAR_*, REGR_*, STDDEV_*, VAR_*), **Unified authentication (v2.12.0)** across REST / Flight / pgwire / UI: `AUTH_MODE=api_key` with shared key store, pgwire SCRAM-SHA-256 + cleartext, **Artefacts Composability Resolution (ACR, v2.14.0)**: a `composables` endpoint that, given the query so far, returns which dimensions / measures / metrics can still be added (including CFL candidates), powering guided query building, **[`obsl` CLI](https://ralforion.com/orionbelt-semantic-layer/guide/cli/) (v2.17.0+)** for automation & CI/CD: `validate`, `compile`, `execute`, `describe`, `lineage`, `convert`, `rules` and more, in-process or against a server with `--server`, **[Federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/) (v3.0.0+)**: a model's data objects can live in different databases. A query reading more than one is split into one query per data source, run at once, and combined in an in-memory DuckDB, **[Files and lakehouse tables](https://ralforion.com/orionbelt-semantic-layer/guide/files-and-lakehouse/) (v3.1.0+)**: Parquet, CSV, JSON and Apache Iceberg read in place by a DuckDB data source |
-| Planned | OIDC / SSO authentication & per-token authorization scopes, DDL view generation (CREATE VIEW from queries), additional dialects, additional BI tool integrations, pre-aggregation / materialization layer |
+| Shipped | 8 SQL dialects, REST API, MCP server, Gradio UI, DB-API drivers, Flight SQL, **PostgreSQL wire protocol (v2.5.0+)**: Tableau / DBeaver / Superset / Power BI / `psql` / **Dremio as a federated Postgres source**, OBSL/SPARQL, **Apache Ossie (OSI) 0.3 interop** with bidirectional schema validation, AI integrations (LangChain, CrewAI, ADK, etc.), model inheritance & extends, data types & numerical precision, timezone settings, grain & filter context overrides, **Trend Analysis**: partitioned rolling windows, `MetricType.WINDOW` for rank/lag/lead/ntile, 9 statistical aggregates (CORR, COVAR_*, REGR_*, STDDEV_*, VAR_*), **Unified authentication (v2.12.0)** across REST / Flight / pgwire / UI: `AUTH_MODE=api_key` with shared key store, pgwire SCRAM-SHA-256 + cleartext, **Artefacts Composability Resolution (ACR, v2.14.0)**: a `composables` endpoint that, given the query so far, returns which dimensions / measures / metrics can still be added (including CFL candidates), powering guided query building, **[`obsl` CLI](https://ralforion.com/orionbelt-semantic-layer/guide/cli/) (v2.17.0+)** for automation & CI/CD: `validate`, `compile`, `execute`, `describe`, `lineage`, `convert`, `rules` and more, in-process or against a server with `--server`, **[Federated queries](https://ralforion.com/orionbelt-semantic-layer/guide/federation/) (v3.0.0+)**: a model's data objects can live in different databases. A query reading more than one is split into one query per data source, run at once, and combined in an in-memory DuckDB, **[Files and lakehouse tables](https://ralforion.com/orionbelt-semantic-layer/guide/files-and-lakehouse/) (v3.1.0+)**: Parquet, CSV, JSON and Apache Iceberg read in place by a DuckDB data source, **[Sign-in through your identity provider](https://ralforion.com/orionbelt-semantic-layer/guide/authentication/) (v3.2.0+)**: `AUTH_MODE=oidc` with per-endpoint scopes on REST / Flight SQL / pgwire, queries that run as the signed-in user on Databricks / Snowflake / BigQuery, BI tokens for BI tools, and an audit log |
+| Planned | DDL view generation (CREATE VIEW from queries), additional dialects, additional BI tool integrations, pre-aggregation / materialization layer |
 
 ---
 

@@ -37,9 +37,9 @@ class Settings(BaseSettings):
     # local-dev behaviour. See docs/guide/authentication.md.
     #   "none"    - no auth (default)
     #   "api_key" - validate API_KEYS against the shared key store
-    #   "oidc"    - REST verifies the IdP's access tokens (JWT); API_KEYS, when
-    #               set, stay valid as service keys on every surface. Flight and
-    #               pgwire accept API keys only.
+    #   "oidc"    - every surface verifies the IdP's access tokens (JWT): REST and
+    #               Flight as a bearer token, pgwire as the password over TLS;
+    #               BI tokens and API_KEYS (service keys) stay valid too.
     auth_mode: str = "none"
     api_keys: str = ""  # comma-separated; required when auth_mode=api_key (>=32 chars each)
     api_key_header: str = "X-API-Key"  # REST header name; Bearer is always accepted as fallback
