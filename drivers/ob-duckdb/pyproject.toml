@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ob-duckdb"
-version = "3.1.1"
+version = "3.2.0"
 description = "OrionBelt Semantic Layer driver for DuckDB (DB-API 2.0)"
 license = "BUSL-1.1"
 license-files = ["LICENSE"]

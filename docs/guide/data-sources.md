@@ -273,7 +273,7 @@ warehouse, and a way to try it with a local Keycloak.
 
 Each connection OBSL opens to a data source carries the name
 `orionbelt-semantic-layer/<version>`, for example
-`orionbelt-semantic-layer/3.1.1`. Your database shows it next to the queries
+`orionbelt-semantic-layer/3.2.0`. Your database shows it next to the queries
 OBSL runs, so you can tell them apart from other tools' queries.
 
 | Database | Sent as | Where you see it |

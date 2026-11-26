@@ -4,6 +4,19 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-26
+
+### Upgrading from 3.1
+
+3.2.0 signs users in through an OpenID Connect provider (`AUTH_MODE=oidc`) on the REST API, Arrow Flight SQL and the Postgres wire protocol, and can run a data source's queries as the signed-in user: on Databricks, on Snowflake (through Entra ID, or Okta, Keycloak and other providers by token exchange) and on BigQuery. BI tools sign in with BI tokens from the `/tokens` page, which reach those sources too. An admin sees the setup at `GET /v1/auth/status`, and `AUDIT_LOG` records who did what. See [Authentication](https://ralforion.com/orionbelt-semantic-layer/guide/authentication/). With `AUTH_MODE=none` or `api_key`, an API key keeps every scope and sessions stay shared, so all works as before, except:
+
+| What changes | What to do |
+|---|---|
+| `AUTH_ENABLED`, `FLIGHT_AUTH_MODE` and `FLIGHT_API_TOKEN` are gone. A deployment that still sets one to turn authentication on refuses to start and names it | Set `AUTH_MODE=api_key`, and move a Flight token into `API_KEYS` |
+| OBSL 3.2.0 needs the 3.2.0 drivers: `ob-bigquery`, `ob-clickhouse`, `ob-databricks`, `ob-duckdb`, `ob-flight-extension`, `ob-mysql`, `ob-postgres`, `ob-snowflake` | `pip install -U orionbelt-semantic-layer` upgrades them with it. If your own requirements pin them, raise the pins |
+| Each connection names OBSL to the database (`orionbelt-semantic-layer/3.2.0`), shown next to its queries in the query history (not on Snowflake) | Nothing. See [How OBSL names itself to your database](https://ralforion.com/orionbelt-semantic-layer/guide/data-sources/#how-obsl-names-itself-to-your-database) |
+| The ChatGPT Custom GPT integration is removed | Connect ChatGPT to the [MCP server](https://github.com/ralforion/orionbelt-semantic-layer-mcp) as a custom MCP server |
+
 ### Added
 
 - **Audit events to a destination of your own (`AUDIT_LOG=custom`, `AUDIT_SINK=<module>:<factory>`).** OrionBelt imports the module, calls the factory once at startup, and hands each event (a dict) to the returned object's `emit(event)`, which may run on several threads at once; an exception it raises is logged and the request goes on. A module or factory that cannot be found, a factory that fails, or an object without `emit` refuses the start, and so does `AUDIT_SINK` without `AUDIT_LOG=custom`. See [Your own destination](docs/guide/authentication.md#your-own-destination).
