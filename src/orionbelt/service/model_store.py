@@ -27,6 +27,7 @@ from orionbelt.parser.merger import ExtendsMerger, MergeError
 from orionbelt.parser.resolver import ReferenceResolver
 from orionbelt.parser.schema_validation import validate_obml_document
 from orionbelt.parser.validator import SemanticValidator
+from orionbelt.service import gap_log
 from orionbelt.service.compilation_cache import CompilationCache
 from orionbelt.service.model_cache import CompiledModel, ModelCache
 
@@ -1018,11 +1019,15 @@ class ModelStore:
         query: QueryObject,
         dialect: str,
     ) -> CompilationResult:
-        """Compile a query against a loaded model."""
+        """Compile a query against a loaded model; a refusal goes to the gap log."""
         model = self.get_model(model_id)
-        if self._compilation_cache is None:
-            return self._pipeline.compile(query, model, dialect)
-        return self._compilation_cache.compile(self._pipeline, query, model, dialect)
+        try:
+            if self._compilation_cache is None:
+                return self._pipeline.compile(query, model, dialect)
+            return self._compilation_cache.compile(self._pipeline, query, model, dialect)
+        except gap_log.REFUSALS as exc:
+            gap_log.record_refusal(model_id, exc, query)
+            raise
 
     def refresh_contracts(self, model_id: str) -> dict[str, RefreshContract]:
         """Per-physical-table freshness contracts for the given model.

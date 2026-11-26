@@ -932,6 +932,61 @@ class ExampleListResponse(BaseModel):
     )
 
 
+class GapItem(BaseModel):
+    """The refusals of one error code and name, counted."""
+
+    code: str = Field(description="The error code, e.g. UNKNOWN_MEASURE or FANOUT")
+    subject: str | None = Field(
+        default=None,
+        description="The name the error is about, e.g. the unknown measure; null when none",
+    )
+    count: int = Field(description="How many refused queries had this error")
+    callers: int = Field(
+        description="How many different callers asked; always 1 unless you see every caller"
+    )
+    first_seen: datetime
+    last_seen: datetime
+    suggestions: list[str] = Field(
+        default_factory=list, description="Names the model suggested instead, in the latest refusal"
+    )
+
+
+class GapEvent(BaseModel):
+    """One error of one refused query."""
+
+    at: datetime
+    surface: str = Field(description="Where the query came in: rest, pgwire or other")
+    code: str
+    subject: str | None = None
+    suggestions: list[str] = Field(default_factory=list)
+    dimensions: list[str] = Field(
+        default_factory=list, description="Dimensions the query asked for"
+    )
+    measures: list[str] = Field(default_factory=list, description="Measures the query asked for")
+    fields: list[str] = Field(default_factory=list, description="Raw fields the query asked for")
+    message: str | None = Field(default=None, description="The error message; GAP_LOG=full only")
+    filters: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="The query's where and having filters; GAP_LOG=full only, null without any",
+    )
+
+
+class GapsResponse(BaseModel):
+    """Response body for GET .../gaps: what the model could not answer."""
+
+    model_id: str
+    mode: str = Field(description="GAP_LOG as configured: off, names or full")
+    scope: Literal["own", "all"] = Field(
+        description="own: only your queries' refusals; all: every caller's (signed-in admins)"
+    )
+    gaps: list[GapItem] = Field(
+        default_factory=list, description="One row per error code and name, most frequent first"
+    )
+    recent: list[GapEvent] = Field(
+        default_factory=list, description="The latest refusals, newest first"
+    )
+
+
 class JoinPathStep(BaseModel):
     """A single step in the planner's join path."""
 

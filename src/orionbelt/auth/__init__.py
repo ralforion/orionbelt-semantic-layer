@@ -42,6 +42,8 @@ from orionbelt.auth.config import (
 from orionbelt.auth.context import (
     Binding,
     bind_principal,
+    caller_key,
+    current_caller,
     current_credential,
     current_principal,
     may_use,
@@ -96,6 +98,8 @@ __all__ = [
     "check_still_valid",
     "Binding",
     "bind_principal",
+    "caller_key",
+    "current_caller",
     "current_credential",
     "current_principal",
     "get_api_keys",

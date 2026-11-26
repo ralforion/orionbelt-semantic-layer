@@ -191,6 +191,13 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"  # noqa: S104 — server bind address
     metrics_port: int = 9090
 
+    # Gap log (service/gap_log.py): one record per refused query, for the
+    # model's author. ``names`` keeps error codes and names, ``full`` also the
+    # error's message and the query's filters (which can hold customer data),
+    # ``off`` nothing.
+    gap_log: str = "names"
+    gap_log_size: int = 10000  # records kept in memory, across all models
+
     # Arrow Flight SQL server (requires ob-flight-extension)
     flight_enabled: bool = False  # start gRPC Flight server on FLIGHT_PORT (implies query_execute)
     flight_port: int = 8815

@@ -83,6 +83,7 @@ from orionbelt.api.warnings_adapter import (
 from orionbelt.cache.protocol import Cache
 from orionbelt.compiler.sql_translator import SQLTranslationError, translate_sql_to_query
 from orionbelt.parser.loader import pin_decimal_digits
+from orionbelt.service import gap_log
 from orionbelt.service.datasource_selection import resolve_query_source
 from orionbelt.service.db_executor import (
     ExecutionError,
@@ -803,6 +804,7 @@ async def compile_semantic_ql(
     try:
         query = translate_sql_to_query(body.sql, model)
     except SQLTranslationError as exc:
+        gap_log.record_refusal(body.model_id, exc)
         raise _obsql_translation_errors(exc) from None
 
     dialect = _resolve_dialect(request_dialect=body.dialect, model=model, fallback=get_db_vendor())
@@ -861,6 +863,7 @@ async def execute_semantic_ql(
     try:
         query = translate_sql_to_query(body.sql, model)
     except SQLTranslationError as exc:
+        gap_log.record_refusal(body.model_id, exc)
         raise _obsql_translation_errors(exc) from None
 
     # Default row limit if the user didn't specify LIMIT

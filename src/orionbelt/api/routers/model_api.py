@@ -6,8 +6,9 @@ Session-scoped routes under /sessions/{session_id}/models/{model_id}/.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from orionbelt.api.deps import get_session_manager
 from orionbelt.api.schemas import (
@@ -24,6 +25,9 @@ from orionbelt.api.schemas import (
     ExampleSummary,
     ExplainLineageItem,
     ExplainResponse,
+    GapEvent,
+    GapItem,
+    GapsResponse,
     JoinEdge,
     JoinGraphResponse,
     MeasureDetail,
@@ -39,6 +43,7 @@ from orionbelt.api.schemas import (
     ValueSearchResponse,
 )
 from orionbelt.api.services.value_search import run_value_search
+from orionbelt.auth import current_caller, current_principal
 from orionbelt.models.concept_links import ConceptIriError
 from orionbelt.models.expressions import find_qualified_refs
 from orionbelt.models.semantic import (
@@ -48,6 +53,7 @@ from orionbelt.models.semantic import (
     MetricType,
     SemanticModel,
 )
+from orionbelt.service import gap_log
 from orionbelt.service.concept_index import MAPPABLE_TYPES, ConceptLink, ConceptMappingIndex
 from orionbelt.service.model_store import ModelStore
 from orionbelt.service.session_manager import (
@@ -933,4 +939,71 @@ async def get_example(
         intent_tags=list(example.intent_tags),
         query=dict(example.query),
         compiled_sql_preview=compiled_sql_preview,
+    )
+
+
+# -- gaps --------------------------------------------------------------------
+
+
+def _gap_item(row: gap_log.GapSummary) -> GapItem:
+    return GapItem(
+        code=row.code,
+        subject=row.subject,
+        count=row.count,
+        callers=row.callers,
+        first_seen=row.first_seen,
+        last_seen=row.last_seen,
+        suggestions=list(row.suggestions),
+    )
+
+
+def _gap_event(record: gap_log.GapRecord) -> GapEvent:
+    return GapEvent(
+        at=record.at,
+        surface=record.surface,
+        code=record.code,
+        subject=record.subject,
+        suggestions=list(record.suggestions),
+        dimensions=list(record.dimensions),
+        measures=list(record.measures),
+        fields=list(record.fields),
+        message=record.message,
+        filters=list(record.filters) or None,
+    )
+
+
+@router.get(
+    "/{session_id}/models/{model_id}/gaps",
+    response_model=GapsResponse,
+    tags=["model-discovery"],
+)
+async def get_gaps(
+    session_id: str,
+    model_id: str,
+    code: str | None = None,
+    since: datetime | None = None,
+    limit: int = Query(20, ge=0, le=200, description="How many recent refusals to list"),
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> GapsResponse:
+    """What the model could not answer: refused queries, counted by error code and name.
+
+    You see the refusals of your own queries: by your user when signed in, by
+    your API key's id with API keys, and by this session without
+    authentication. A signed-in admin (``obsl:admin``) sees every caller's.
+    ``code`` keeps one error code, ``since`` keeps refusals from that time on
+    (UTC when it names no zone). Nothing is kept with ``GAP_LOG=off``.
+    """
+    _get_model(session_id, model_id, mgr)
+    see_all = gap_log.may_read_all(current_principal())
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    records = gap_log.read(
+        model_id, caller=current_caller(), see_all=see_all, code=code, since=since
+    )
+    return GapsResponse(
+        model_id=model_id,
+        mode=gap_log.current_mode(),
+        scope="all" if see_all else "own",
+        gaps=[_gap_item(row) for row in gap_log.summarize(records)],
+        recent=[_gap_event(record) for record in list(reversed(records))[:limit]],
     )

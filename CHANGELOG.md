@@ -4,6 +4,10 @@ All notable changes to OrionBelt Semantic Layer are documented here. Releases be
 
 ## [Unreleased]
 
+### Added
+
+- **A gap log: what a model could not answer (`GAP_LOG`, `GET /v1/sessions/{id}/models/{mid}/gaps`).** When OrionBelt refuses a query (a name the model does not have, a query that would multiply rows, an aggregation the database lacks), it keeps a record of it: the error code, the name the error is about and the names suggested instead, with the dimensions, measures and fields the query asked for. `GET .../gaps` (and `GET /v1/gaps` with a single model) counts them by code and name, most frequent first, and lists the latest. You see only your own queries' refusals: you are known by your user, by your API key's id, or without authentication by the session in the request path. A signed-in user with `obsl:admin` sees everyone's. `GAP_LOG=names` is the default; `full` also keeps the error message and the query's filters, which can hold customer data; `off` keeps nothing. Records are kept in memory (the newest `GAP_LOG_SIZE`, default 10,000, across all models) and written to the logger `orionbelt.gaps` too. REST, one-shot batch and the Postgres wire protocol are recorded; Arrow Flight SQL is not yet. See [Gap Log](docs/guide/gap-log.md).
+
 ### Fixed
 
 - **The live deployment tests (`tests/cloudrun/test_cloudrun.sh`) pass against the demo.** The demo serves one model of its own (`MODEL_FILES`), so it refuses to upload or remove a model (HTTP 403), and 23 of the suite's 37 checks failed: the upload, and every check that used the uploaded model. On such a deployment the suite now checks both refusals and runs its queries on the model each new session starts with. The two checks for a missing and a deleted session asked `/sessions/...` without `/v1`, so any 404 passed them, and the second asked for `deleted` rather than the session it had just closed; both now ask `/v1/sessions/<id>`.

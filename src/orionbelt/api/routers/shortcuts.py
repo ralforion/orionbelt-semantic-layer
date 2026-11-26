@@ -10,6 +10,7 @@ Returns 409 Conflict if resolution is ambiguous.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -48,6 +49,7 @@ from orionbelt.api.schemas import (
     ExplainJoinResponse,
     ExplainPlanResponse,
     ExplainResponse,
+    GapsResponse,
     JoinGraphResponse,
     LineageResponse,
     MeasureDetail,
@@ -881,6 +883,25 @@ async def shortcut_unmapped_objects(
 
     session_id, model_id, _ = _resolve_single_model(mgr)
     return await list_unmapped_objects(session_id, model_id, types, mgr)
+
+
+@router.get("/gaps", response_model=GapsResponse, tags=["model-discovery"])
+async def shortcut_gaps(
+    code: str | None = None,
+    since: datetime | None = None,
+    limit: int = Query(20, ge=0, le=200, description="How many recent refusals to list"),
+    mgr: SessionManager = Depends(get_session_manager),  # noqa: B008
+) -> GapsResponse:
+    """What the model could not answer (auto-resolves session/model).
+
+    Without authentication a caller is known only by the session its request
+    names, so this route, which names none, lists nothing then: use
+    ``/v1/sessions/{session_id}/models/{model_id}/gaps``.
+    """
+    from orionbelt.api.routers.model_api import get_gaps
+
+    session_id, model_id, _ = _resolve_single_model(mgr)
+    return await get_gaps(session_id, model_id, code, since, limit, mgr)
 
 
 @router.get(

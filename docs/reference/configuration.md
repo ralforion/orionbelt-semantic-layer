@@ -49,6 +49,8 @@ Configuration is via environment variables or a `.env` file. See `.env.template`
 | `METRICS_ENABLED`          | `false`     | Serve Prometheus metrics at `/metrics` on a port of their own ([metrics](metrics.md)) |
 | `METRICS_HOST`             | `0.0.0.0`   | Metrics bind address                      |
 | `METRICS_PORT`             | `9090`      | Metrics port                              |
+| `GAP_LOG`                  | `names`     | Record each refused query for the model's author: `names` (error codes and names), `full` (also the error message and the query's filters, which can hold customer data) or `off` ([gap log](../guide/gap-log.md)) |
+| `GAP_LOG_SIZE`             | `10000`     | How many gap records are kept in memory, across all models |
 | `FLIGHT_ENABLED`           | `false`     | Enable Flight SQL + query execution       |
 | `FLIGHT_PORT`              | `8815`      | Arrow Flight SQL gRPC port                |
 | `PGWIRE_ENABLED`           | `false`     | Enable PostgreSQL wire-protocol surface (v2.5.0+) — connect any Postgres client (Tableau, DBeaver, Superset, Power BI, `psql`, Dremio's Postgres source) |

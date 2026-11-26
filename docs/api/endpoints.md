@@ -1524,6 +1524,63 @@ Return a single example by name, with the full query payload and a best-effort c
 
 ---
 
+## Gap Log
+
+Queries the model refused, so its author can see what people and agents asked for that it could not answer. See [Gap Log](../guide/gap-log.md).
+
+### `GET /v1/sessions/{session_id}/models/{model_id}/gaps`
+
+Your own refused queries against this model: counted by error code and name, and the latest ones. A signed-in user with `obsl:admin` sees every caller's (`"scope": "all"`).
+
+**Query parameters (optional):**
+
+| Param | Description |
+|---|---|
+| `code` | Only this error code, e.g. `UNKNOWN_MEASURE` |
+| `since` | Only refusals from this time on (ISO 8601; UTC when it names no zone) |
+| `limit` | How many recent refusals to list, 0 to 200 (default 20) |
+
+**Response (200):**
+
+```json
+{
+  "model_id": "3f9a1c0b7e2d4a58",
+  "mode": "names",
+  "scope": "own",
+  "gaps": [
+    {
+      "code": "UNKNOWN_MEASURE",
+      "subject": "Net Rev",
+      "count": 40,
+      "callers": 1,
+      "first_seen": "2026-11-26T08:02:11Z",
+      "last_seen": "2026-11-26T09:12:40Z",
+      "suggestions": ["Net Revenue"]
+    }
+  ],
+  "recent": [
+    {
+      "at": "2026-11-26T09:12:40Z",
+      "surface": "rest",
+      "code": "UNKNOWN_MEASURE",
+      "subject": "Net Rev",
+      "suggestions": ["Net Revenue"],
+      "dimensions": ["Customer Country"],
+      "measures": ["Net Rev"],
+      "fields": [],
+      "message": null,
+      "filters": null
+    }
+  ]
+}
+```
+
+`message` and `filters` are filled only with `GAP_LOG=full`. With `GAP_LOG=off`, `mode` is `off` and both lists are empty.
+
+**Error (404):** Session or model not found.
+
+---
+
 ## Lineage
 
 What a dimension, measure, metric, rule or query is built from, followed down to the tables it reads. Names are looked up per artefact type, because a rule may share its name with a measure, so each type has its own route.
@@ -1813,6 +1870,7 @@ Returns **404** if no sessions exist, **409 Conflict** if multiple sessions or m
 | `POST /v1/rules/evaluate` | `POST /v1/sessions/{id}/models/{mid}/rules/evaluate` |
 | `GET /v1/graph` | `GET /v1/sessions/{id}/models/{mid}/graph` |
 | `POST /v1/sparql` | `POST /v1/sessions/{id}/models/{mid}/sparql` |
+| `GET /v1/gaps` | `GET /v1/sessions/{id}/models/{mid}/gaps` (lists nothing with `AUTH_MODE=none`, which knows a caller only by the session it names) |
 | `POST /v1/query/sql` | `POST /v1/sessions/{id}/query/sql` (auto-resolves model_id) |
 
 ---
